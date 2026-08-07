@@ -1,0 +1,29 @@
+# Build outputs
+**/build/
+**/dist/
+**/outputs/
+*.spec.bak
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Packaged artifacts
+*.zip
+*.exe
+*.lnk
+
+# Local RGB-D datasets and point-cloud captures
+**/sample_data/*
+!**/sample_data/README.md
+
+# Local/temp files
+临时文件/
+归档备份/
+.agents/
+.codex/
+
+# OS/editor
+Thumbs.db
+.DS_Store
