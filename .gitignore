@@ -21,8 +21,16 @@ __pycache__/
 # Local/temp files
 临时文件/
 归档备份/
+archives/
+hardware_docs/
+legacy_system/
+papers/
+project_docs/
+reference_images/
+tools/
 .agents/
 .codex/
+.vscode/
 
 # OS/editor
 Thumbs.db

@@ -17,7 +17,7 @@ ProgressCallback = Callable[[str, int, str], None]
 
 
 class AnalysisError(RuntimeError):
-    """User-facing point-cloud analysis failure with a stable error code."""
+    """User-facing morphology analysis failure with a stable error code."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -55,7 +55,40 @@ def dependency_status() -> dict:
 
 
 def default_sample_dataset(app_dir: Path) -> Path:
-    return app_dir / "sample_data" / "legacy_pointcloud_model"
+    return app_dir / "sample_data" / "sample_project"
+
+
+def resolve_image_analysis_dirs(
+    dataset_dir: Path,
+    rgb_dir: str | None = None,
+    spectral_dir: str | None = None,
+) -> tuple[Path, Path | None]:
+    dataset_dir = Path(dataset_dir).expanduser()
+    if not dataset_dir.exists():
+        raise AnalysisError("NO_DATASET", f"样品文件夹不存在: {dataset_dir}")
+
+    if rgb_dir:
+        rgb_path = resolve_child_path(dataset_dir, rgb_dir)
+        if not rgb_path.exists():
+            rgb_path = _find_child_dir(dataset_dir, ("rgb", "color", "image", "images", "彩色图", "彩图"))
+    else:
+        rgb_path = _find_child_dir(dataset_dir, ("rgb", "color", "image", "images", "彩色图", "彩图"))
+
+    if spectral_dir:
+        spectral_path = resolve_child_path(dataset_dir, spectral_dir)
+        if not spectral_path.exists():
+            spectral_path = _find_child_dir(dataset_dir, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
+    else:
+        spectral_path = _find_child_dir(dataset_dir, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
+
+    if rgb_path is None or not rgb_path.exists():
+        raise AnalysisError("MISSING_RGB", "未找到 RGB 图像目录。请选择包含 rgb、color 或 image 子目录的样品文件夹。")
+    return rgb_path, spectral_path if spectral_path and spectral_path.exists() else None
+
+
+def resolve_child_path(root: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else root / path
 
 
 def resolve_dataset_dirs(dataset_dir: Path, color_dir: str | None = None, depth_dir: str | None = None) -> tuple[Path, Path]:
@@ -109,6 +142,118 @@ def list_images(folder: Path) -> list[Path]:
     return sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS])
 
 
+def ply_measurements(source_ply: Path, options: AnalysisOptions) -> dict | None:
+    try:
+        import pipeline_v2
+
+        points, _colors = pipeline_v2.load_ply_points_colors(str(source_ply))
+    except Exception:
+        return None
+    if points is None or points.size == 0:
+        return None
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    ranges = maxs - mins
+    volume_mm3 = pointcloud_volume(points, options.voxel_size_mm)
+    return {
+        "sourcePly": source_ply.name,
+        "pointCount": int(len(points)),
+        "averageDepthMm": round(float(np.median(points[:, 2])), 2),
+        "diameterMm": round(float(max(ranges[0], ranges[1])), 2),
+        "heightMm": round(float(ranges[2]), 2),
+        "volumeMm3": round(float(volume_mm3), 2),
+        "weightG": round(float(volume_mm3 / 1000.0 * options.density_g_cm3), 2),
+        "bboxXMm": round(float(ranges[0]), 2),
+        "bboxYMm": round(float(ranges[1]), 2),
+        "bboxZMm": round(float(ranges[2]), 2),
+    }
+
+
+def analyze_rgb_multispectral_sample(
+    *,
+    dataset_dir: Path,
+    rgb_path: Path,
+    spectral_path: Path | None,
+    source_ply: Path | None,
+    output_dir: Path,
+    options: AnalysisOptions,
+    dependencies: dict,
+    started: float,
+    emit: ProgressCallback,
+) -> dict:
+    emit("preprocess", 12, "读取 RGB 图像与窄带图像")
+    rgb_files = list_images(rgb_path)
+    if not rgb_files:
+        raise AnalysisError("MISSING_RGB", f"RGB 目录没有可用图像: {rgb_path}")
+
+    first_rgb = read_color_image(rgb_files[0])
+    mask = build_rgb_subject_mask(first_rgb)
+    if np.count_nonzero(mask) < 40:
+        raise AnalysisError("EMPTY_MASK", "RGB 图像中未检测到有效样品区域。")
+
+    emit("filter", 32, "分割样品区域并提取轮廓")
+    preview_path = output_dir / "input_preview.png"
+    save_input_preview(first_rgb, mask, preview_path)
+
+    morphology = measure_rgb_frame(first_rgb, mask, rgb_files[0].name)
+
+    emit("texture", 56, "分析果粉覆盖、颜色均匀度与纹理")
+    texture = analyze_surface_texture(rgb_path, output_dir)
+    color_stats = measure_color_statistics(first_rgb, mask)
+    spectral_stats = analyze_spectral_folder(spectral_path) if spectral_path else empty_spectral_result("未提供窄带图像目录")
+
+    ply_metrics = None
+    if source_ply:
+        emit("measure", 76, "读取可选点云模型并计算三维数值")
+        ply_metrics = ply_measurements(source_ply, options)
+    else:
+        emit("measure", 76, "计算二维形态指标")
+
+    area_px = morphology["areaPixels"]
+    diameter_px = morphology["diameterPx"]
+    height_px = morphology["heightPx"]
+    volume_mm3 = ply_metrics["volumeMm3"] if ply_metrics else 0.0
+    weight_g = ply_metrics["weightG"] if ply_metrics else 0.0
+
+    elapsed = time.perf_counter() - started
+    emit("done", 100, "图像形态分析成功")
+    return {
+        "ok": True,
+        "algorithm": "rgb_multispectral_morphology",
+        "datasetDir": str(dataset_dir),
+        "colorDir": str(rgb_path),
+        "depthDir": str(spectral_path) if spectral_path else "",
+        "pairCount": len(rgb_files),
+        "pointCount": ply_metrics["pointCount"] if ply_metrics else 0,
+        "averageDepthMm": ply_metrics["averageDepthMm"] if ply_metrics else 0.0,
+        "diameterMm": ply_metrics["diameterMm"] if ply_metrics else round(diameter_px, 2),
+        "heightMm": ply_metrics["heightMm"] if ply_metrics else round(height_px, 2),
+        "volumeMm3": volume_mm3,
+        "weightG": weight_g,
+        "densityGCm3": options.density_g_cm3,
+        "voxelSizeMm": options.voxel_size_mm,
+        "elapsedSec": round(elapsed, 2),
+        "previewUrl": f"/outputs/{output_dir.name}/{preview_path.name}",
+        "inputPreviewUrl": f"/outputs/{output_dir.name}/{preview_path.name}",
+        "plyUrl": "",
+        "texture": texture,
+        "colorStats": color_stats,
+        "spectralStats": spectral_stats,
+        "details": [
+            {
+                "name": "rgb_morphology",
+                "areaPixels": area_px,
+                "diameterPx": round(diameter_px, 2),
+                "heightPx": round(height_px, 2),
+                "perimeterPx": round(morphology["perimeterPx"], 2),
+                "rgbSource": rgb_files[0].name,
+                "pointcloudModel": ply_metrics["sourcePly"] if ply_metrics else "",
+            }
+        ],
+        "dependencies": dependencies,
+    }
+
+
 def analyze_rgbd_dataset(
     dataset_dir: str | Path,
     output_dir: str | Path,
@@ -119,11 +264,11 @@ def analyze_rgbd_dataset(
     progress: ProgressCallback | None = None,
     cancel_flag: Callable[[], bool] | None = None,
 ) -> dict:
-    """Analyze a local RGB-D dataset and return real morphology results.
+    """Analyze a local sample folder and return morphology/texture results.
 
-    Input: a dataset folder containing color/image and depth subfolders, or explicit
-    color_dir/depth_dir. Output: JSON-serializable measurements plus generated files.
-    Raises AnalysisError for validation, dependency, empty cloud and algorithm failures.
+    Input: a sample folder containing RGB images and optional multispectral images or
+    a PLY point-cloud model. RGB-D folders are still accepted for compatibility, but
+    this project uses RGB + narrowband cameras as the primary workflow.
     """
 
     started = time.perf_counter()
@@ -140,10 +285,28 @@ def analyze_rgbd_dataset(
     emit("check", 3, "检查输入文件和运行环境")
     deps = dependency_status()
     if not deps["PIL"] or not deps["numpy"]:
-        raise AnalysisError("MISSING_DEPENDENCY", "缺少 Pillow 或 NumPy，无法读取 RGB-D 图像。")
+        raise AnalysisError("MISSING_DEPENDENCY", "缺少 Pillow 或 NumPy，无法读取图像。")
 
     dataset_path = Path(dataset_dir).expanduser()
     cached_ply = find_cached_ply(dataset_path)
+
+    try:
+        rgb_path, spectral_path = resolve_image_analysis_dirs(dataset_path, color_dir, depth_dir)
+        return analyze_rgb_multispectral_sample(
+            dataset_dir=dataset_path,
+            rgb_path=rgb_path,
+            spectral_path=spectral_path,
+            source_ply=cached_ply,
+            output_dir=output_dir,
+            options=opts,
+            dependencies=deps,
+            started=started,
+            emit=emit,
+        )
+    except AnalysisError as exc:
+        if exc.code not in {"MISSING_RGB", "NO_DATASET"}:
+            raise
+
     if cached_ply and not color_dir and not depth_dir:
         return analyze_cached_pointcloud(
             dataset_dir=dataset_path,
@@ -285,10 +448,6 @@ def analyze_cached_pointcloud(
     if colors is None or len(colors) != len(points):
         colors = np.full((len(points), 3), [0, 180, 60], dtype=np.float32)
 
-    emit("fusion", 55, "加载 PLY 点云模型，保持原始点云形态")
-    output_ply = output_dir / "reconstructed_sfm_fruit_color.ply"
-    shutil.copy2(source_ply, output_ply)
-
     mins = points.min(axis=0)
     maxs = points.max(axis=0)
     ranges = maxs - mins
@@ -301,9 +460,6 @@ def analyze_cached_pointcloud(
     weight_g = volume_mm3 / 1000.0 * options.density_g_cm3
 
     emit("texture", 86, "检查表面纹理分析输入")
-    emit("preview", 90, "生成点云预览图")
-    preview_path = output_dir / "pointcloud_preview.png"
-    save_pointcloud_preview(points.astype(np.float32), colors.astype(np.float32), preview_path)
     texture = empty_texture_result("示例点云模型不包含原始 RGB 图片")
 
     elapsed = time.perf_counter() - started
@@ -324,9 +480,9 @@ def analyze_cached_pointcloud(
         "densityGCm3": options.density_g_cm3,
         "voxelSizeMm": options.voxel_size_mm,
         "elapsedSec": round(elapsed, 2),
-        "previewUrl": f"/outputs/{output_dir.name}/{preview_path.name}",
+        "previewUrl": "",
         "inputPreviewUrl": "",
-        "plyUrl": f"/outputs/{output_dir.name}/{output_ply.name}",
+        "plyUrl": "",
         "texture": texture,
         "details": [
             {
@@ -722,6 +878,83 @@ def average_measurements(rows: list[dict]) -> dict:
         "depth": float(np.mean([row["depthMm"] for row in rows])),
         "diameter": float(np.mean([row["diameterMm"] for row in rows])),
         "height": float(np.mean([row["heightMm"] for row in rows])),
+    }
+
+
+def measure_rgb_frame(rgb: np.ndarray, mask: np.ndarray, name: str) -> dict:
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        raise AnalysisError("EMPTY_MASK", f"{name} 无有效样品区域。")
+    x0, x1 = xs.min(), xs.max()
+    y0, y1 = ys.min(), ys.max()
+    return {
+        "name": name,
+        "areaPixels": int(len(xs)),
+        "diameterPx": float(x1 - x0 + 1),
+        "heightPx": float(y1 - y0 + 1),
+        "perimeterPx": estimate_mask_perimeter(mask),
+    }
+
+
+def estimate_mask_perimeter(mask: np.ndarray) -> float:
+    up = np.zeros_like(mask, dtype=bool)
+    up[1:] = mask[:-1]
+    down = np.zeros_like(mask, dtype=bool)
+    down[:-1] = mask[1:]
+    left = np.zeros_like(mask, dtype=bool)
+    left[:, 1:] = mask[:, :-1]
+    right = np.zeros_like(mask, dtype=bool)
+    right[:, :-1] = mask[:, 1:]
+    edge = mask & ~(up & down & left & right)
+    return float(np.count_nonzero(edge))
+
+
+def measure_color_statistics(rgb: np.ndarray, mask: np.ndarray) -> dict:
+    pixels = rgb[mask].astype(np.float32)
+    if pixels.size == 0:
+        return {"ok": False}
+    means = pixels.mean(axis=0)
+    stds = pixels.std(axis=0)
+    maxc = pixels.max(axis=1)
+    minc = pixels.min(axis=1)
+    saturation = (maxc - minc) / np.maximum(maxc, 1.0)
+    return {
+        "ok": True,
+        "meanR": round(float(means[0]), 2),
+        "meanG": round(float(means[1]), 2),
+        "meanB": round(float(means[2]), 2),
+        "stdR": round(float(stds[0]), 2),
+        "stdG": round(float(stds[1]), 2),
+        "stdB": round(float(stds[2]), 2),
+        "meanSaturation": round(float(np.mean(saturation)), 4),
+    }
+
+
+def empty_spectral_result(message: str) -> dict:
+    return {"ok": False, "message": message, "bandCount": 0, "meanIntensity": None}
+
+
+def analyze_spectral_folder(spectral_path: Path | None) -> dict:
+    if not spectral_path:
+        return empty_spectral_result("未提供窄带图像目录")
+    files = list_images(spectral_path)
+    if not files:
+        return empty_spectral_result("窄带图像目录中没有可用图片")
+    means = []
+    for path in files[:32]:
+        try:
+            with Image.open(path) as image:
+                arr = np.asarray(image.convert("L"), dtype=np.float32)
+            means.append(float(np.mean(arr)))
+        except Exception:
+            continue
+    if not means:
+        return empty_spectral_result("窄带图像无法读取")
+    return {
+        "ok": True,
+        "message": "窄带图像读取成功",
+        "bandCount": len(files),
+        "meanIntensity": round(float(np.mean(means)), 2),
     }
 
 

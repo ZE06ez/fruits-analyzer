@@ -8,6 +8,7 @@ const state = {
   shapeJobId: null,
   shapeTimer: null,
   shapeStartedAt: null,
+  shapeMode: "morphology2d",
   viewer: null,
   imageBrowser: {
     images: [],
@@ -36,10 +37,8 @@ const shapeStepMap = {
   check: "load-rgbd",
   preprocess: "preprocess",
   images: "image-review",
-  reconstruct: "reconstruct",
   filter: "filter",
   texture: "surface-texture",
-  fusion: "fusion",
   measure: "measure",
   preview: "volume",
   done: "confirm",
@@ -52,6 +51,21 @@ function $(selector) {
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) node.textContent = value;
+}
+
+function setPreviewImage(imageSelector, emptySelector, src = "") {
+  const image = $(imageSelector);
+  const empty = $(emptySelector);
+  if (!image) return;
+  if (src) {
+    image.src = src;
+    image.hidden = false;
+    if (empty) empty.hidden = true;
+  } else {
+    image.removeAttribute("src");
+    image.hidden = true;
+    if (empty) empty.hidden = false;
+  }
 }
 
 function addLog(message, level = "INFO") {
@@ -218,8 +232,8 @@ async function loadPointcloudViewer(plyUrl) {
     return true;
   } catch (error) {
     $(".pointcloud-box")?.classList.remove("viewer-ready");
-    setText("pointcloudHint", "点云查看加载失败，显示静态预览图");
-    addLog(`可旋转点云加载失败: ${error.message}`, "WARN");
+    setText("pointcloudHint", "点云模型读取失败");
+    addLog(`点云模型读取失败: ${error.message}`, "WARN");
     return false;
   }
 }
@@ -313,6 +327,8 @@ function uploadPointcloud(cloud) {
 function clearPointcloudViewer() {
   const viewer = state.viewer;
   $(".pointcloud-box")?.classList.remove("viewer-ready");
+  setText("pointcloudStatus", "后续建模结果展示区");
+  setText("pointcloudHint", "生成模型后可拖拽旋转，滚轮缩放");
   if (!viewer) return;
   viewer.count = 0;
   viewer.gl.clear(viewer.gl.COLOR_BUFFER_BIT | viewer.gl.DEPTH_BUFFER_BIT);
@@ -576,9 +592,9 @@ async function selectDataset() {
     const payload = await api("/api/select-dataset");
     if (payload.datasetDir) {
       $("#datasetDir").value = payload.datasetDir;
-      $("#colorDir").value = "";
-      $("#depthDir").value = "";
-      addLog(`已选择数据集: ${payload.datasetDir}`);
+      $("#colorDir").value = $("#colorDir").value || "rgb";
+      $("#depthDir").value = $("#depthDir").value || "multispectral";
+      addLog(`已选择样品文件夹: ${payload.datasetDir}`);
       setStepStatus("load-rgbd", "done");
       setText("shapeStepLabel", "数据集文件夹已选择");
       await loadDatasetImages();
@@ -606,7 +622,7 @@ async function uploadSelectedDataset(event) {
     button.disabled = true;
     button.textContent = "导入中...";
   }
-  setText("shapeStepLabel", "导入本地 RGB-D 数据集");
+  setText("shapeStepLabel", "导入本地样品文件夹");
   setStepStatus("load-rgbd", "running");
 
   try {
@@ -620,8 +636,8 @@ async function uploadSelectedDataset(event) {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
     $("#datasetDir").value = payload.datasetDir;
-    $("#colorDir").value = "";
-    $("#depthDir").value = "";
+    $("#colorDir").value = $("#colorDir").value || "rgb";
+    $("#depthDir").value = $("#depthDir").value || "multispectral";
     setStepStatus("load-rgbd", "done");
     setText("shapeStepLabel", "数据集已导入");
     addLog(`已导入 ${payload.fileCount} 个文件: ${payload.datasetDir}`);
@@ -654,7 +670,7 @@ async function loadDatasetImages() {
     if (payload.depthDir) $("#depthDir").value = payload.depthDir;
     renderDatasetImage();
     setStepStatus("image-review", state.imageBrowser.images.length ? "done" : "warning");
-    addLog(`图片浏览已加载 ${state.imageBrowser.images.length} 组 RGB-D 图片。`);
+    addLog(`图片浏览已加载 ${state.imageBrowser.images.length} 组样品图片。`);
   } catch (error) {
     state.imageBrowser.images = [];
     state.imageBrowser.index = 0;
@@ -669,19 +685,21 @@ function renderDatasetImage() {
   const color = $("#colorPreview");
   const depth = $("#depthPreview");
   if (!images.length) {
-    setText("imageBrowserCount", "当前数据集没有可浏览的 RGB-D 图片");
+    setPreviewImage("#colorPreview", "#colorPreviewEmpty");
+    setPreviewImage("#depthPreview", "#depthPreviewEmpty");
+    setText("imageBrowserCount", "暂无图片");
     setText("colorPreviewName", "彩色图");
-    setText("depthPreviewName", "深度图");
+    setText("depthPreviewName", "多光谱图");
     return;
   }
   const index = Math.max(0, Math.min(state.imageBrowser.index, images.length - 1));
   state.imageBrowser.index = index;
   const item = images[index];
-  if (color) color.src = `${item.color.url}&t=${Date.now()}`;
-  if (depth) depth.src = `${item.depth.url}&t=${Date.now()}`;
+  setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${item.color.url}&t=${Date.now()}`);
+  setPreviewImage("#depthPreview", "#depthPreviewEmpty", item.depth?.url ? `${item.depth.url}&t=${Date.now()}` : "");
   setText("imageBrowserCount", `${index + 1} / ${images.length}`);
   setText("colorPreviewName", item.color.name || "彩色图");
-  setText("depthPreviewName", item.depth.name || "深度图");
+  setText("depthPreviewName", item.depth?.name || "未提供多光谱图");
 }
 
 function stepDatasetImage(delta) {
@@ -694,6 +712,13 @@ function stepDatasetImage(delta) {
 async function runShapeAnalysis() {
   if (state.shapeJobId) {
     addLog("已有形态分析任务正在运行。", "WARN");
+    return;
+  }
+  const mode = $("#shapeMode")?.value || "morphology2d";
+  if (mode === "pointcloud3d") {
+    setText("shapeStepLabel", "三维点云建模为后续预留");
+    setStepStatus("volume", "warning");
+    addLog("点云建模需要深度来源、多角度标定重建或外部点云模型；当前两相机流程先执行普通形态测算。", "WARN");
     return;
   }
   const button = $("#runShapeAnalysis");
@@ -771,7 +796,7 @@ function renderShapeJob(job) {
 }
 
 function markCompletedShapeSteps(currentKey) {
-  const order = ["load-rgbd", "preprocess", "image-review", "reconstruct", "filter", "surface-texture", "fusion", "measure", "volume", "confirm"];
+  const order = ["load-rgbd", "preprocess", "image-review", "filter", "surface-texture", "measure", "volume", "confirm"];
   const currentIndex = order.indexOf(currentKey);
   order.forEach((key, index) => {
     if (index < currentIndex) setStepStatus(key, "done");
@@ -780,24 +805,26 @@ function markCompletedShapeSteps(currentKey) {
 
 function renderShapeResult(result) {
   if (!result) return;
-  setText("metricDepth", `${Number(result.averageDepthMm).toFixed(2)} mm`);
-  setText("metricDiameter", `${Number(result.diameterMm).toFixed(2)} mm`);
-  setText("metricHeight", `${Number(result.heightMm).toFixed(2)} mm`);
-  setText("metricVolume", `${Number(result.volumeMm3).toFixed(2)} mm³`);
-  setText("metricWeight", `${Number(result.weightG).toFixed(2)} g`);
+  const detail = result.details?.[0] || {};
+  const hasPointcloud = Number(result.pointCount || 0) > 0;
+  setText("metricDepth", detail.areaPixels ? `${detail.areaPixels} px` : "--");
+  setText("metricDiameter", detail.diameterPx ? `${Number(detail.diameterPx).toFixed(2)} px` : `${Number(result.diameterMm || 0).toFixed(2)} mm`);
+  setText("metricHeight", detail.heightPx ? `${Number(detail.heightPx).toFixed(2)} px` : `${Number(result.heightMm || 0).toFixed(2)} mm`);
+  setText("metricVolume", hasPointcloud ? `${Number(result.volumeMm3).toFixed(2)} mm³` : "待三维方案");
+  setText("metricWeight", hasPointcloud ? `${Number(result.weightG).toFixed(2)} g` : "待三维方案");
   renderTextureResult(result.texture);
-  setText("resultShape", `点数 ${result.pointCount} / 体积 ${Number(result.volumeMm3).toFixed(2)} mm³`);
-  setText("resultSummary", `形态分析成功，用时 ${result.elapsedSec}s，结果来自 Python 算法。`);
+  setText("resultShape", hasPointcloud ? `二维形态 + 点云数值 ${result.pointCount} 点` : "二维形态与表面分析完成");
+  setText("resultSummary", `形态分析成功，用时 ${result.elapsedSec}s。`);
   setStepStatus("confirm", "done");
-  $("#pointcloudPreview").src = `${result.previewUrl}?t=${Date.now()}`;
-  loadPointcloudViewer(result.plyUrl);
-  addLog(`形态分析成功：点数 ${result.pointCount}，体积 ${Number(result.volumeMm3).toFixed(2)} mm³。`);
+  if (result.inputPreviewUrl) setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${result.inputPreviewUrl}?t=${Date.now()}`);
+  if (result.plyUrl) loadPointcloudViewer(result.plyUrl);
+  addLog(hasPointcloud ? `形态分析成功：已读取点云模型 ${result.pointCount} 点。` : "形态分析成功：已完成 RGB 图像形态与表面分析。");
 }
 
 function resetShapeStatus() {
   clearPointcloudViewer();
   resetTextureResult();
-  ["load-rgbd", "preprocess", "image-review", "reconstruct", "filter", "surface-texture", "fusion", "measure", "volume", "confirm"].forEach((key) => {
+  ["load-rgbd", "preprocess", "image-review", "filter", "surface-texture", "measure", "volume", "confirm"].forEach((key) => {
     setStepStatus(key, "waiting");
   });
 }
@@ -806,20 +833,19 @@ function renderTextureResult(texture) {
   if (!texture || !texture.ok) {
     const message = texture?.message || "未获得 RGB 图片";
     setText("textureStatus", message);
-    setText("metricBloom", "--");
-    setText("metricBloomSide", "--");
-    setText("metricUniformity", "--");
-    setStepStatus("surface-texture", "warning");
-    return;
+  setText("metricBloom", "--");
+  setText("metricBloomSide", "--");
+  setText("metricUniformity", "--");
+  setPreviewImage("#texturePreview", "#texturePreviewEmpty");
+  setStepStatus("surface-texture", "warning");
+  return;
   }
   const bloom = `${Number(texture.bloomCoveragePercent).toFixed(2)}%`;
   setText("textureStatus", texture.message || "分析完成");
   setText("metricBloom", bloom);
   setText("metricBloomSide", bloom);
   setText("metricUniformity", `${Number(texture.colorUniformity).toFixed(1)}`);
-  if (texture.previewUrl && $("#texturePreview")) {
-    $("#texturePreview").src = `${texture.previewUrl}?t=${Date.now()}`;
-  }
+  setPreviewImage("#texturePreview", "#texturePreviewEmpty", texture.previewUrl ? `${texture.previewUrl}?t=${Date.now()}` : "");
   setStepStatus("surface-texture", "done");
 }
 
@@ -828,6 +854,32 @@ function resetTextureResult() {
   setText("metricBloom", "--");
   setText("metricBloomSide", "--");
   setText("metricUniformity", "--");
+  setPreviewImage("#texturePreview", "#texturePreviewEmpty");
+}
+
+function updateShapeMode(mode = $("#shapeMode")?.value || "morphology2d") {
+  state.shapeMode = mode;
+  const isPointcloud = mode === "pointcloud3d";
+  $("#pointcloudSection")?.classList.toggle("is-hidden", !isPointcloud);
+  if (isPointcloud) resizePointcloudCanvas();
+  setText(
+    "shapeModeExplain",
+    isPointcloud
+      ? "该入口用于后续多角度重建、深度相机或外部点云文件接入；当前硬件未提供深度信息，暂不直接生成三维模型。"
+      : "使用彩色图像提取样品轮廓、面积、水平宽度、垂直高度、颜色均匀度、果粉与纹理特征。"
+  );
+  const runButton = $("#runShapeAnalysis");
+  if (runButton && !state.shapeJobId) {
+    runButton.textContent = isPointcloud ? "点云建模待接入" : "开始形态分析";
+    runButton.disabled = isPointcloud;
+  }
+  if (isPointcloud) {
+    setText("shapeStepLabel", "三维建模入口已预留");
+    setStepStatus("volume", "warning");
+  } else {
+    setText("shapeStepLabel", "未开始");
+    setStepStatus("volume", "waiting");
+  }
 }
 
 async function cancelShapeAnalysis() {
@@ -846,6 +898,7 @@ function finishShapeJob() {
   state.shapeJobId = null;
   $("#runShapeAnalysis").disabled = false;
   $("#cancelShapeAnalysis").disabled = true;
+  updateShapeMode();
 }
 
 function exportReport() {
@@ -937,16 +990,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#applySugar")?.addEventListener("click", applySugar);
   $("#applyAcid")?.addEventListener("click", applyAcid);
   $("#evaluateTaste")?.addEventListener("click", () => updateTaste(true));
+  $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));
   $("#selectDataset")?.addEventListener("click", selectDataset);
   $("#datasetPicker")?.addEventListener("change", uploadSelectedDataset);
-  $("#builtinDataset")?.addEventListener("change", async (event) => {
-    $("#datasetDir").value = event.target.value;
-    $("#colorDir").value = "";
-    $("#depthDir").value = "";
-    setStepStatus("load-rgbd", "done");
-    addLog(`已切换内置示例: ${event.target.options[event.target.selectedIndex].text}`);
-    await loadDatasetImages();
-  });
   $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
   $("#nextImage")?.addEventListener("click", () => stepDatasetImage(1));
   $("#refreshImages")?.addEventListener("click", loadDatasetImages);
@@ -970,28 +1016,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   window.setInterval(updateClock, 1000);
   updateClock();
+  updateShapeMode();
   try {
     const status = await api("/api/status");
-    if (status.sampleDatasets && $("#builtinDataset")) {
-      const select = $("#builtinDataset");
-      select.innerHTML = "";
-      Object.values(status.sampleDatasets).forEach((item) => {
-        const option = document.createElement("option");
-        option.value = item.path;
-        option.textContent = item.label;
-        select.appendChild(option);
-      });
-    }
-    if (status.sampleDataset && $("#datasetDir")) {
-      $("#datasetDir").value = status.sampleDataset;
-      if ($("#builtinDataset")) $("#builtinDataset").value = status.sampleDataset;
-    }
-    await loadDatasetImages();
+    if ($("#datasetDir")) $("#datasetDir").value = status.sampleDataset || "";
+    if ($("#datasetDir")?.value) await loadDatasetImages();
     if (status.dependencies?.PIL && status.dependencies?.numpy) {
       addLog("Python 后端已连接，图像分析依赖可用。");
     }
     if (!status.dependencies?.cv2) {
-      addLog("未检测到 OpenCV：点云重建需要 cv2，请检查 opencv-python 是否已随程序打包。", "WARN");
+      addLog("未检测到 OpenCV：可选点云模型读取和部分图像处理可能受限。", "WARN");
     }
   } catch (error) {
     addLog(`后端未连接: ${error.message}`, "ERROR");

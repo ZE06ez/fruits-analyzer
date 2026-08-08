@@ -67,15 +67,13 @@
           </details>
           <details open>
             <summary>形态分析</summary>
-            <button class="task-step" data-view="shape" data-step-key="load-rgbd"><span></span>加载 RGB-D 数据</button>
+            <button class="task-step" data-view="shape" data-step-key="load-rgbd"><span></span>选择样品文件夹</button>
             <button class="task-step" data-view="shape" data-step-key="preprocess"><span></span>数据预处理</button>
             <button class="task-step" data-view="shape" data-step-key="image-review"><span></span>图片浏览</button>
-            <button class="task-step" data-view="shape" data-step-key="reconstruct"><span></span>点云重建</button>
-            <button class="task-step" data-view="shape" data-step-key="filter"><span></span>背景与噪声去除</button>
+            <button class="task-step" data-view="shape" data-step-key="filter"><span></span>样品区域提取</button>
             <button class="task-step" data-view="shape" data-step-key="surface-texture"><span></span>果粉与纹理分析</button>
-            <button class="task-step" data-view="shape" data-step-key="fusion"><span></span>点云配准与融合</button>
-            <button class="task-step" data-view="shape" data-step-key="measure"><span></span>尺寸测量</button>
-            <button class="task-step" data-view="shape" data-step-key="volume"><span></span>体积与重量估算</button>
+            <button class="task-step" data-view="shape" data-step-key="measure"><span></span>二维形态测量</button>
+            <button class="task-step" data-view="shape" data-step-key="volume"><span></span>三维建模预留</button>
             <button class="task-step" data-view="shape" data-step-key="confirm"><span></span>结果确认</button>
           </details>
           <details open>
@@ -201,32 +199,30 @@
 
           <article class="view-page" data-page="shape">
             <div class="panel-title">
-              <h3>样品形态分析 / Point Cloud Morphology</h3>
-              <span>RGB-D 数据、点云查看、图片浏览与表面纹理分析</span>
+              <h3>样品形态与表面分析 / Morphology & Surface</h3>
+              <span>当前使用 RGB 与多光谱图像进行二维形态测算</span>
             </div>
             <div class="shape-layout">
               <div class="shape-visuals">
-                <div class="pointcloud-box">
-                  <canvas id="pointcloudCanvas"></canvas>
-                  <img id="pointcloudPreview" src="assets/pointcloud_color.png" alt="点云重建预览" />
-                  <div class="pointcloud-hud">
-                    <span id="pointcloudHint">分析后可拖拽旋转点云，滚轮缩放</span>
-                    <button id="resetPointcloudView" type="button">重置视角</button>
-                  </div>
-                </div>
                 <div class="image-browser">
                   <div class="subpanel-title">
-                    <strong>图片浏览</strong>
-                    <span id="imageBrowserCount">未加载数据集图片</span>
+                    <strong>样品图片浏览</strong>
+                    <span id="imageBrowserCount">暂无图片</span>
                   </div>
                   <div class="image-pair">
                     <figure>
-                      <img id="colorPreview" src="assets/rgbd_input.png" alt="彩色图预览" />
+                      <div class="preview-frame">
+                        <img id="colorPreview" alt="彩色图预览" hidden />
+                        <span class="empty-preview" id="colorPreviewEmpty">暂无图片</span>
+                      </div>
                       <figcaption id="colorPreviewName">彩色图</figcaption>
                     </figure>
                     <figure>
-                      <img id="depthPreview" src="assets/pointcloud_shape.png" alt="深度图预览" />
-                      <figcaption id="depthPreviewName">深度图</figcaption>
+                      <div class="preview-frame">
+                        <img id="depthPreview" alt="多光谱图预览" hidden />
+                        <span class="empty-preview" id="depthPreviewEmpty">暂无图片</span>
+                      </div>
+                      <figcaption id="depthPreviewName">多光谱图</figcaption>
                     </figure>
                   </div>
                   <div class="browser-actions">
@@ -235,32 +231,46 @@
                     <button id="refreshImages" type="button">刷新图片</button>
                   </div>
                 </div>
+                <div class="pointcloud-section is-hidden" id="pointcloudSection">
+                  <div class="subpanel-title">
+                    <strong>三维点云模型</strong>
+                    <span id="pointcloudStatus">后续建模结果展示区</span>
+                  </div>
+                  <div class="pointcloud-box">
+                    <canvas id="pointcloudCanvas"></canvas>
+                    <div class="pointcloud-empty" id="pointcloudEmpty">暂无点云模型</div>
+                    <div class="pointcloud-hud">
+                      <span id="pointcloudHint">生成模型后可拖拽旋转，滚轮缩放</span>
+                      <button id="resetPointcloudView" type="button">重置视角</button>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="shape-tools">
-                <label for="colorDir">彩色图目录</label>
-                <input id="colorDir" placeholder="自动从数据集文件夹中查找 color/image 子目录" readonly />
-                <label for="depthDir">深度图目录</label>
-                <input id="depthDir" placeholder="自动从数据集文件夹中查找 depth 子目录" readonly />
-                <label for="builtinDataset">内置示例</label>
-                <select id="builtinDataset">
-                  <option value="sample_data/legacy_pointcloud_model">示例点云模型</option>
-                  <option value="sample_data/rgbd_sample_object">样品对象数据集</option>
-                  <option value="sample_data/rgbd_grape">原始 RGB-D 场景</option>
+                <label for="datasetDir">样品文件夹</label>
+                <input id="datasetDir" value="" placeholder="请选择本次拍摄的样品文件夹" readonly />
+                <label for="colorDir">RGB 图像目录名</label>
+                <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" />
+                <label for="depthDir">多光谱图像目录名</label>
+                <input id="depthDir" value="multispectral" placeholder="例如 multispectral、spectral" />
+                <label for="shapeMode">分析方式</label>
+                <select id="shapeMode">
+                  <option value="morphology2d">普通形态测算（当前可用）</option>
+                  <option value="pointcloud3d">点云建模（后续预留）</option>
                 </select>
-                <label for="datasetDir">RGB-D 数据集目录</label>
-                <input id="datasetDir" value="sample_data/legacy_pointcloud_model" readonly />
+                <p class="mode-explain" id="shapeModeExplain">使用彩色图像提取样品轮廓、面积、水平宽度、垂直高度、颜色均匀度、果粉与纹理特征。</p>
                 <div class="analysis-status">
                   <span id="shapeStepLabel">未开始</span>
                   <strong id="shapeElapsed">0.0s</strong>
                 </div>
                 <div class="progress-track shape-progress"><div id="shapeProgress"></div></div>
                 <div class="button-row">
-                  <button id="selectDataset">导入数据集文件夹</button>
+                  <button id="selectDataset">选择样品文件夹</button>
                   <button id="runShapeAnalysis">开始形态分析</button>
                   <button id="cancelShapeAnalysis" disabled>取消任务</button>
                   <input id="datasetPicker" type="file" webkitdirectory directory multiple hidden />
                 </div>
-                <p class="hint">当前为真实离线模式：点击“导入数据集文件夹”选择包含 color/image 与 depth 子目录的 RGB-D 数据集。</p>
+                <p class="hint">当前主流程建议样品文件夹包含 rgb 与 multispectral 子目录；三维点云建模需要后续增加深度来源、多角度重建或外部点云文件。</p>
                 <div class="texture-panel">
                   <div class="subpanel-title">
                     <strong>果粉与表面纹理</strong>
@@ -270,7 +280,10 @@
                     <div><span>果粉覆盖率</span><strong id="metricBloom">--</strong></div>
                     <div><span>颜色均匀度</span><strong id="metricUniformity">--</strong></div>
                   </div>
-                  <img id="texturePreview" src="assets/rgbd_input.png" alt="果粉与纹理分析预览" />
+                  <div class="texture-preview-frame">
+                    <img id="texturePreview" alt="果粉与纹理分析预览" hidden />
+                    <span class="empty-preview" id="texturePreviewEmpty">暂无分析图片</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -343,7 +356,7 @@
           </article>
           <article class="view-page reserved-page" data-page="reserved-2">
             <h3>预留功能 1.5</h3>
-            <p>后续可接入设备老化测试或异常报警。</p>
+            <p>后续可接入设备健康诊断或异常报警。</p>
           </article>
           <article class="view-page reserved-page" data-page="reserved-3">
             <h3>预留设置 3.3</h3>
@@ -382,12 +395,12 @@
         </section>
 
         <section class="result-card metrics-card">
-          <h2>点云形态指标</h2>
-          <div class="metric-row"><span>平均深度</span><strong id="metricDepth">--</strong></div>
-          <div class="metric-row"><span>平均直径</span><strong id="metricDiameter">--</strong></div>
-          <div class="metric-row"><span>平均高度</span><strong id="metricHeight">--</strong></div>
-          <div class="metric-row"><span>体积</span><strong id="metricVolume">--</strong></div>
-          <div class="metric-row"><span>估重</span><strong id="metricWeight">--</strong></div>
+          <h2>形态与表面指标</h2>
+          <div class="metric-row"><span>样品面积</span><strong id="metricDepth">--</strong></div>
+          <div class="metric-row"><span>水平宽度</span><strong id="metricDiameter">--</strong></div>
+          <div class="metric-row"><span>垂直高度</span><strong id="metricHeight">--</strong></div>
+          <div class="metric-row"><span>三维体积</span><strong id="metricVolume">待接入</strong></div>
+          <div class="metric-row"><span>重量估算</span><strong id="metricWeight">待接入</strong></div>
           <div class="metric-row"><span>果粉覆盖率</span><strong id="metricBloomSide">--</strong></div>
         </section>
 
@@ -407,7 +420,7 @@
       </div>
       <pre id="runLog">[INFO] 界面已载入，当前为离线调试模式。
 [INFO] 单片机、相机、光源、电机尚未接入真实通信。
-[INFO] 样品形态分析已加入点云预览与结果显示入口。</pre>
+[INFO] 当前形态分析以两相机二维测算为主，三维点云建模作为后续预留入口。</pre>
     </footer>
   </div>
 </body>

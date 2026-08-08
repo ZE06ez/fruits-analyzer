@@ -71,25 +71,8 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def default_sample_dataset(app_dir: Path) -> Path:
-    return app_dir / "sample_data" / "legacy_pointcloud_model"
-
-
-def builtin_sample_datasets(app_dir: Path) -> dict:
-    return {
-        "legacyPointcloud": {
-            "label": "示例点云模型",
-            "path": str(app_dir / "sample_data" / "legacy_pointcloud_model"),
-        },
-        "sampleObject": {
-            "label": "样品对象数据集",
-            "path": str(app_dir / "sample_data" / "rgbd_sample_object"),
-        },
-        "rawScene": {
-            "label": "原始 RGB-D 场景",
-            "path": str(app_dir / "sample_data" / "rgbd_grape"),
-        },
-    }
+def default_sample_dataset(app_dir: Path) -> str:
+    return ""
 
 
 def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore):
@@ -116,8 +99,8 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({
                     "ok": True,
                     "dependencies": dependencies,
-                    "sampleDataset": str(default_sample_dataset(app_dir)),
-                    "sampleDatasets": builtin_sample_datasets(app_dir),
+                    "sampleDataset": default_sample_dataset(app_dir),
+                    "sampleDatasets": {},
                 })
                 return
             if path == "/api/select-dataset":
@@ -168,7 +151,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
 
                 root = tk.Tk()
                 root.withdraw()
-                selected = filedialog.askdirectory(title="选择 RGB-D 数据集目录")
+                selected = filedialog.askdirectory(title="选择样品文件夹")
                 root.destroy()
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
@@ -182,13 +165,21 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             dataset_dir = params.get("datasetDir", [""])[0] or str(default_sample_dataset(app_dir))
             color_dir = params.get("colorDir", [""])[0] or None
             depth_dir = params.get("depthDir", [""])[0] or None
+            if not dataset_dir:
+                self.json_response({
+                    "ok": True,
+                    "colorDir": "",
+                    "depthDir": "",
+                    "images": [],
+                })
+                return
             try:
-                from pointcloud_service import AnalysisError, list_images, resolve_dataset_dirs
+                from pointcloud_service import AnalysisError, list_images, resolve_image_analysis_dirs
 
-                color_path, depth_path = resolve_dataset_dirs(resolve_user_path(dataset_dir, app_dir), color_dir, depth_dir)
+                color_path, depth_path = resolve_image_analysis_dirs(resolve_user_path(dataset_dir, app_dir), color_dir, depth_dir)
                 color_files = list_images(color_path)
-                depth_files = list_images(depth_path)
-                pair_count = min(len(color_files), len(depth_files), 60)
+                spectral_files = list_images(depth_path) if depth_path else []
+                pair_count = min(len(color_files), max(len(spectral_files), 1), 60)
 
                 def row(path: Path) -> dict:
                     return {
@@ -199,9 +190,13 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({
                     "ok": True,
                     "colorDir": str(color_path),
-                    "depthDir": str(depth_path),
+                    "depthDir": str(depth_path) if depth_path else "",
                     "images": [
-                        {"index": index, "color": row(color_files[index]), "depth": row(depth_files[index])}
+                        {
+                            "index": index,
+                            "color": row(color_files[index]),
+                            "depth": row(spectral_files[index % len(spectral_files)]) if spectral_files else None,
+                        }
                         for index in range(pair_count)
                     ],
                 })
@@ -231,7 +226,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
         def handle_upload_dataset(self) -> None:
             content_type = self.headers.get("Content-Type", "")
             if "multipart/form-data" not in content_type:
-                self.json_response({"ok": False, "error": "请选择 RGB-D 数据集文件夹。"}, status=400)
+                self.json_response({"ok": False, "error": "请选择样品图像文件夹。"}, status=400)
                 return
 
             try:
@@ -284,6 +279,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             dataset_dir = payload.get("datasetDir") or str(default_sample_dataset(app_dir))
             color_dir = payload.get("colorDir") or None
             depth_dir = payload.get("depthDir") or None
+            if not dataset_dir:
+                self.json_response({"ok": False, "error": "请先选择本次拍摄的样品文件夹。"}, status=400)
+                return
             density = _float(payload.get("densityGCm3"), 1.08)
             voxel = _float(payload.get("voxelSizeMm"), 2.0)
             max_pairs = int(_float(payload.get("maxPairs"), 10))
