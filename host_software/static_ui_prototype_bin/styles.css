@@ -537,6 +537,24 @@ label {
   gap: 10px;
 }
 
+.capture-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.capture-actions span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.capture-actions button {
+  min-height: 38px;
+  font-weight: 900;
+}
+
 .progress-track {
   height: 14px;
   margin: 16px 0 8px;
@@ -595,6 +613,99 @@ label {
   border-radius: 8px;
   padding: 12px;
   background: rgba(15, 23, 42, 0.44);
+}
+
+.data-source-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.source-option {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.58);
+  font-weight: 900;
+}
+
+.source-option input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--blue);
+}
+
+.source-option small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-option:has(input:checked) {
+  border-color: rgba(103, 232, 249, 0.48);
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.source-option.disabled {
+  opacity: 0.58;
+}
+
+.data-check-card {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.data-check-card strong {
+  color: var(--muted);
+}
+
+.data-check-card span,
+.data-check-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+.data-check-card[data-status="complete"] {
+  border-color: rgba(134, 239, 172, 0.42);
+  background: rgba(22, 101, 52, 0.14);
+}
+
+.data-check-card[data-status="complete"] strong {
+  color: var(--green);
+}
+
+.data-check-card[data-status="incomplete"],
+.data-check-card[data-status="invalid"],
+.data-check-card[data-status="missing"] {
+  border-color: rgba(253, 224, 71, 0.36);
+  background: rgba(120, 53, 15, 0.14);
+}
+
+.data-check-card[data-status="incomplete"] strong,
+.data-check-card[data-status="invalid"] strong,
+.data-check-card[data-status="missing"] strong {
+  color: var(--amber);
 }
 
 .pointcloud-section.is-hidden {
@@ -770,6 +881,110 @@ label {
 .texture-metrics strong {
   color: var(--green);
   font-size: 18px;
+}
+
+.prediction-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.prediction-card {
+  min-height: 230px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.prediction-main,
+.acid-results {
+  display: grid;
+  align-content: center;
+  gap: 14px;
+}
+
+.prediction-main > span,
+.acid-results span,
+.prediction-info-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prediction-main strong,
+.acid-results strong {
+  color: #f8fafc;
+  font-size: 42px;
+  line-height: 1;
+}
+
+.prediction-main small,
+.acid-results small {
+  color: var(--soft);
+  font-size: 16px;
+}
+
+.prediction-main p,
+.acid-results p {
+  margin: 0;
+  color: var(--soft);
+  font-weight: 800;
+}
+
+.prediction-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.prediction-card-title h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.prediction-card-title span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.feature-placeholder {
+  display: grid;
+  min-height: 172px;
+  place-items: center;
+  border: 1px dashed rgba(148, 163, 184, 0.36);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(2, 6, 23, 0.28);
+  font-weight: 900;
+}
+
+.prediction-info-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prediction-info-grid div {
+  min-height: 70px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.prediction-info-grid strong {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .taste-hero {
@@ -950,6 +1165,8 @@ pre {
   .settings-grid,
   .process-steps,
   .shape-layout,
+  .prediction-layout,
+  .prediction-info-grid,
   .results-panel {
     grid-template-columns: 1fr;
   }

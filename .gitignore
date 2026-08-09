@@ -17,6 +17,8 @@ __pycache__/
 # Local RGB-D datasets and point-cloud captures
 **/sample_data/*
 !**/sample_data/README.md
+**/Data/
+**/uploads/
 
 # Local/temp files
 临时文件/

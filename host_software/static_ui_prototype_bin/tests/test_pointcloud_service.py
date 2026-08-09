@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pointcloud_service import AnalysisError, analyze_rgbd_dataset
+from PIL import Image
+
+from pointcloud_service import AnalysisError, analyze_rgbd_dataset, inspect_sample_folder
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,13 +45,48 @@ class PointcloudServiceTests(unittest.TestCase):
     def test_chinese_and_space_paths_are_supported(self):
         if not SAMPLE.exists():
             self.skipTest("local RGB sample dataset is not committed")
-        temp_root = Path(tempfile.mkdtemp(prefix="水果 数据 "))
-        dataset = temp_root / "样品 数据"
+        temp_root = Path(tempfile.mkdtemp(prefix="fruit data "))
+        dataset = temp_root / "sample data"
         shutil.copytree(SAMPLE, dataset)
-        out_dir = temp_root / "输出 结果"
+        out_dir = temp_root / "analysis output"
         result = analyze_rgbd_dataset(dataset, out_dir)
         self.assertTrue(result["ok"])
         self.assertTrue((out_dir / "input_preview.png").exists())
+
+    def test_inspect_sample_folder_uses_enabled_bands_not_equal_counts(self):
+        dataset = Path(tempfile.mkdtemp(prefix="fta_capture_check_"))
+        rgb = dataset / "rgb"
+        spectral = dataset / "multispectral"
+        rgb.mkdir()
+        spectral.mkdir()
+        for index in range(2):
+            Image.new("RGB", (12, 12), (90, 120, 60)).save(rgb / f"rgb_{index}.png")
+        for band in (450, 560, 670):
+            Image.new("L", (12, 12), 128).save(spectral / f"{band}.png")
+
+        report = inspect_sample_folder(dataset, "rgb", "multispectral")
+
+        self.assertTrue(report["valid"])
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["rgbCount"], 2)
+        self.assertEqual(report["spectralCount"], 3)
+        self.assertEqual(report["expectedBands"], [450, 560, 670])
+        self.assertEqual(report["missingBands"], [])
+
+    def test_inspect_sample_folder_detects_missing_enabled_band(self):
+        dataset = Path(tempfile.mkdtemp(prefix="fta_capture_missing_band_"))
+        rgb = dataset / "rgb"
+        spectral = dataset / "multispectral"
+        rgb.mkdir()
+        spectral.mkdir()
+        Image.new("RGB", (12, 12), (90, 120, 60)).save(rgb / "rgb_001.png")
+        Image.new("L", (12, 12), 128).save(spectral / "450.png")
+
+        report = inspect_sample_folder(dataset, "rgb", "multispectral")
+
+        self.assertTrue(report["valid"])
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["missingBands"], [560, 670])
 
 
 if __name__ == "__main__":

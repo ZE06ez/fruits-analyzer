@@ -1,0 +1,55 @@
+{
+  "profile": "development_offline_simulation",
+  "description": "Development filter profile for offline software flow checks. Replace it with the final measured filter wheel configuration before formal model training.",
+  "filters": [
+    {
+      "filter_position": 1,
+      "wavelength_nm": 450,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": true
+    },
+    {
+      "filter_position": 2,
+      "wavelength_nm": 560,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": true
+    },
+    {
+      "filter_position": 3,
+      "wavelength_nm": 670,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": true
+    },
+    {
+      "filter_position": 4,
+      "wavelength_nm": 730,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": false
+    },
+    {
+      "filter_position": 5,
+      "wavelength_nm": 850,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": false
+    },
+    {
+      "filter_position": 6,
+      "wavelength_nm": 940,
+      "bandwidth_nm": 10,
+      "exposure_ms": null,
+      "gain": null,
+      "enabled": false
+    }
+  ]
+}
+

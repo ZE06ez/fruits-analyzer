@@ -195,6 +195,10 @@
             </div>
             <div class="progress-track"><div id="captureProgress"></div></div>
             <p id="captureProgressText">采集进度: 0 / 12</p>
+            <div class="capture-actions">
+              <span id="captureSaveStatus">等待采集完成</span>
+              <button id="enterAnalysisFromCapture" type="button" disabled>进入分析</button>
+            </div>
           </article>
 
           <article class="view-page" data-page="shape">
@@ -247,12 +251,29 @@
                 </div>
               </div>
               <div class="shape-tools">
+                <label>数据来源</label>
+                <div class="data-source-control">
+                  <label class="source-option disabled" id="currentCaptureOption">
+                    <input type="radio" name="dataSource" id="sourceCurrent" value="current" disabled />
+                    <span>本次拍摄</span>
+                    <small id="currentCaptureHint">暂无本次拍摄数据</small>
+                  </label>
+                  <label class="source-option">
+                    <input type="radio" name="dataSource" id="sourceOther" value="other" checked />
+                    <span>其他文件夹</span>
+                  </label>
+                </div>
                 <label for="datasetDir">样品文件夹</label>
                 <input id="datasetDir" value="" placeholder="请选择本次拍摄的样品文件夹" readonly />
                 <label for="colorDir">RGB 图像目录名</label>
                 <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" />
                 <label for="depthDir">多光谱图像目录名</label>
                 <input id="depthDir" value="multispectral" placeholder="例如 multispectral、spectral" />
+                <div class="data-check-card" id="dataCheckCard" data-status="empty">
+                  <strong id="dataCheckTitle">暂无数据目录</strong>
+                  <span id="dataCheckSummary">请选择本次拍摄或其他文件夹。</span>
+                  <p id="dataCheckMissing"></p>
+                </div>
                 <label for="shapeMode">分析方式</label>
                 <select id="shapeMode">
                   <option value="morphology2d">普通形态测算（当前可用）</option>
@@ -265,7 +286,7 @@
                 </div>
                 <div class="progress-track shape-progress"><div id="shapeProgress"></div></div>
                 <div class="button-row">
-                  <button id="selectDataset">选择样品文件夹</button>
+                  <button id="selectDataset">选择其他文件夹</button>
                   <button id="runShapeAnalysis">开始形态分析</button>
                   <button id="cancelShapeAnalysis" disabled>取消任务</button>
                   <input id="datasetPicker" type="file" webkitdirectory directory multiple hidden />
@@ -292,23 +313,75 @@
           <article class="view-page" data-page="sugar">
             <div class="panel-title">
               <h3>样品糖度分析 / SSC Analysis</h3>
-              <span>模型预测待接入</span>
+              <span id="sscModelStatus">模型预测待接入</span>
             </div>
-            <label for="sscInput">糖度 SSC 数据，用逗号分隔</label>
-            <textarea id="sscInput" rows="3" placeholder="10.8, 11.2, 10.9"></textarea>
-            <button class="test-button" id="applySugar">计算糖度</button>
+            <div class="prediction-layout">
+              <section class="prediction-card prediction-main">
+                <span>SSC 预测值</span>
+                <strong><b id="sscValue">--</b> <small>°Brix</small></strong>
+                <p id="sscMessage">暂无预测结果</p>
+                <button class="test-button" id="startSscAnalysis">开始糖度分析</button>
+              </section>
+              <section class="prediction-card">
+                <div class="prediction-card-title">
+                  <h4>光谱 / 特征分析图</h4>
+                  <span>待模型输出</span>
+                </div>
+                <div class="feature-placeholder" id="sscFeaturePlaceholder">暂无分析数据</div>
+              </section>
+            </div>
+            <div class="prediction-info-grid">
+              <div><span>当前样品</span><strong id="sscSampleId">--</strong></div>
+              <div><span>当前样品路径</span><strong id="sscSamplePath">未加载样品数据</strong></div>
+              <div><span>RGB 图像数量</span><strong id="sscRgbCount">0</strong></div>
+              <div><span>多光谱图像数量</span><strong id="sscSpectralCount">0</strong></div>
+              <div><span>数据完整状态</span><strong id="sscDataStatus">待检查</strong></div>
+              <div><span>预测置信度</span><strong id="sscConfidence">--</strong></div>
+              <div><span>有效样本数量</span><strong id="sscSampleCount">0</strong></div>
+              <div><span>分析耗时</span><strong id="sscElapsed">--</strong></div>
+              <div><span>模型名称</span><strong id="sscModelName">SSC 预测模型</strong></div>
+              <div><span>模型版本</span><strong id="sscModelVersion">未接入</strong></div>
+            </div>
           </article>
 
           <article class="view-page" data-page="acid">
             <div class="panel-title">
               <h3>样品酸度分析 / TA Analysis</h3>
-              <span>模型预测待接入</span>
+              <span id="acidModelStatus">模型预测待接入</span>
             </div>
-            <label for="taInput">酸度 TA</label>
-            <input id="taInput" placeholder="0.45" />
-            <label for="phInput">pH</label>
-            <input id="phInput" placeholder="3.62" />
-            <button class="test-button" id="applyAcid">写入酸度结果</button>
+            <div class="prediction-layout">
+              <section class="prediction-card acid-results">
+                <div>
+                  <span>可滴定酸 TA</span>
+                  <strong><b id="taValue">--</b> <small>%</small></strong>
+                </div>
+                <div>
+                  <span>pH</span>
+                  <strong><b id="phValue">--</b></strong>
+                </div>
+                <p id="acidMessage">暂无预测结果</p>
+                <button class="test-button" id="startAcidAnalysis">开始酸度分析</button>
+              </section>
+              <section class="prediction-card">
+                <div class="prediction-card-title">
+                  <h4>光谱 / 特征分析图</h4>
+                  <span>待模型输出</span>
+                </div>
+                <div class="feature-placeholder" id="acidFeaturePlaceholder">暂无分析数据</div>
+              </section>
+            </div>
+            <div class="prediction-info-grid">
+              <div><span>当前样品</span><strong id="acidSampleId">--</strong></div>
+              <div><span>当前样品路径</span><strong id="acidSamplePath">未加载样品数据</strong></div>
+              <div><span>RGB 图像数量</span><strong id="acidRgbCount">0</strong></div>
+              <div><span>多光谱图像数量</span><strong id="acidSpectralCount">0</strong></div>
+              <div><span>数据完整状态</span><strong id="acidDataStatus">待检查</strong></div>
+              <div><span>预测置信度</span><strong id="acidConfidence">--</strong></div>
+              <div><span>有效数据数量</span><strong id="acidSampleCount">0</strong></div>
+              <div><span>分析耗时</span><strong id="acidElapsed">--</strong></div>
+              <div><span>模型名称</span><strong id="acidModelName">TA / pH 预测模型</strong></div>
+              <div><span>模型版本</span><strong id="acidModelVersion">未接入</strong></div>
+            </div>
           </article>
 
           <article class="view-page" data-page="taste">
