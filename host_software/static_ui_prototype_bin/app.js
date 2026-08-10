@@ -9,6 +9,27 @@ const state = {
   shapeTimer: null,
   shapeStartedAt: null,
   shapeMode: "morphology2d",
+  currentCaptureDir: "",
+  currentCaptureValid: false,
+  analysisDataDir: "",
+  dataSource: "other",
+  captureCompleting: false,
+  sampleSession: {
+    sampleId: "",
+    analysisDataDir: "",
+    rgbFiles: [],
+    multispectralFiles: [],
+    captureTime: "",
+    sscResult: null,
+    taResult: null,
+    phResult: null,
+  },
+  dataCheck: {
+    status: "empty",
+    rgbCount: 0,
+    spectralCount: 0,
+    pairCount: 0,
+  },
   viewer: null,
   imageBrowser: {
     images: [],
@@ -74,13 +95,6 @@ function addLog(message, level = "INFO") {
   const stamp = new Date().toTimeString().slice(0, 8);
   log.textContent += `\n[${stamp}] [${level}] ${message}`;
   log.scrollTop = log.scrollHeight;
-}
-
-function parseNumbers(value) {
-  return value
-    .split(/[,，\s]+/)
-    .map((item) => Number(item.trim()))
-    .filter((item) => Number.isFinite(item));
 }
 
 async function api(path, options = {}) {
@@ -521,7 +535,7 @@ function runDeviceTest(type) {
   addLog(item.log);
 }
 
-function updateCaptureProgress(step) {
+async function updateCaptureProgress(step) {
   state.captureStep = Math.max(state.captureStep, step);
   const percent = Math.min(100, state.captureStep * 25);
   const progress = $("#captureProgress");
@@ -529,48 +543,222 @@ function updateCaptureProgress(step) {
   setText("captureProgressText", `采集进度: ${Math.min(12, state.captureStep * 3)} / 12`);
   ["sample", "dark", "white", "rgb", "spectral", "integrity"].slice(0, state.captureStep + 1).forEach((key) => setStepStatus(key, "done"));
   addLog(`样品采集步骤 ${step} 已完成（离线模拟）。`);
+  if (step >= 4) {
+    await completeCurrentCapture();
+  }
 }
 
-function applySugar() {
-  const values = parseNumbers($("#sscInput")?.value || "");
-  if (!values.length) {
-    addLog("未输入有效糖度数据。", "WARN");
+async function completeCurrentCapture() {
+  if (state.captureCompleting) return;
+  state.captureCompleting = true;
+  const button = $("#enterAnalysisFromCapture");
+  try {
+    setText("captureSaveStatus", "正在保存本次拍摄数据...");
+    const payload = await api("/api/complete-capture", {
+      method: "POST",
+      body: JSON.stringify({ sampleId: $("#sampleId")?.value || "" }),
+    });
+    state.currentCaptureDir = payload.currentCaptureDir || "";
+    state.currentCaptureValid = Boolean(state.currentCaptureDir);
+    state.analysisDataDir = payload.analysisDataDir || state.currentCaptureDir;
+    setText("captureSaveStatus", state.currentCaptureValid ? `本次拍摄已保存: ${state.currentCaptureDir}` : "本次拍摄数据未生成");
+    if (button) button.disabled = !state.currentCaptureValid;
+    updateCurrentCaptureControls();
+    addLog(`本次拍摄目录已写入: ${state.currentCaptureDir}`);
+    if (state.currentCaptureValid) {
+      try {
+        await loadSampleFolder(state.currentCaptureDir, { source: "current" });
+      } catch (loadError) {
+        setText("captureSaveStatus", `本次拍摄已保存，但自动加载失败: ${state.currentCaptureDir}`);
+        addLog(loadError.message || "本次拍摄目录自动加载失败。", "ERROR");
+      }
+    }
+  } catch (error) {
+    state.currentCaptureValid = false;
+    setText("captureSaveStatus", "本次拍摄保存失败");
+    if (button) button.disabled = true;
+    updateCurrentCaptureControls();
+    addLog(error.message || "本次拍摄保存失败。", "ERROR");
+  } finally {
+    state.captureCompleting = false;
+  }
+}
+
+async function enterAnalysisFromCapture() {
+  if (!state.currentCaptureValid || !state.currentCaptureDir) {
+    await completeCurrentCapture();
+  }
+  if (!state.currentCaptureValid || !state.currentCaptureDir) {
+    addLog("没有可进入分析的本次拍摄数据。", "WARN");
+    return;
+  }
+  switchView("shape", "load-rgbd");
+  await loadSampleFolder(state.currentCaptureDir, { source: "current" });
+}
+
+function qualityPayload() {
+  return {
+    datasetDir: state.analysisDataDir,
+    colorDir: $("#colorDir")?.value || "rgb",
+    depthDir: $("#depthDir")?.value || "multispectral",
+    sampleId: $("#sampleId")?.value || "",
+  };
+}
+
+function updateSampleSessionFromReport(report = {}) {
+  state.dataCheck = {
+    status: report.status || "empty",
+    rgbCount: Number(report.rgbCount || 0),
+    spectralCount: Number(report.spectralCount || 0),
+    pairCount: Number(report.pairCount || 0),
+  };
+  state.sampleSession.sampleId = $("#sampleId")?.value || "--";
+  state.sampleSession.analysisDataDir = state.analysisDataDir || report.datasetDir || "";
+  renderQualitySampleSummary();
+}
+
+function updateSampleSessionFromImages() {
+  state.sampleSession.rgbFiles = state.imageBrowser.images
+    .map((item) => item.color?.name)
+    .filter(Boolean);
+  state.sampleSession.multispectralFiles = state.imageBrowser.images
+    .map((item) => item.depth?.name)
+    .filter(Boolean);
+  renderQualitySampleSummary();
+}
+
+function applyBackendSampleSession(sample = {}) {
+  state.sampleSession = {
+    ...state.sampleSession,
+    sampleId: sample.sample_id || state.sampleSession.sampleId || $("#sampleId")?.value || "--",
+    analysisDataDir: sample.analysis_data_dir || state.analysisDataDir || "",
+    rgbFiles: Array.isArray(sample.rgb_files) ? sample.rgb_files : state.sampleSession.rgbFiles,
+    multispectralFiles: Array.isArray(sample.multispectral_files) ? sample.multispectral_files : state.sampleSession.multispectralFiles,
+    captureTime: sample.capture_time || state.sampleSession.captureTime || "",
+    sscResult: sample.ssc_result || state.sampleSession.sscResult,
+    taResult: sample.ta_result || state.sampleSession.taResult,
+    phResult: sample.ph_result || state.sampleSession.phResult,
+  };
+  renderQualitySampleSummary();
+}
+
+function renderQualitySampleSummary() {
+  const sampleId = state.sampleSession.sampleId || $("#sampleId")?.value || "--";
+  const dir = state.sampleSession.analysisDataDir || state.analysisDataDir || "未加载样品数据";
+  const rgbCount = state.dataCheck.rgbCount || state.sampleSession.rgbFiles.length || 0;
+  const spectralCount = state.dataCheck.spectralCount || state.sampleSession.multispectralFiles.length || 0;
+  const pairCount = state.dataCheck.pairCount || Math.min(rgbCount, spectralCount);
+  const dataStatus = state.dataCheck.status === "complete"
+    ? "完整"
+    : state.dataCheck.status === "incomplete"
+      ? "不完整"
+      : state.analysisDataDir
+        ? "待检查"
+        : "未加载";
+
+  ["ssc", "acid"].forEach((prefix) => {
+    setText(`${prefix}SampleId`, sampleId);
+    setText(`${prefix}SamplePath`, dir);
+    setText(`${prefix}RgbCount`, rgbCount);
+    setText(`${prefix}SpectralCount`, spectralCount);
+    setText(`${prefix}DataStatus`, pairCount ? dataStatus : "未加载");
+    setText(`${prefix}SampleCount`, pairCount);
+  });
+}
+
+function renderSscResult(result = {}) {
+  const hasValue = Number.isFinite(result.value);
+  state.ssc = hasValue ? Number(result.value) : null;
+  setText("sscValue", hasValue ? Number(result.value).toFixed(2) : "--");
+  setText("resultSsc", hasValue ? `${Number(result.value).toFixed(2)} °Brix` : "--");
+  setText("sscConfidence", Number.isFinite(result.confidence) ? `${Math.round(result.confidence * 100)}%` : "--");
+  setText("sscElapsed", Number.isFinite(result.elapsed_time) ? `${result.elapsed_time}s` : "--");
+  setText("sscModelName", result.model_name || "SSC 预测模型");
+  setText("sscModelVersion", result.model_version || "未接入");
+  setText("sscModelStatus", result.status === "ok" ? "预测完成" : "模型预测待接入");
+  setText("sscMessage", result.error_message || (hasValue ? "预测完成" : "暂无预测结果"));
+}
+
+function renderAcidResult(taResult = {}, phResult = {}) {
+  const hasTa = Number.isFinite(taResult.value);
+  const hasPh = Number.isFinite(phResult.value);
+  state.ta = hasTa ? Number(taResult.value) : null;
+  state.ph = hasPh ? Number(phResult.value) : null;
+  setText("taValue", hasTa ? Number(taResult.value).toFixed(2) : "--");
+  setText("phValue", hasPh ? Number(phResult.value).toFixed(2) : "--");
+  setText("resultTa", hasTa ? `${Number(taResult.value).toFixed(2)} %` : "--");
+  setText("resultPh", hasPh ? Number(phResult.value).toFixed(2) : "--");
+  setText("acidConfidence", Number.isFinite(taResult.confidence) ? `${Math.round(taResult.confidence * 100)}%` : "--");
+  setText("acidElapsed", Number.isFinite(taResult.elapsed_time) ? `${taResult.elapsed_time}s` : "--");
+  setText("acidModelName", taResult.model_name || "TA / pH 预测模型");
+  setText("acidModelVersion", taResult.model_version || phResult.model_version || "未接入");
+  setText("acidModelStatus", taResult.status === "ok" || phResult.status === "ok" ? "预测完成" : "模型预测待接入");
+  setText("acidMessage", taResult.error_message || phResult.error_message || (hasTa || hasPh ? "预测完成" : "暂无预测结果"));
+}
+
+async function runSscAnalysis() {
+  if (!state.analysisDataDir) {
+    addLog("请先在形态分析页面加载当前样品数据。", "WARN");
     setStepStatus("sugar", "warning");
+    renderQualitySampleSummary();
     return;
   }
-  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
-  state.ssc = avg;
-  setText("resultSsc", `${avg.toFixed(2)} °Brix`);
-  setText("resultSampleName", $("#sampleId")?.value || "--");
-  setStepStatus("sugar", "done");
-  addLog(`糖度分析完成：平均 SSC ${avg.toFixed(2)} °Brix。`);
-  updateTaste(false);
+  const button = $("#startSscAnalysis");
+  if (button) button.disabled = true;
+  try {
+    setText("sscModelStatus", "正在检查样品数据");
+    const payload = await api("/api/predict-ssc", {
+      method: "POST",
+      body: JSON.stringify(qualityPayload()),
+    });
+    if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
+    if (payload.sample) applyBackendSampleSession(payload.sample);
+    renderSscResult(payload.result || {});
+    setStepStatus("sugar", payload.result?.status === "ok" ? "done" : "warning");
+    addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", payload.result?.status === "ok" ? "INFO" : "WARN");
+  } catch (error) {
+    setText("sscModelStatus", "预测失败");
+    setText("sscMessage", error.message || "SSC 预测失败");
+    setStepStatus("sugar", "failed");
+    addLog(error.message || "SSC 预测失败。", "ERROR");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
-function applyAcid() {
-  const ta = Number($("#taInput")?.value);
-  const ph = Number($("#phInput")?.value);
-  if (Number.isFinite(ta)) {
-    state.ta = ta;
-    setText("resultTa", `${ta.toFixed(2)} %`);
-  }
-  if (Number.isFinite(ph)) {
-    state.ph = ph;
-    setText("resultPh", ph.toFixed(2));
-  }
-  if (!Number.isFinite(ta) && !Number.isFinite(ph)) {
-    addLog("未输入有效酸度或 pH 数据。", "WARN");
+async function runAcidAnalysis() {
+  if (!state.analysisDataDir) {
+    addLog("请先在形态分析页面加载当前样品数据。", "WARN");
     setStepStatus("acid", "warning");
+    renderQualitySampleSummary();
     return;
   }
-  setStepStatus("acid", "done");
-  addLog("酸度分析结果已写入。");
-  updateTaste(false);
+  const button = $("#startAcidAnalysis");
+  if (button) button.disabled = true;
+  try {
+    setText("acidModelStatus", "正在检查样品数据");
+    const payload = await api("/api/predict-acid", {
+      method: "POST",
+      body: JSON.stringify(qualityPayload()),
+    });
+    if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
+    if (payload.sample) applyBackendSampleSession(payload.sample);
+    renderAcidResult(payload.taResult || {}, payload.phResult || {});
+    setStepStatus("acid", payload.taResult?.status === "ok" || payload.phResult?.status === "ok" ? "done" : "warning");
+    addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", payload.taResult?.status === "ok" ? "INFO" : "WARN");
+  } catch (error) {
+    setText("acidModelStatus", "预测失败");
+    setText("acidMessage", error.message || "酸度预测失败");
+    setStepStatus("acid", "failed");
+    addLog(error.message || "酸度预测失败。", "ERROR");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function updateTaste(announce = true) {
   if (!Number.isFinite(state.ssc) || !Number.isFinite(state.ta) || state.ta <= 0) {
-    if (announce) addLog("口感分析需要先输入糖度和酸度。", "WARN");
+    if (announce) addLog("口感分析需要等待糖度与酸度模型预测结果。", "WARN");
     return;
   }
   const ratio = state.ssc / state.ta;
@@ -588,16 +776,11 @@ function updateTaste(announce = true) {
 
 async function selectDataset() {
   try {
-    setText("shapeStepLabel", "打开数据集文件夹选择器");
+    setDataSource("other");
+    setText("shapeStepLabel", "打开其他文件夹选择器");
     const payload = await api("/api/select-dataset");
     if (payload.datasetDir) {
-      $("#datasetDir").value = payload.datasetDir;
-      $("#colorDir").value = $("#colorDir").value || "rgb";
-      $("#depthDir").value = $("#depthDir").value || "multispectral";
-      addLog(`已选择样品文件夹: ${payload.datasetDir}`);
-      setStepStatus("load-rgbd", "done");
-      setText("shapeStepLabel", "数据集文件夹已选择");
-      await loadDatasetImages();
+      await loadSampleFolder(payload.datasetDir, { source: "other" });
     }
   } catch (error) {
     addLog(error.message || "用户取消选择数据集。", "WARN");
@@ -635,13 +818,10 @@ async function uploadSelectedDataset(event) {
     if (!response.ok || payload.ok === false) {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
-    $("#datasetDir").value = payload.datasetDir;
-    $("#colorDir").value = $("#colorDir").value || "rgb";
-    $("#depthDir").value = $("#depthDir").value || "multispectral";
-    setStepStatus("load-rgbd", "done");
+    setDataSource("other");
+    await loadSampleFolder(payload.datasetDir, { source: "other" });
     setText("shapeStepLabel", "数据集已导入");
     addLog(`已导入 ${payload.fileCount} 个文件: ${payload.datasetDir}`);
-    await loadDatasetImages();
   } catch (error) {
     setStepStatus("load-rgbd", "failed");
     setText("shapeStepLabel", "数据集导入失败");
@@ -654,9 +834,137 @@ async function uploadSelectedDataset(event) {
   }
 }
 
-async function loadDatasetImages() {
-  const datasetDir = $("#datasetDir")?.value || "";
-  if (!datasetDir) return;
+function setDataSource(source) {
+  state.dataSource = source;
+  if ($("#sourceCurrent")) $("#sourceCurrent").checked = source === "current";
+  if ($("#sourceOther")) $("#sourceOther").checked = source !== "current";
+}
+
+function updateCurrentCaptureControls() {
+  const current = $("#sourceCurrent");
+  const option = $("#currentCaptureOption");
+  if (current) current.disabled = !state.currentCaptureValid;
+  option?.classList.toggle("disabled", !state.currentCaptureValid);
+  setText("currentCaptureHint", state.currentCaptureValid ? state.currentCaptureDir : "暂无本次拍摄数据");
+}
+
+async function handleDataSourceChange(source) {
+  setDataSource(source);
+  if (source === "current") {
+    if (!state.currentCaptureValid || !state.currentCaptureDir) {
+      const report = {
+        status: "missing",
+        message: "本次采集目录已不存在，请重新采集或选择其他文件夹。",
+        rgbCount: 0,
+        spectralCount: 0,
+        pairCount: 0,
+        missing: ["本次采集目录已不存在，请重新采集或选择其他文件夹。"],
+      };
+      renderDataCheck(report);
+      updateSampleSessionFromReport(report);
+      addLog("暂无可用本次拍摄数据。", "WARN");
+      return;
+    }
+    await loadSampleFolder(state.currentCaptureDir, { source: "current" });
+  } else {
+    const report = {
+      status: state.analysisDataDir ? "empty" : "empty",
+      message: state.analysisDataDir ? "已切换为其他文件夹来源。" : "请选择其他文件夹。",
+      rgbCount: 0,
+      spectralCount: 0,
+      pairCount: 0,
+      missing: [],
+    };
+    renderDataCheck(report);
+    updateSampleSessionFromReport(report);
+  }
+}
+
+async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) {
+  const target = datasetDir || "";
+  state.analysisDataDir = target;
+  setDataSource(source);
+  if ($("#datasetDir")) $("#datasetDir").value = target;
+  $("#colorDir").value = $("#colorDir").value || "rgb";
+  $("#depthDir").value = $("#depthDir").value || "multispectral";
+
+  if (!target) {
+    state.imageBrowser.images = [];
+    state.imageBrowser.index = 0;
+    state.sampleSession.analysisDataDir = "";
+    state.sampleSession.rgbFiles = [];
+    state.sampleSession.multispectralFiles = [];
+    renderDatasetImage();
+    const emptyReport = {
+      status: "empty",
+      message: "请选择本次拍摄或其他文件夹。",
+      rgbCount: 0,
+      spectralCount: 0,
+      pairCount: 0,
+      missing: [],
+    };
+    renderDataCheck(emptyReport);
+    updateSampleSessionFromReport(emptyReport);
+    return;
+  }
+
+  const query = new URLSearchParams({
+    datasetDir: target,
+    colorDir: $("#colorDir")?.value || "",
+    depthDir: $("#depthDir")?.value || "",
+    source,
+  });
+  const report = await api(`/api/sample-folder?${query.toString()}`);
+  renderDataCheck(report);
+  updateSampleSessionFromReport(report);
+  if (source === "current" && report.status === "missing") {
+    state.currentCaptureDir = "";
+    state.currentCaptureValid = false;
+    updateCurrentCaptureControls();
+  }
+  if (report.colorDir) $("#colorDir").value = report.colorDir;
+  if (report.depthDir) $("#depthDir").value = report.depthDir;
+  if (report.valid || Number(report.rgbCount || 0) > 0) {
+    await loadDatasetImages(target);
+    setStepStatus("load-rgbd", report.valid ? "done" : "warning");
+    setText("shapeStepLabel", report.message || "数据目录已检查");
+  } else {
+    state.imageBrowser.images = [];
+    state.imageBrowser.index = 0;
+    state.sampleSession.rgbFiles = [];
+    state.sampleSession.multispectralFiles = [];
+    renderDatasetImage();
+    updateSampleSessionFromImages();
+    setStepStatus("load-rgbd", "warning");
+    setText("shapeStepLabel", report.message || "数据目录不可用");
+  }
+}
+
+function renderDataCheck(report = {}) {
+  const status = report.status || "empty";
+  const complete = status === "complete";
+  const card = $("#dataCheckCard");
+  if (card) card.dataset.status = status;
+  setText("dataCheckTitle", complete ? "✓ 数据目录有效" : status === "empty" ? "暂无数据目录" : "⚠ 数据不完整");
+  setText(
+    "dataCheckSummary",
+    `RGB：${Number(report.rgbCount || 0)} 张 · 多光谱：${Number(report.spectralCount || 0)} 张 · 有效配对：${Number(report.pairCount || 0)} 组\n数据状态：${complete ? "完整" : (report.message || "待检查")}`
+  );
+  const missing = Array.isArray(report.missing) ? report.missing.filter(Boolean) : [];
+  const bad = Array.isArray(report.badImages) ? report.badImages.filter(Boolean) : [];
+  const lines = [];
+  if (missing.length) lines.push(`缺失数据：${missing.join("；")}`);
+  if (bad.length) lines.push(`无法读取：${bad.slice(0, 6).join("，")}${bad.length > 6 ? "..." : ""}`);
+  setText("dataCheckMissing", lines.join("\n"));
+}
+
+async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datasetDir")?.value || "") {
+  if (!datasetDir) {
+    state.imageBrowser.images = [];
+    state.imageBrowser.index = 0;
+    renderDatasetImage();
+    return;
+  }
   const query = new URLSearchParams({
     datasetDir,
     colorDir: $("#colorDir")?.value || "",
@@ -669,12 +977,14 @@ async function loadDatasetImages() {
     if (payload.colorDir) $("#colorDir").value = payload.colorDir;
     if (payload.depthDir) $("#depthDir").value = payload.depthDir;
     renderDatasetImage();
+    updateSampleSessionFromImages();
     setStepStatus("image-review", state.imageBrowser.images.length ? "done" : "warning");
     addLog(`图片浏览已加载 ${state.imageBrowser.images.length} 组样品图片。`);
   } catch (error) {
     state.imageBrowser.images = [];
     state.imageBrowser.index = 0;
     renderDatasetImage();
+    updateSampleSessionFromImages();
     setStepStatus("image-review", "warning");
     addLog(`图片浏览未加载: ${error.message}`, "WARN");
   }
@@ -736,7 +1046,7 @@ async function runShapeAnalysis() {
     const payload = await api("/api/analyze-shape", {
       method: "POST",
       body: JSON.stringify({
-        datasetDir: $("#datasetDir")?.value || "",
+        datasetDir: state.analysisDataDir || $("#datasetDir")?.value || "",
         colorDir: $("#colorDir")?.value || "",
         depthDir: $("#depthDir")?.value || "",
         densityGCm3: 1.08,
@@ -967,6 +1277,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   $("#sampleId")?.addEventListener("input", () => {
     setText("resultSampleName", $("#sampleId").value || "--");
+    state.sampleSession.sampleId = $("#sampleId").value || "--";
+    renderQualitySampleSummary();
   });
 
   $("#refreshPorts")?.addEventListener("click", () => {
@@ -987,15 +1299,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     addLog("紧急停止已触发：模拟关闭电机与光源。", "WARN");
   });
 
-  $("#applySugar")?.addEventListener("click", applySugar);
-  $("#applyAcid")?.addEventListener("click", applyAcid);
+  $("#startSscAnalysis")?.addEventListener("click", runSscAnalysis);
+  $("#startAcidAnalysis")?.addEventListener("click", runAcidAnalysis);
   $("#evaluateTaste")?.addEventListener("click", () => updateTaste(true));
   $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));
+  document.querySelectorAll('input[name="dataSource"]').forEach((input) => {
+    input.addEventListener("change", (event) => handleDataSourceChange(event.target.value));
+  });
+  ["#colorDir", "#depthDir"].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => {
+      if (state.analysisDataDir) loadSampleFolder(state.analysisDataDir, { source: state.dataSource });
+    });
+  });
+  $("#enterAnalysisFromCapture")?.addEventListener("click", enterAnalysisFromCapture);
   $("#selectDataset")?.addEventListener("click", selectDataset);
   $("#datasetPicker")?.addEventListener("change", uploadSelectedDataset);
   $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
   $("#nextImage")?.addEventListener("click", () => stepDatasetImage(1));
-  $("#refreshImages")?.addEventListener("click", loadDatasetImages);
+  $("#refreshImages")?.addEventListener("click", () => loadSampleFolder(state.analysisDataDir || $("#datasetDir")?.value || "", { source: state.dataSource }));
   $("#runShapeAnalysis")?.addEventListener("click", runShapeAnalysis);
   $("#cancelShapeAnalysis")?.addEventListener("click", cancelShapeAnalysis);
   $("#exportReport")?.addEventListener("click", exportReport);
@@ -1019,8 +1340,28 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateShapeMode();
   try {
     const status = await api("/api/status");
-    if ($("#datasetDir")) $("#datasetDir").value = status.sampleDataset || "";
-    if ($("#datasetDir")?.value) await loadDatasetImages();
+    state.currentCaptureDir = status.currentCaptureDir || "";
+    state.currentCaptureValid = Boolean(status.currentCaptureValid && state.currentCaptureDir);
+    state.analysisDataDir = status.analysisDataDir || status.sampleDataset || "";
+    updateCurrentCaptureControls();
+    if (state.analysisDataDir) {
+      const source = state.currentCaptureValid && state.analysisDataDir === state.currentCaptureDir ? "current" : "other";
+      await loadSampleFolder(state.analysisDataDir, { source });
+    } else if (state.currentCaptureValid) {
+      await loadSampleFolder(state.currentCaptureDir, { source: "current" });
+    } else {
+      setDataSource("other");
+      const report = {
+        status: "empty",
+        message: "请选择本次拍摄或其他文件夹。",
+        rgbCount: 0,
+        spectralCount: 0,
+        pairCount: 0,
+        missing: [],
+      };
+      renderDataCheck(report);
+      updateSampleSessionFromReport(report);
+    }
     if (status.dependencies?.PIL && status.dependencies?.numpy) {
       addLog("Python 后端已连接，图像分析依赖可用。");
     }

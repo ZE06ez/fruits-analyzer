@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from PIL import Image, ImageDraw
+
 class JobStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -65,6 +67,38 @@ class JobStore:
             return True
 
 
+class SessionState:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.current_capture_dir: str = ""
+        self.analysis_data_dir: str = ""
+
+    def set_current_capture_dir(self, value: str | Path) -> None:
+        with self._lock:
+            self.current_capture_dir = str(value)
+
+    def set_analysis_data_dir(self, value: str | Path) -> None:
+        with self._lock:
+            self.analysis_data_dir = str(value)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            current = self.current_capture_dir
+            analysis = self.analysis_data_dir
+        current_path = Path(current).expanduser() if current else None
+        current_valid = bool(current_path and current_path.exists() and current_path.is_dir())
+        if current and not current_valid:
+            current = ""
+            with self._lock:
+                self.current_capture_dir = ""
+        return {
+            "currentCaptureDir": current if current_valid else "",
+            "currentCaptureValid": current_valid,
+            "analysisDataDir": analysis,
+            "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
+        }
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -75,7 +109,7 @@ def default_sample_dataset(app_dir: Path) -> str:
     return ""
 
 
-def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore):
+def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore, session: SessionState):
     static_dir = static_dir.resolve()
     outputs_dir = outputs_dir.resolve()
     app_dir = app_dir.resolve()
@@ -96,12 +130,17 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     dependencies = dependency_status()
                 except Exception as exc:
                     dependencies = {"error": str(exc)}
+                session_info = session.snapshot()
                 self.json_response({
                     "ok": True,
                     "dependencies": dependencies,
                     "sampleDataset": default_sample_dataset(app_dir),
                     "sampleDatasets": {},
+                    **session_info,
                 })
+                return
+            if path == "/api/sample-folder":
+                self.handle_sample_folder(parsed.query)
                 return
             if path == "/api/select-dataset":
                 self.handle_select_dataset()
@@ -130,8 +169,17 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if parsed.path == "/api/upload-dataset":
                 self.handle_upload_dataset()
                 return
+            if parsed.path == "/api/complete-capture":
+                self.handle_complete_capture()
+                return
             if parsed.path == "/api/analyze-shape":
                 self.handle_analyze_shape()
+                return
+            if parsed.path == "/api/predict-ssc":
+                self.handle_predict_ssc()
+                return
+            if parsed.path == "/api/predict-acid":
+                self.handle_predict_acid()
                 return
             if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
                 job_id = parsed.path.split("/")[-2]
@@ -156,9 +204,61 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
                     return
+                session.set_analysis_data_dir(selected)
                 self.json_response({"ok": True, "datasetDir": selected})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"打开目录选择器失败: {exc}"}, status=500)
+
+        def handle_sample_folder(self, query: str) -> None:
+            params = parse_qs(query)
+            dataset_dir = params.get("datasetDir", [""])[0]
+            color_dir = params.get("colorDir", [""])[0] or None
+            depth_dir = params.get("depthDir", [""])[0] or None
+            source = params.get("source", [""])[0]
+            if source == "current":
+                current = session.snapshot().get("currentCaptureDir", "")
+                if current and not dataset_dir:
+                    dataset_dir = current
+                if not current:
+                    self.json_response({
+                        "ok": True,
+                        "valid": False,
+                        "complete": False,
+                        "status": "missing",
+                        "datasetDir": "",
+                        "colorDir": "",
+                        "depthDir": "",
+                        "rgbCount": 0,
+                        "spectralCount": 0,
+                        "pairCount": 0,
+                        "missing": ["本次采集目录已不存在，请重新采集或选择其他文件夹。"],
+                        "badImages": [],
+                        "message": "本次采集目录已不存在，请重新采集或选择其他文件夹。",
+                    })
+                    return
+            try:
+                from pointcloud_service import inspect_sample_folder
+
+                report = inspect_sample_folder(resolve_user_path(dataset_dir, app_dir) if dataset_dir else "", color_dir, depth_dir)
+                if report.get("valid"):
+                    session.set_analysis_data_dir(report["datasetDir"])
+                self.json_response(report)
+            except Exception as exc:
+                self.json_response({
+                    "ok": True,
+                    "valid": False,
+                    "complete": False,
+                    "status": "invalid",
+                    "datasetDir": dataset_dir,
+                    "colorDir": "",
+                    "depthDir": "",
+                    "rgbCount": 0,
+                    "spectralCount": 0,
+                    "pairCount": 0,
+                    "missing": [str(exc)],
+                    "badImages": [],
+                    "message": str(exc),
+                })
 
         def handle_dataset_images(self, query: str) -> None:
             params = parse_qs(query)
@@ -179,7 +279,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 color_path, depth_path = resolve_image_analysis_dirs(resolve_user_path(dataset_dir, app_dir), color_dir, depth_dir)
                 color_files = list_images(color_path)
                 spectral_files = list_images(depth_path) if depth_path else []
-                pair_count = min(len(color_files), max(len(spectral_files), 1), 60)
+                pair_count = min(max(len(color_files), len(spectral_files)), 60) if spectral_files else min(len(color_files), 60)
 
                 def row(path: Path) -> dict:
                     return {
@@ -194,7 +294,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     "images": [
                         {
                             "index": index,
-                            "color": row(color_files[index]),
+                            "color": row(color_files[index % len(color_files)]),
                             "depth": row(spectral_files[index % len(spectral_files)]) if spectral_files else None,
                         }
                         for index in range(pair_count)
@@ -270,9 +370,26 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 unique_top = sorted(set(top_dirs))
                 if len(unique_top) == 1 and (upload_root / unique_top[0]).is_dir():
                     dataset_dir = upload_root / unique_top[0]
+                session.set_analysis_data_dir(dataset_dir)
                 self.json_response({"ok": True, "datasetDir": str(dataset_dir), "fileCount": saved})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"上传数据集失败: {exc}"}, status=500)
+
+        def handle_complete_capture(self) -> None:
+            payload = self.read_json()
+            sample_id = str(payload.get("sampleId") or "").strip()
+            try:
+                capture_dir = create_offline_capture_dataset(app_dir, sample_id)
+                session.set_current_capture_dir(capture_dir)
+                session.set_analysis_data_dir(capture_dir)
+                self.json_response({
+                    "ok": True,
+                    "currentCaptureDir": str(capture_dir),
+                    "analysisDataDir": str(capture_dir),
+                    "message": "本次拍摄数据已保存",
+                })
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"保存本次拍摄数据失败: {exc}"}, status=500)
 
         def handle_analyze_shape(self) -> None:
             payload = self.read_json()
@@ -282,6 +399,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if not dataset_dir:
                 self.json_response({"ok": False, "error": "请先选择本次拍摄的样品文件夹。"}, status=400)
                 return
+            session.set_analysis_data_dir(dataset_dir)
             density = _float(payload.get("densityGCm3"), 1.08)
             voxel = _float(payload.get("voxelSizeMm"), 2.0)
             max_pairs = int(_float(payload.get("maxPairs"), 10))
@@ -337,6 +455,73 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
 
             threading.Thread(target=run_job, daemon=True).start()
             self.json_response({"ok": True, "jobId": job_id})
+
+        def handle_predict_ssc(self) -> None:
+            payload = self.read_json()
+            quality = self.build_quality_session(payload)
+            if quality is None:
+                return
+            sample_data, report = quality
+            try:
+                from quality_prediction import predict_ssc
+
+                result = predict_ssc(sample_data)
+                sample_data.ssc_result = result.to_dict()
+                self.json_response({
+                    "ok": True,
+                    "sample": sample_data.to_dict(),
+                    "dataCheck": report,
+                    "result": result.to_dict(),
+                })
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"SSC 预测接口执行失败: {exc}"}, status=500)
+
+        def handle_predict_acid(self) -> None:
+            payload = self.read_json()
+            quality = self.build_quality_session(payload)
+            if quality is None:
+                return
+            sample_data, report = quality
+            try:
+                from quality_prediction import predict_ph, predict_ta
+
+                ta_result = predict_ta(sample_data)
+                ph_result = predict_ph(sample_data)
+                sample_data.ta_result = ta_result.to_dict()
+                sample_data.ph_result = ph_result.to_dict()
+                self.json_response({
+                    "ok": True,
+                    "sample": sample_data.to_dict(),
+                    "dataCheck": report,
+                    "taResult": ta_result.to_dict(),
+                    "phResult": ph_result.to_dict(),
+                })
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"酸度预测接口执行失败: {exc}"}, status=500)
+
+        def build_quality_session(self, payload: dict):
+            dataset_dir = payload.get("datasetDir") or session.snapshot().get("analysisDataDir", "")
+            if not dataset_dir:
+                self.json_response({"ok": False, "error": "请先在形态分析页面加载当前样品数据。"}, status=400)
+                return None
+            color_dir = payload.get("colorDir") or None
+            depth_dir = payload.get("depthDir") or None
+            sample_id = str(payload.get("sampleId") or "").strip()
+            try:
+                from quality_prediction import build_sample_session
+
+                sample_data, report = build_sample_session(
+                    resolve_user_path(dataset_dir, app_dir),
+                    sample_id=sample_id,
+                    rgb_dir=color_dir,
+                    spectral_dir=depth_dir,
+                )
+                if report.get("valid"):
+                    session.set_analysis_data_dir(sample_data.analysis_data_dir)
+                return sample_data, report
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"当前样品数据检查失败: {exc}"}, status=400)
+                return None
 
         def read_json(self) -> dict:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -408,11 +593,55 @@ def safe_upload_relative(filename: str) -> Path | None:
     return Path(*parts)
 
 
+def create_offline_capture_dataset(app_dir: Path, sample_id: str = "") -> Path:
+    """Create a small current-capture folder for offline UI verification.
+
+    Real camera integration should replace this function's image-writing block with
+    camera frame saves, while keeping the returned sample root directory contract.
+    """
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_sample = "".join(ch for ch in sample_id if ch.isalnum() or ch in "-_")[:24]
+    folder_name = f"{stamp}_{safe_sample}" if safe_sample else stamp
+    capture_root = app_dir.parent / "Data" / folder_name
+    rgb_dir = capture_root / "rgb"
+    spectral_dir = capture_root / "multispectral"
+    rgb_dir.mkdir(parents=True, exist_ok=True)
+    spectral_dir.mkdir(parents=True, exist_ok=True)
+
+    for index in range(3):
+        rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
+        draw = ImageDraw.Draw(rgb_image)
+        draw.rectangle((0, 330, 640, 420), fill=(36, 48, 64))
+        offset = index * 10
+        draw.ellipse((250 + offset, 120, 390 + offset, 270), fill=(94, 142, 63), outline=(146, 190, 95), width=4)
+        draw.line((320 + offset, 118, 318 + offset, 82), fill=(84, 68, 44), width=5)
+        draw.ellipse((326 + offset, 86, 365 + offset, 108), fill=(68, 130, 74))
+        draw.text((22, 22), f"Offline Capture RGB {index + 1}", fill=(203, 213, 225))
+        rgb_path = rgb_dir / f"rgb_{index + 1:03d}.png"
+        rgb_image.save(rgb_path)
+
+        spectral_image = Image.new("L", (640, 420), 16)
+        sdraw = ImageDraw.Draw(spectral_image)
+        band = 450 + index * 110
+        shade = 96 + index * 36
+        sdraw.ellipse((250 + offset, 120, 390 + offset, 270), fill=shade, outline=min(240, shade + 48), width=4)
+        sdraw.text((22, 22), f"{band}nm", fill=220)
+        spectral_path = spectral_dir / f"{band}.png"
+        spectral_image.save(spectral_path)
+
+    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png"]
+    if not all(path.exists() for path in expected):
+        raise RuntimeError("采集文件写入校验失败")
+    return capture_root
+
+
 def start_backend(static_dir: Path, outputs_dir: Path, app_dir: Path, port: int | None = None) -> tuple[ThreadingHTTPServer, int]:
     store = JobStore()
+    session = SessionState()
     outputs_dir.mkdir(parents=True, exist_ok=True)
     selected_port = port or free_port()
-    handler = create_handler(static_dir, outputs_dir, app_dir, store)
+    handler = create_handler(static_dir, outputs_dir, app_dir, store, session)
     server = ThreadingHTTPServer(("127.0.0.1", selected_port), handler)
     setattr(server, "should_exit", False)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

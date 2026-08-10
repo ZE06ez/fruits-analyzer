@@ -142,6 +142,229 @@ def list_images(folder: Path) -> list[Path]:
     return sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS])
 
 
+def inspect_sample_folder(
+    dataset_dir: str | Path,
+    rgb_dir: str | None = None,
+    spectral_dir: str | None = None,
+) -> dict:
+    """Inspect an RGB + multispectral sample folder without running analysis."""
+
+    modern_report = _inspect_sample_folder_by_enabled_bands(dataset_dir, rgb_dir, spectral_dir)
+    if modern_report is not None:
+        return modern_report
+
+    raw_value = str(dataset_dir).strip()
+    if not raw_value:
+        root = Path("")
+    else:
+        root = Path(dataset_dir).expanduser()
+    report = {
+        "ok": True,
+        "valid": False,
+        "complete": False,
+        "status": "empty",
+        "datasetDir": str(root) if raw_value else "",
+        "colorDir": "",
+        "depthDir": "",
+        "rgbCount": 0,
+        "spectralCount": 0,
+        "pairCount": 0,
+        "missing": [],
+        "badImages": [],
+        "message": "",
+    }
+    if not raw_value:
+        report["message"] = "请先选择样品文件夹。"
+        return report
+    if not root.exists():
+        report["status"] = "missing"
+        report["message"] = f"样品文件夹不存在: {root}"
+        report["missing"].append("根目录不存在")
+        return report
+    if not root.is_dir():
+        report["status"] = "invalid"
+        report["message"] = f"样品路径不是文件夹: {root}"
+        report["missing"].append("根路径不是文件夹")
+        return report
+
+    rgb_path = None
+    spectral_path = None
+    if rgb_dir:
+        rgb_path = resolve_child_path(root, rgb_dir)
+        if not rgb_path.exists():
+            rgb_path = _find_child_dir(root, ("rgb", "color", "image", "images", "彩色图", "彩图"))
+    else:
+        rgb_path = _find_child_dir(root, ("rgb", "color", "image", "images", "彩色图", "彩图"))
+
+    if spectral_dir:
+        spectral_path = resolve_child_path(root, spectral_dir)
+        if not spectral_path.exists():
+            spectral_path = _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
+    else:
+        spectral_path = _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
+
+    if rgb_path is None or not rgb_path.exists():
+        report["missing"].append("缺少 RGB 图像目录")
+    else:
+        report["colorDir"] = str(rgb_path)
+        rgb_files = list_images(rgb_path)
+        report["rgbCount"] = len(rgb_files)
+        if not rgb_files:
+            report["missing"].append("RGB 图像目录没有可用图片")
+        report["badImages"].extend(_bad_image_names(rgb_files, mode="RGB"))
+
+    if spectral_path is None or not spectral_path.exists():
+        report["missing"].append("缺少 multispectral 多光谱图像目录")
+        spectral_files: list[Path] = []
+    else:
+        report["depthDir"] = str(spectral_path)
+        spectral_files = list_images(spectral_path)
+        report["spectralCount"] = len(spectral_files)
+        if not spectral_files:
+            report["missing"].append("多光谱图像目录没有可用图片")
+        report["badImages"].extend(_bad_image_names(spectral_files, mode="L"))
+
+    rgb_count = int(report["rgbCount"])
+    spectral_count = int(report["spectralCount"])
+    report["pairCount"] = min(rgb_count, spectral_count)
+    if rgb_count and spectral_count and rgb_count != spectral_count:
+        report["missing"].append(f"RGB 与多光谱数量不一致，相差 {abs(rgb_count - spectral_count)} 张")
+    if report["badImages"]:
+        report["missing"].append("存在无法读取的图片")
+
+    report["valid"] = rgb_count > 0 and spectral_count > 0 and not report["badImages"]
+    report["complete"] = bool(report["valid"] and rgb_count == spectral_count)
+    if report["complete"]:
+        report["status"] = "complete"
+        report["message"] = "数据目录有效"
+    elif report["valid"]:
+        report["status"] = "incomplete"
+        report["message"] = "数据不完整"
+    else:
+        report["status"] = "invalid"
+        report["message"] = "数据不完整"
+    return report
+
+
+def _inspect_sample_folder_by_enabled_bands(
+    dataset_dir: str | Path,
+    rgb_dir: str | None = None,
+    spectral_dir: str | None = None,
+) -> dict | None:
+    """Modern sample validation: one sample, RGB images, and enabled bands."""
+
+    raw_value = str(dataset_dir).strip()
+    root = Path(dataset_dir).expanduser() if raw_value else Path("")
+    report = {
+        "ok": True,
+        "valid": False,
+        "complete": False,
+        "status": "empty",
+        "datasetDir": str(root) if raw_value else "",
+        "colorDir": "",
+        "depthDir": "",
+        "rgbCount": 0,
+        "spectralCount": 0,
+        "pairCount": 0,
+        "expectedBands": [],
+        "availableBands": [],
+        "missingBands": [],
+        "unexpectedBands": [],
+        "calibrationStatus": "missing",
+        "missing": [],
+        "badImages": [],
+        "message": "",
+    }
+    if not raw_value:
+        report["message"] = "Please select a sample folder first."
+        return report
+    if not root.exists():
+        report["status"] = "missing"
+        report["message"] = f"Sample folder does not exist: {root}"
+        report["missing"].append("root directory missing")
+        return report
+    if not root.is_dir():
+        report["status"] = "invalid"
+        report["message"] = f"Sample path is not a folder: {root}"
+        report["missing"].append("root path is not a folder")
+        return report
+
+    rgb_path = resolve_child_path(root, rgb_dir) if rgb_dir else _find_child_dir(root, ("rgb", "color", "image", "images"))
+    if rgb_path and not rgb_path.exists():
+        rgb_path = _find_child_dir(root, ("rgb", "color", "image", "images"))
+    spectral_path = (
+        resolve_child_path(root, spectral_dir)
+        if spectral_dir
+        else _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms"))
+    )
+    if spectral_path and not spectral_path.exists():
+        spectral_path = _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms"))
+
+    rgb_name = rgb_path.name if rgb_path else (rgb_dir or "rgb")
+    spectral_name = spectral_path.name if spectral_path else (spectral_dir or "multispectral")
+    try:
+        from quality_algorithm.spectral_features import inspect_sample_structure
+
+        structure = inspect_sample_structure(root, rgb_dir=rgb_name, spectral_dir=spectral_name)
+    except Exception as exc:
+        report["status"] = "invalid"
+        report["message"] = f"Data folder check failed: {exc}"
+        report["missing"].append(str(exc))
+        return report
+
+    report.update(
+        {
+            "colorDir": str(rgb_path) if rgb_path and rgb_path.exists() else "",
+            "depthDir": str(spectral_path) if spectral_path and spectral_path.exists() else "",
+            "rgbCount": int(structure["rgb_count"]),
+            "spectralCount": int(structure["multispectral_count"]),
+            "pairCount": min(int(structure["rgb_count"]), int(structure["multispectral_count"])),
+            "expectedBands": structure["expected_bands"],
+            "availableBands": structure["available_bands"],
+            "missingBands": structure["missing_bands"],
+            "unexpectedBands": structure["unexpected_bands"],
+            "calibrationStatus": structure["calibration_status"],
+            "badImages": structure["bad_images"],
+            "valid": bool(structure["valid"]),
+            "complete": bool(structure["complete"]),
+        }
+    )
+    if not report["colorDir"]:
+        report["missing"].append("missing RGB image directory")
+    if not report["depthDir"]:
+        report["missing"].append("missing multispectral image directory")
+    if report["rgbCount"] <= 0:
+        report["missing"].append("no RGB images")
+    if report["spectralCount"] <= 0:
+        report["missing"].append("no multispectral images")
+    for band in report["missingBands"]:
+        report["missing"].append(f"missing enabled multispectral band: {band} nm")
+    if report["badImages"]:
+        report["missing"].append("unreadable image files exist")
+
+    if report["complete"]:
+        report["status"] = "complete"
+        report["message"] = "Data folder is valid."
+    elif report["valid"]:
+        report["status"] = "incomplete"
+        report["message"] = "Data folder is valid but enabled bands are incomplete."
+    else:
+        report["status"] = "invalid"
+        report["message"] = "Data folder is incomplete."
+    return report
+
+
+def _bad_image_names(files: list[Path], *, mode: str) -> list[str]:
+    bad = []
+    for path in files:
+        try:
+            with Image.open(path) as image:
+                image.convert(mode).load()
+        except Exception:
+            bad.append(path.name)
+    return bad
+
+
 def ply_measurements(source_ply: Path, options: AnalysisOptions) -> dict | None:
     try:
         import pipeline_v2
