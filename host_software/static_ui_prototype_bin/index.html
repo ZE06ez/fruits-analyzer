@@ -32,19 +32,79 @@
     </header>
 
     <main class="workspace">
-      <aside class="sidebar">
-        <section class="side-card connect-card">
-          <h2>连接控制 / Process Control</h2>
-          <label for="serialPort">设备串口</label>
-          <div class="inline-field">
-            <select id="serialPort">
-              <option value="">无可用串口</option>
-              <option value="COM3">COM3</option>
-              <option value="COM5">COM5</option>
-            </select>
-            <button id="refreshPorts">刷新</button>
-          </div>
-          <p class="hint">当前按离线调试模式运行，单片机调通后再接入真实串口指令。</p>
+     <aside class="sidebar">
+  <section class="side-card connect-card">
+    <h2>连接控制 / Process Control</h2>
+
+    <label for="serialPort">STM32F407 串口</label>
+
+    <!-- 串口选择和刷新 -->
+    <div class="inline-field">
+      <select id="serialPort">
+        <option value="">正在读取串口...</option>
+      </select>
+
+      <button id="refreshPorts" type="button">
+        刷新
+      </button>
+    </div>
+
+    <!-- 连接、断开和状态查询 -->
+    <div class="inline-field device-control-buttons">
+      <button id="connectDevice" type="button">
+        连接
+      </button>
+
+      <button id="disconnectDevice" type="button">
+        断开
+      </button>
+
+      <button id="refreshDeviceStatus" type="button">
+        读取状态
+      </button>
+    </div>
+
+    <p class="hint" id="connectionHint">
+      请选择 STM32F407 对应的 COM 口。
+    </p>
+
+    <!-- STM32及执行机构状态 -->
+    <div class="device-status-grid">
+      <p id="fanState">
+        风扇：--
+      </p>
+
+      <p id="doorState">
+        升降门：--
+      </p>
+
+      <p id="wheelState">
+        滤光轮：--
+      </p>
+
+      <p id="rgbLedState">
+        RGB LED：--
+      </p>
+
+      <p id="tungstenState">
+        钨灯：--
+      </p>
+
+      <p id="faultState">
+        故障：--
+      </p>
+    </div>
+
+    <button
+      id="clearDeviceFault"
+      type="button"
+      class="test-button secondary"
+    >
+      清除故障
+    </button>
+  </section>
+
+  <nav class="task-tree" aria-label="任务流程树">
         </section>
 
         <nav class="task-tree" aria-label="任务流程树">
