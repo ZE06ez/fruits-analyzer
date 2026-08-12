@@ -180,6 +180,13 @@ label {
   height: 38px;
 }
 
+.top-actions .studio-action {
+  min-width: 92px;
+  border-color: rgba(103, 232, 249, 0.54);
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.24), rgba(124, 58, 237, 0.34));
+  font-weight: 900;
+}
+
 .top-actions .danger,
 .stop-action {
   border-color: rgba(248, 113, 113, 0.5);
@@ -356,7 +363,7 @@ label {
 
 .stage-header {
   display: grid;
-  grid-template-columns: 1fr 240px auto;
+  grid-template-columns: minmax(220px, 1fr) 190px minmax(360px, 560px) auto;
   align-items: center;
   gap: 16px;
   padding: 14px 16px;
@@ -374,8 +381,105 @@ label {
   font-size: 24px;
 }
 
-.sample-meta label {
-  margin-top: 0;
+.sample-meta {
+  min-width: 0;
+}
+
+.sample-meta span,
+.sample-meta small {
+  display: block;
+  color: var(--muted);
+}
+
+.sample-meta strong {
+  display: block;
+  margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sample-actions button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-meta {
+  display: grid;
+  grid-template-columns: 0.8fr 0.8fr 1fr 1fr 1fr;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-meta label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model-meta input,
+.model-meta select {
+  height: 30px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal {
+  width: min(760px, 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+}
+
+.modal header,
+.modal footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.modal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+
+.modal-note {
+  margin: 0 16px 14px;
+  color: var(--muted);
 }
 
 .mode-badge {

@@ -14,12 +14,27 @@ const state = {
   analysisDataDir: "",
   dataSource: "other",
   captureCompleting: false,
+  hasSample: false,
+  sampleName: "",
+  sampleId: "",
+  sampleCreatedAt: "",
+  fruitType: "",
+  variety: "generic",
+  selectedSscModelId: "",
+  selectedTaModelId: "",
+  selectedPhModelId: "",
   sampleSession: {
     sampleId: "",
+    sampleName: "",
     analysisDataDir: "",
     rgbFiles: [],
     multispectralFiles: [],
     captureTime: "",
+    fruitType: "",
+    variety: "generic",
+    selectedSscModelId: "",
+    selectedTaModelId: "",
+    selectedPhModelId: "",
     sscResult: null,
     taResult: null,
     phResult: null,
@@ -87,6 +102,86 @@ function setPreviewImage(imageSelector, emptySelector, src = "") {
     image.hidden = true;
     if (empty) empty.hidden = false;
   }
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function hasActiveSample() {
+  return Boolean(state.hasSample && state.sampleId);
+}
+
+function requireActiveSample(message = "请先创建当前样品。") {
+  if (hasActiveSample()) return true;
+  addLog(message, "WARN");
+  setText("statusNote", message);
+  openSampleModal();
+  return false;
+}
+
+function renderCurrentSample() {
+  setText("currentSampleName", state.sampleName || "未创建样品");
+  setText("currentSampleId", state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请先创建当前样品");
+  setText("resultSampleName", state.sampleName || "--");
+  if ($("#sampleId")) $("#sampleId").value = state.sampleId || "";
+  const disabled = !hasActiveSample();
+  ["#changeModelButton", "#selectDataset", "#runShapeAnalysis", "#enterAnalysisFromCapture"].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = disabled || (selector === "#enterAnalysisFromCapture" && !state.currentCaptureValid);
+  });
+  updateAnalysisButtonStates();
+  updateShapeMode();
+}
+
+function updateAnalysisButtonStates() {
+  const sscAvailable = hasActiveSample() && Boolean(state.selectedSscModelId);
+  const taAvailable = hasActiveSample() && Boolean(state.selectedTaModelId || state.selectedPhModelId);
+  const sscButton = $("#startSscAnalysis");
+  const acidButton = $("#startAcidAnalysis");
+  if (sscButton) sscButton.disabled = !sscAvailable;
+  if (acidButton) acidButton.disabled = !taAvailable;
+  if (hasActiveSample() && !state.selectedSscModelId) setText("sscModelStatus", "无兼容模型");
+  if (hasActiveSample() && !state.selectedTaModelId && !state.selectedPhModelId) setText("acidModelStatus", "无兼容模型");
+}
+
+function clearSampleDependentState() {
+  state.ssc = null;
+  state.ta = null;
+  state.ph = null;
+  state.ratio = null;
+  state.grade = null;
+  state.captureStep = 0;
+  state.shapeJobId = null;
+  state.shapeStartedAt = null;
+  state.currentCaptureDir = "";
+  state.currentCaptureValid = false;
+  state.analysisDataDir = "";
+  state.imageBrowser.images = [];
+  state.imageBrowser.index = 0;
+  state.dataCheck = { status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0 };
+  state.sampleSession.rgbFiles = [];
+  state.sampleSession.multispectralFiles = [];
+  state.sampleSession.analysisDataDir = "";
+  state.sampleSession.sscResult = null;
+  state.sampleSession.taResult = null;
+  state.sampleSession.phResult = null;
+  setText("resultSsc", "--");
+  setText("resultTa", "--");
+  setText("resultPh", "--");
+  setText("tasteRatio", "--");
+  setText("tasteGrade", "--");
+  setText("tasteExplain", "等待糖度与酸度数据。");
+  renderSscResult({});
+  renderAcidResult({}, {});
+  renderDatasetImage();
+  renderDataCheck({ status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0, message: "请先创建当前样品。" });
+  resetShapeStatus();
+  updateCurrentCaptureControls();
 }
 
 function addLog(message, level = "INFO") {
@@ -536,6 +631,7 @@ function runDeviceTest(type) {
 }
 
 async function updateCaptureProgress(step) {
+  if (!requireActiveSample()) return;
   state.captureStep = Math.max(state.captureStep, step);
   const percent = Math.min(100, state.captureStep * 25);
   const progress = $("#captureProgress");
@@ -549,6 +645,7 @@ async function updateCaptureProgress(step) {
 }
 
 async function completeCurrentCapture() {
+  if (!requireActiveSample()) return;
   if (state.captureCompleting) return;
   state.captureCompleting = true;
   const button = $("#enterAnalysisFromCapture");
@@ -585,6 +682,7 @@ async function completeCurrentCapture() {
 }
 
 async function enterAnalysisFromCapture() {
+  if (!requireActiveSample()) return;
   if (!state.currentCaptureValid || !state.currentCaptureDir) {
     await completeCurrentCapture();
   }
@@ -602,6 +700,11 @@ function qualityPayload() {
     colorDir: $("#colorDir")?.value || "rgb",
     depthDir: $("#depthDir")?.value || "multispectral",
     sampleId: $("#sampleId")?.value || "",
+    fruitType: $("#qualityFruitType")?.value.trim() || state.fruitType || "",
+    variety: $("#qualityVariety")?.value.trim() || state.variety || "generic",
+    selectedSscModelId: $("#sscModelSelect")?.value || state.selectedSscModelId || "",
+    selectedTaModelId: $("#taModelSelect")?.value || state.selectedTaModelId || "",
+    selectedPhModelId: $("#phModelSelect")?.value || state.selectedPhModelId || "",
   };
 }
 
@@ -631,10 +734,16 @@ function applyBackendSampleSession(sample = {}) {
   state.sampleSession = {
     ...state.sampleSession,
     sampleId: sample.sample_id || state.sampleSession.sampleId || $("#sampleId")?.value || "--",
+    sampleName: sample.sample_name || state.sampleName || state.sampleSession.sampleName || "--",
     analysisDataDir: sample.analysis_data_dir || state.analysisDataDir || "",
     rgbFiles: Array.isArray(sample.rgb_files) ? sample.rgb_files : state.sampleSession.rgbFiles,
     multispectralFiles: Array.isArray(sample.multispectral_files) ? sample.multispectral_files : state.sampleSession.multispectralFiles,
     captureTime: sample.capture_time || state.sampleSession.captureTime || "",
+    fruitType: sample.fruit_type || state.fruitType || "",
+    variety: sample.variety || state.variety || "generic",
+    selectedSscModelId: sample.selected_ssc_model_id || state.selectedSscModelId || "",
+    selectedTaModelId: sample.selected_ta_model_id || state.selectedTaModelId || "",
+    selectedPhModelId: sample.selected_ph_model_id || state.selectedPhModelId || "",
     sscResult: sample.ssc_result || state.sampleSession.sscResult,
     taResult: sample.ta_result || state.sampleSession.taResult,
     phResult: sample.ph_result || state.sampleSession.phResult,
@@ -666,6 +775,138 @@ function renderQualitySampleSummary() {
   });
 }
 
+function modelOption(model) {
+  const name = model.display_name || model.model_name || model.model_id;
+  const meta = `${model.model_type || ""} ${model.preprocessing || ""} ${model.version || ""}`.trim();
+  const mark = model.status === "Default" || model.is_default ? "默认" : "已发布";
+  return `<option value="${escapeHtml(model.model_id)}">${escapeHtml(name)} · ${escapeHtml(meta)} · ${mark}</option>`;
+}
+
+function fillPlainSelect(selector, values, selectedValue, fallback = "") {
+  const select = $(selector);
+  if (!select) return "";
+  const options = (values || []).filter(Boolean);
+  if (!options.length && fallback) options.push(fallback);
+  select.innerHTML = options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+  const target = selectedValue && options.includes(selectedValue) ? selectedValue : options[0] || "";
+  select.value = target;
+  return target;
+}
+
+function fillModelSelect(selector, models, selectedId, defaultModel = null) {
+  const select = $(selector);
+  if (!select) return;
+  if (!models || !models.length) {
+    select.innerHTML = `<option value="">无兼容模型</option>`;
+    select.value = "";
+    return;
+  }
+  select.innerHTML = `${(models || []).map(modelOption).join("")}`;
+  const target = selectedId || defaultModel?.model_id || "";
+  if (target && [...select.options].some((option) => option.value === target)) select.value = target;
+}
+
+async function loadQualityModels() {
+  let fruitType = $("#qualityFruitType")?.value.trim() || state.fruitType || "";
+  let variety = $("#qualityVariety")?.value.trim() || state.variety || "generic";
+  if (!hasActiveSample() && !fruitType) {
+    const catalog = await api("/api/quality-models");
+    fruitType = fillPlainSelect("#qualityFruitType", catalog.fruitTypes || [], state.fruitType);
+    variety = fillPlainSelect("#qualityVariety", catalog.varieties || ["generic"], state.variety, "generic") || "generic";
+  }
+  state.fruitType = fruitType;
+  state.variety = variety || "generic";
+  const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(state.fruitType)}&variety=${encodeURIComponent(state.variety)}`);
+  state.fruitType = fillPlainSelect("#qualityFruitType", payload.fruitTypes || [], state.fruitType) || state.fruitType;
+  state.variety = fillPlainSelect("#qualityVariety", payload.varieties || ["generic"], state.variety, "generic") || "generic";
+  fillModelSelect("#sscModelSelect", payload.ssc, state.selectedSscModelId, payload.defaults?.ssc);
+  fillModelSelect("#taModelSelect", payload.ta, state.selectedTaModelId, payload.defaults?.ta);
+  fillModelSelect("#phModelSelect", payload.ph, state.selectedPhModelId, payload.defaults?.ph);
+  state.selectedSscModelId = $("#sscModelSelect")?.value || "";
+  state.selectedTaModelId = $("#taModelSelect")?.value || "";
+  state.selectedPhModelId = $("#phModelSelect")?.value || "";
+  updateAnalysisButtonStates();
+  return payload;
+}
+
+async function saveModelSelection() {
+  const payload = qualityPayload();
+  state.fruitType = payload.fruitType;
+  state.variety = payload.variety;
+  state.selectedSscModelId = payload.selectedSscModelId;
+  state.selectedTaModelId = payload.selectedTaModelId;
+  state.selectedPhModelId = payload.selectedPhModelId;
+  await api("/api/model-selection", { method: "POST", body: JSON.stringify(payload) });
+}
+
+function openSampleModal() {
+  const modal = $("#sampleModal");
+  if (!modal) return;
+  modal.hidden = false;
+  loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message));
+}
+
+function closeSampleModal() {
+  const modal = $("#sampleModal");
+  if (modal) modal.hidden = true;
+}
+
+async function loadNewSampleCatalog() {
+  const selectedFruit = $("#newSampleFruitType")?.value || state.fruitType || "";
+  const selectedVariety = $("#newSampleVariety")?.value || state.variety || "generic";
+  const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
+  const fruitType = fillPlainSelect("#newSampleFruitType", payload.fruitTypes || [], selectedFruit);
+  const varietyPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(selectedVariety)}`);
+  const variety = fillPlainSelect("#newSampleVariety", varietyPayload.varieties || ["generic"], selectedVariety, "generic") || "generic";
+  const finalPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(variety)}`);
+  fillModelSelect("#newSampleSscModel", finalPayload.ssc, "", finalPayload.defaults?.ssc);
+  fillModelSelect("#newSampleTaModel", finalPayload.ta, "", finalPayload.defaults?.ta);
+  fillModelSelect("#newSamplePhModel", finalPayload.ph, "", finalPayload.defaults?.ph);
+  setText("newSampleHint", finalPayload.fruitTypes?.length ? "已根据 Model Registry 匹配兼容模型。" : "暂无 Published / Default 模型，请先在 Model Studio 发布模型。");
+}
+
+async function createNewSample() {
+  const sampleName = $("#newSampleName")?.value.trim() || "";
+  if (!sampleName) {
+    setText("newSampleHint", "样品名称必须填写。");
+    return;
+  }
+  const payload = {
+    sampleName,
+    fruitType: $("#newSampleFruitType")?.value || "",
+    variety: $("#newSampleVariety")?.value || "generic",
+    selectedSscModelId: $("#newSampleSscModel")?.value || "",
+    selectedTaModelId: $("#newSampleTaModel")?.value || "",
+    selectedPhModelId: $("#newSamplePhModel")?.value || "",
+  };
+  const response = await api("/api/new-sample", { method: "POST", body: JSON.stringify(payload) });
+  applySampleSessionState(response.sample || {});
+  clearSampleDependentState();
+  applySampleSessionState(response.sample || {});
+  await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+  renderCurrentSample();
+  closeSampleModal();
+  addLog(`已创建当前样品：${state.sampleName}`);
+}
+
+function applySampleSessionState(sample = {}) {
+  state.hasSample = Boolean(sample.hasSample);
+  state.sampleId = sample.sampleId || "";
+  state.sampleName = sample.sampleName || "";
+  state.sampleCreatedAt = sample.createdAt || "";
+  state.fruitType = sample.fruitType || "";
+  state.variety = sample.variety || "generic";
+  state.selectedSscModelId = sample.selectedSscModelId || "";
+  state.selectedTaModelId = sample.selectedTaModelId || "";
+  state.selectedPhModelId = sample.selectedPhModelId || "";
+  state.sampleSession.sampleId = state.sampleId;
+  state.sampleSession.sampleName = state.sampleName;
+  state.sampleSession.fruitType = state.fruitType;
+  state.sampleSession.variety = state.variety;
+  if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
+  if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+}
+
 function renderSscResult(result = {}) {
   const hasValue = Number.isFinite(result.value);
   state.ssc = hasValue ? Number(result.value) : null;
@@ -674,8 +915,8 @@ function renderSscResult(result = {}) {
   setText("sscConfidence", Number.isFinite(result.confidence) ? `${Math.round(result.confidence * 100)}%` : "--");
   setText("sscElapsed", Number.isFinite(result.elapsed_time) ? `${result.elapsed_time}s` : "--");
   setText("sscModelName", result.model_name || "SSC 预测模型");
-  setText("sscModelVersion", result.model_version || "未接入");
-  setText("sscModelStatus", result.status === "ok" ? "预测完成" : "模型预测待接入");
+  setText("sscModelVersion", [result.model_version, result.model_type, result.preprocessing].filter(Boolean).join(" · ") || "未接入");
+  setText("sscModelStatus", ["ok", "success"].includes(result.status) ? "预测完成" : "模型预测待接入");
   setText("sscMessage", result.error_message || (hasValue ? "预测完成" : "暂无预测结果"));
 }
 
@@ -691,12 +932,18 @@ function renderAcidResult(taResult = {}, phResult = {}) {
   setText("acidConfidence", Number.isFinite(taResult.confidence) ? `${Math.round(taResult.confidence * 100)}%` : "--");
   setText("acidElapsed", Number.isFinite(taResult.elapsed_time) ? `${taResult.elapsed_time}s` : "--");
   setText("acidModelName", taResult.model_name || "TA / pH 预测模型");
-  setText("acidModelVersion", taResult.model_version || phResult.model_version || "未接入");
-  setText("acidModelStatus", taResult.status === "ok" || phResult.status === "ok" ? "预测完成" : "模型预测待接入");
+  setText("acidModelVersion", [taResult.model_version || phResult.model_version, taResult.model_type || phResult.model_type, taResult.preprocessing || phResult.preprocessing].filter(Boolean).join(" · ") || "未接入");
+  setText("acidModelStatus", ["ok", "success"].includes(taResult.status) || ["ok", "success"].includes(phResult.status) ? "预测完成" : "模型预测待接入");
   setText("acidMessage", taResult.error_message || phResult.error_message || (hasTa || hasPh ? "预测完成" : "暂无预测结果"));
 }
 
 async function runSscAnalysis() {
+  if (!requireActiveSample()) return;
+  if (!state.selectedSscModelId) {
+    addLog("当前样品没有兼容的 SSC 模型。", "WARN");
+    setText("sscModelStatus", "无兼容模型");
+    return;
+  }
   if (!state.analysisDataDir) {
     addLog("请先在形态分析页面加载当前样品数据。", "WARN");
     setStepStatus("sugar", "warning");
@@ -706,6 +953,7 @@ async function runSscAnalysis() {
   const button = $("#startSscAnalysis");
   if (button) button.disabled = true;
   try {
+    await saveModelSelection();
     setText("sscModelStatus", "正在检查样品数据");
     const payload = await api("/api/predict-ssc", {
       method: "POST",
@@ -714,19 +962,26 @@ async function runSscAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderSscResult(payload.result || {});
-    setStepStatus("sugar", payload.result?.status === "ok" ? "done" : "warning");
-    addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", payload.result?.status === "ok" ? "INFO" : "WARN");
+    const ok = ["ok", "success"].includes(payload.result?.status);
+    setStepStatus("sugar", ok ? "done" : "warning");
+    addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", ok ? "INFO" : "WARN");
   } catch (error) {
     setText("sscModelStatus", "预测失败");
     setText("sscMessage", error.message || "SSC 预测失败");
     setStepStatus("sugar", "failed");
     addLog(error.message || "SSC 预测失败。", "ERROR");
   } finally {
-    if (button) button.disabled = false;
+    updateAnalysisButtonStates();
   }
 }
 
 async function runAcidAnalysis() {
+  if (!requireActiveSample()) return;
+  if (!state.selectedTaModelId && !state.selectedPhModelId) {
+    addLog("当前样品没有兼容的 TA / pH 模型。", "WARN");
+    setText("acidModelStatus", "无兼容模型");
+    return;
+  }
   if (!state.analysisDataDir) {
     addLog("请先在形态分析页面加载当前样品数据。", "WARN");
     setStepStatus("acid", "warning");
@@ -736,6 +991,7 @@ async function runAcidAnalysis() {
   const button = $("#startAcidAnalysis");
   if (button) button.disabled = true;
   try {
+    await saveModelSelection();
     setText("acidModelStatus", "正在检查样品数据");
     const payload = await api("/api/predict-acid", {
       method: "POST",
@@ -744,15 +1000,16 @@ async function runAcidAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderAcidResult(payload.taResult || {}, payload.phResult || {});
-    setStepStatus("acid", payload.taResult?.status === "ok" || payload.phResult?.status === "ok" ? "done" : "warning");
-    addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", payload.taResult?.status === "ok" ? "INFO" : "WARN");
+    const ok = ["ok", "success"].includes(payload.taResult?.status) || ["ok", "success"].includes(payload.phResult?.status);
+    setStepStatus("acid", ok ? "done" : "warning");
+    addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", ok ? "INFO" : "WARN");
   } catch (error) {
     setText("acidModelStatus", "预测失败");
     setText("acidMessage", error.message || "酸度预测失败");
     setStepStatus("acid", "failed");
     addLog(error.message || "酸度预测失败。", "ERROR");
   } finally {
-    if (button) button.disabled = false;
+    updateAnalysisButtonStates();
   }
 }
 
@@ -775,6 +1032,7 @@ function updateTaste(announce = true) {
 }
 
 async function selectDataset() {
+  if (!requireActiveSample()) return;
   try {
     setDataSource("other");
     setText("shapeStepLabel", "打开其他文件夹选择器");
@@ -793,6 +1051,7 @@ async function selectDataset() {
 }
 
 async function uploadSelectedDataset(event) {
+  if (!requireActiveSample()) return;
   const files = Array.from(event.target.files || []);
   if (!files.length) {
     addLog("用户取消选择数据集。", "WARN");
@@ -843,7 +1102,7 @@ function setDataSource(source) {
 function updateCurrentCaptureControls() {
   const current = $("#sourceCurrent");
   const option = $("#currentCaptureOption");
-  if (current) current.disabled = !state.currentCaptureValid;
+  if (current) current.disabled = !state.currentCaptureValid || !hasActiveSample();
   option?.classList.toggle("disabled", !state.currentCaptureValid);
   setText("currentCaptureHint", state.currentCaptureValid ? state.currentCaptureDir : "暂无本次拍摄数据");
 }
@@ -881,6 +1140,7 @@ async function handleDataSourceChange(source) {
 }
 
 async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) {
+  if (!requireActiveSample()) return;
   const target = datasetDir || "";
   state.analysisDataDir = target;
   setDataSource(source);
@@ -1020,6 +1280,7 @@ function stepDatasetImage(delta) {
 }
 
 async function runShapeAnalysis() {
+  if (!requireActiveSample()) return;
   if (state.shapeJobId) {
     addLog("已有形态分析任务正在运行。", "WARN");
     return;
@@ -1181,7 +1442,7 @@ function updateShapeMode(mode = $("#shapeMode")?.value || "morphology2d") {
   const runButton = $("#runShapeAnalysis");
   if (runButton && !state.shapeJobId) {
     runButton.textContent = isPointcloud ? "点云建模待接入" : "开始形态分析";
-    runButton.disabled = isPointcloud;
+    runButton.disabled = isPointcloud || !hasActiveSample();
   }
   if (isPointcloud) {
     setText("shapeStepLabel", "三维建模入口已预留");
@@ -1206,8 +1467,8 @@ function finishShapeJob() {
   if (state.shapeTimer) window.clearInterval(state.shapeTimer);
   state.shapeTimer = null;
   state.shapeJobId = null;
-  $("#runShapeAnalysis").disabled = false;
-  $("#cancelShapeAnalysis").disabled = true;
+  if ($("#runShapeAnalysis")) $("#runShapeAnalysis").disabled = !hasActiveSample();
+  if ($("#cancelShapeAnalysis")) $("#cancelShapeAnalysis").disabled = true;
   updateShapeMode();
 }
 
@@ -1236,6 +1497,12 @@ function exportReport() {
 
 function updateClock() {
   setText("currentTime", new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+}
+
+function openModelStudio() {
+  const url = `${window.location.origin}/model-studio`;
+  window.open(url, "_blank", "noopener");
+  addLog("已打开模型训练与数据管理平台。");
 }
 
 async function shutdownApp() {
@@ -1281,6 +1548,48 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderQualitySampleSummary();
   });
 
+  ["#qualityFruitType", "#qualityVariety"].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => {
+      if (!hasActiveSample()) {
+        loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+        return;
+      }
+      const changedScope = ($("#qualityFruitType")?.value.trim() || "") !== state.fruitType || ($("#qualityVariety")?.value.trim() || "generic") !== state.variety;
+      if (changedScope && (Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph))) {
+        const ok = window.confirm("改变样品类型将重新匹配模型，并清空当前预测结果。");
+        if (!ok) {
+          if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
+          if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+          return;
+        }
+        renderSscResult({});
+        renderAcidResult({}, {});
+        state.ratio = null;
+        state.grade = null;
+        setText("tasteRatio", "--");
+        setText("tasteGrade", "--");
+        setText("tasteExplain", "等待糖度与酸度数据。");
+      }
+      loadQualityModels().then(saveModelSelection).catch((error) => addLog(error.message, "WARN"));
+    });
+  });
+  ["#sscModelSelect", "#taModelSelect", "#phModelSelect"].forEach((selector) => {
+    $(selector)?.addEventListener("change", () => {
+      if (hasActiveSample()) saveModelSelection().catch((error) => addLog(error.message, "WARN"));
+      updateAnalysisButtonStates();
+    });
+  });
+  $("#newSampleButton")?.addEventListener("click", openSampleModal);
+  $("#changeModelButton")?.addEventListener("click", () => {
+    if (!requireActiveSample()) return;
+    loadQualityModels().then(() => addLog("已刷新当前样品可用模型列表。")).catch((error) => addLog(error.message, "WARN"));
+  });
+  $("#closeSampleModal")?.addEventListener("click", closeSampleModal);
+  $("#cancelNewSample")?.addEventListener("click", closeSampleModal);
+  $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
+  $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
+  $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
+
   $("#refreshPorts")?.addEventListener("click", () => {
     setPill("serialStatus", "串口: 待调试", "warn");
     setStepStatus("connect", "warning");
@@ -1288,6 +1597,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("#startWorkflow")?.addEventListener("click", () => {
+    if (!requireActiveSample()) return;
     switchView("capture", "sample");
     setStepStatus("sample", "running");
     addLog("检测流程已启动：按离线模式进入样品采集。");
@@ -1333,6 +1643,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     addLog("帮助：左侧任务树按设备准备、采集、形态、糖酸、报告和设置组织；形态分析会调用本地 Python 后端。");
   });
 
+  $("#modelStudioButton")?.addEventListener("click", openModelStudio);
   $("#exitButton")?.addEventListener("click", shutdownApp);
 
   window.setInterval(updateClock, 1000);
@@ -1340,14 +1651,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateShapeMode();
   try {
     const status = await api("/api/status");
+    applySampleSessionState(status);
     state.currentCaptureDir = status.currentCaptureDir || "";
     state.currentCaptureValid = Boolean(status.currentCaptureValid && state.currentCaptureDir);
     state.analysisDataDir = status.analysisDataDir || status.sampleDataset || "";
+    if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
+    if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+    await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+    renderCurrentSample();
     updateCurrentCaptureControls();
-    if (state.analysisDataDir) {
+    if (hasActiveSample() && state.analysisDataDir) {
       const source = state.currentCaptureValid && state.analysisDataDir === state.currentCaptureDir ? "current" : "other";
       await loadSampleFolder(state.analysisDataDir, { source });
-    } else if (state.currentCaptureValid) {
+    } else if (hasActiveSample() && state.currentCaptureValid) {
       await loadSampleFolder(state.currentCaptureDir, { source: "current" });
     } else {
       setDataSource("other");

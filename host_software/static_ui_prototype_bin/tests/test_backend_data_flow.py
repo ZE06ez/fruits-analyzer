@@ -5,12 +5,14 @@ import time
 import unittest
 import urllib.parse
 import urllib.request
+import urllib.error
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from PIL import Image
 
 from backend_server import JobStore, SessionState, create_handler
+from model_studio.service import ModelStudioService
 
 
 class BackendDataFlowTests(unittest.TestCase):
@@ -22,6 +24,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.static_dir.mkdir()
         self.app_dir.mkdir()
         self.outputs_dir.mkdir()
+        self.studio = ModelStudioService(self.app_dir)
         self.session = SessionState()
         handler = create_handler(self.static_dir, self.outputs_dir, self.app_dir, JobStore(), self.session)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -49,6 +52,13 @@ class BackendDataFlowTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def create_sample(self, name: str = "Duke成熟组03") -> dict:
+        return self.post_json("/api/new-sample", {
+            "sampleName": name,
+            "fruitType": "blueberry",
+            "variety": "Duke",
+        })["sample"]
+
     def make_dataset(self, name: str) -> Path:
         dataset = self.root / name
         rgb = dataset / "rgb"
@@ -60,6 +70,44 @@ class BackendDataFlowTests(unittest.TestCase):
             Image.new("L", (40, 40), 128).save(spectral / f"{name}_{band}.png")
         return dataset
 
+    def insert_model(
+        self,
+        model_id: str,
+        *,
+        target: str = "ssc",
+        fruit_type: str = "blueberry",
+        variety: str = "Duke",
+        status: str = "Published",
+        is_default: int = 0,
+        display_name: str = "",
+    ) -> None:
+        model_dir = self.app_dir / "model_artifacts" / model_id
+        model_dir.mkdir(parents=True, exist_ok=True)
+        with self.studio.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,model_dir,metadata_json,created_at,published_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    model_id,
+                    model_id,
+                    display_name or model_id,
+                    target,
+                    fruit_type,
+                    variety,
+                    "SVR",
+                    "SNV",
+                    "v1.0.0",
+                    status,
+                    is_default,
+                    str(model_dir),
+                    "{}",
+                    "2026-08-12 10:00:00",
+                    "2026-08-12 10:00:00" if status in {"Published", "Default", "Production"} else "",
+                ),
+            )
+
     def wait_job(self, job_id: str) -> dict:
         for _ in range(40):
             job = self.get_json(f"/api/jobs/{job_id}")["job"]
@@ -68,7 +116,70 @@ class BackendDataFlowTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail("shape analysis job did not finish")
 
+    def test_new_sample_requires_name_and_generates_unique_id(self):
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry"})
+        first = self.create_sample("蓝莓实验A-第5颗")
+        self.post_json("/api/complete-capture", {})
+        status_after_capture = self.get_json("/api/status")
+        self.assertTrue(status_after_capture["currentCaptureDir"])
+
+        second = self.create_sample("蓝莓实验A-第5颗")
+        self.assertNotEqual(first["sampleId"], second["sampleId"])
+        self.assertEqual(second["sampleName"], "蓝莓实验A-第5颗")
+        self.assertFalse(second["currentCaptureDir"])
+        self.assertFalse(second["analysisDataDir"])
+
+    def test_new_sample_uses_registry_defaults_and_validates_model_scope(self):
+        self.insert_model("duke_ssc", target="ssc", fruit_type="blueberry", variety="Duke", status="Default", is_default=1)
+        self.insert_model("generic_ta", target="ta", fruit_type="blueberry", variety="generic", status="Default", is_default=1)
+        self.insert_model("apple_ssc", target="ssc", fruit_type="apple", variety="Fuji", status="Default", is_default=1)
+        self.insert_model("candidate_ph", target="ph", fruit_type="blueberry", variety="Duke", status="Candidate")
+
+        catalog = self.get_json("/api/quality-models", {"fruitType": "blueberry", "variety": "Duke"})
+        self.assertIn("blueberry", [item.lower() for item in catalog["fruitTypes"]])
+        self.assertIn("Duke", catalog["varieties"])
+        self.assertEqual(catalog["defaults"]["ssc"]["model_id"], "duke_ssc")
+        self.assertEqual(catalog["defaults"]["ta"]["model_id"], "generic_ta")
+        self.assertEqual(catalog["ph"], [])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "蓝莓Duke-01",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+        })["sample"]
+        self.assertEqual(sample["selectedSscModelId"], "duke_ssc")
+        self.assertEqual(sample["selectedTaModelId"], "generic_ta")
+        self.assertEqual(sample["selectedPhModelId"], "")
+
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/model-selection", {
+                "fruitType": "blueberry",
+                "variety": "Duke",
+                "selectedSscModelId": "apple_ssc",
+            })
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/model-selection", {
+                "fruitType": "blueberry",
+                "variety": "Duke",
+                "selectedSscModelId": "generic_ta",
+            })
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/model-selection", {
+                "fruitType": "blueberry",
+                "variety": "Duke",
+                "selectedPhModelId": "candidate_ph",
+            })
+
     def test_capture_sets_analysis_dir_and_quality_endpoints_use_it(self):
+        status = self.get_json("/api/status")
+        self.assertFalse(status["hasSample"])
+        self.assertFalse(status["sampleId"])
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/complete-capture", {"sampleId": "S001"})
+        sample = self.create_sample()
+        self.assertTrue(sample["hasSample"])
+        self.assertEqual(sample["sampleName"], "Duke成熟组03")
         capture = self.post_json("/api/complete-capture", {"sampleId": "S001"})
         capture_dir = Path(capture["currentCaptureDir"])
         self.assertEqual(Path(capture["analysisDataDir"]), capture_dir)
@@ -103,6 +214,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(Path(job["result"]["datasetDir"]), capture_dir)
 
     def test_manual_folder_switches_session_to_latest_dataset(self):
+        self.create_sample("苹果测试01")
         dataset_a = self.make_dataset("apple_001")
         dataset_b = self.make_dataset("apple_002")
 

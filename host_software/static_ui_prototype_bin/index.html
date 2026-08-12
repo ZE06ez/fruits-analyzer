@@ -25,6 +25,7 @@
         <span id="currentTime">--:--:--</span>
       </div>
       <div class="top-actions">
+        <button class="studio-action" id="modelStudioButton">模型训练</button>
         <button id="helpButton">帮助</button>
         <button id="fullscreenButton">全屏</button>
         <button class="danger" id="exitButton">退出</button>
@@ -112,8 +113,21 @@
             <h2 id="viewTitle">电机检测</h2>
           </div>
           <div class="sample-meta">
-            <label for="sampleId">样品编号</label>
-            <input id="sampleId" value="F20260807-001" />
+            <span>当前样品</span>
+            <strong id="currentSampleName">未创建样品</strong>
+            <small id="currentSampleId">请先创建当前样品</small>
+            <input id="sampleId" type="hidden" value="" />
+            <div class="sample-actions">
+              <button id="newSampleButton" type="button">新建样品</button>
+              <button id="changeModelButton" type="button" disabled>更换模型</button>
+            </div>
+          </div>
+          <div class="model-meta">
+            <label>样品类型<select id="qualityFruitType"></select></label>
+            <label>品种<select id="qualityVariety"></select></label>
+            <label>糖度模型<select id="sscModelSelect"><option value="">自动选择默认模型</option></select></label>
+            <label>酸度模型<select id="taModelSelect"><option value="">自动选择默认模型</option></select></label>
+            <label>pH 模型<select id="phModelSelect"><option value="">自动选择默认模型</option></select></label>
           </div>
           <div class="mode-badge" id="runMode">离线调试模式</div>
         </section>
@@ -484,6 +498,43 @@
         </section>
       </aside>
     </main>
+
+    <div class="modal-backdrop" id="sampleModal" hidden>
+      <section class="modal">
+        <header>
+          <div>
+            <p class="eyebrow">Sample Session</p>
+            <h3>新建样品 / New Sample</h3>
+          </div>
+          <button id="closeSampleModal" type="button">关闭</button>
+        </header>
+        <div class="modal-grid">
+          <label>样品名称 *
+            <input id="newSampleName" placeholder="Duke成熟组03" />
+          </label>
+          <label>Fruit Type *
+            <select id="newSampleFruitType"></select>
+          </label>
+          <label>Variety
+            <select id="newSampleVariety"></select>
+          </label>
+          <label>SSC Model
+            <select id="newSampleSscModel"></select>
+          </label>
+          <label>TA Model
+            <select id="newSampleTaModel"></select>
+          </label>
+          <label>pH Model
+            <select id="newSamplePhModel"></select>
+          </label>
+        </div>
+        <p class="modal-note" id="newSampleHint">Fruit Type 和 Variety 来自已发布模型。</p>
+        <footer>
+          <button id="cancelNewSample" type="button">取消</button>
+          <button class="primary-action" id="createNewSample" type="button">创建样品</button>
+        </footer>
+      </section>
+    </div>
 
     <footer class="log-panel">
       <div class="log-toolbar">

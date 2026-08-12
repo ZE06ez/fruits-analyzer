@@ -55,6 +55,19 @@ def grouped_holdout(groups: list[str], *, test_fraction: float = 0.25) -> tuple[
     return train_idx, test_idx
 
 
+def group_kfold_indices(groups: list[str], *, max_splits: int = 5) -> list[tuple[np.ndarray, np.ndarray]]:
+    unique_count = len(set(groups))
+    if unique_count < 3:
+        raise InsufficientTrainingDataset("at least three sample groups are required")
+    from sklearn.model_selection import GroupKFold
+
+    n_splits = min(max_splits, unique_count)
+    splitter = GroupKFold(n_splits=n_splits)
+    x_placeholder = np.zeros((len(groups), 1), dtype=np.float32)
+    y_placeholder = np.zeros(len(groups), dtype=np.float32)
+    return [(train_idx, test_idx) for train_idx, test_idx in splitter.split(x_placeholder, y_placeholder, groups)]
+
+
 def fit_regressor(model_type: str, x_train: np.ndarray, y_train: np.ndarray):
     model_type = model_type.upper()
     if model_type == "PLSR":
@@ -65,12 +78,17 @@ def fit_regressor(model_type: str, x_train: np.ndarray, y_train: np.ndarray):
         best_error = math.inf
         for n_components in range(1, max_components + 1):
             model = PLSRegression(n_components=n_components)
-            model.fit(x_train, y_train)
+            try:
+                model.fit(x_train, y_train)
+            except ValueError:
+                continue
             pred = np.asarray(model.predict(x_train)).reshape(-1)
             error = float(np.mean((pred - y_train) ** 2))
             if error < best_error:
                 best_error = error
                 best = model
+        if best is None:
+            raise ValueError("PLSR training failed for all component counts")
         return best
     if model_type == "SVR":
         from sklearn.svm import SVR
@@ -107,20 +125,36 @@ def train_one(
     model_type: str,
     output_dir: str | Path | None = None,
     calibration_required: bool = False,
+    validation_method: str = "GroupKFold",
 ) -> dict:
     if target not in TARGETS:
         raise ValueError(f"unsupported target: {target}")
     x, y, groups, feature_names, wavelengths = load_feature_csv(feature_csv, target)
-    train_idx, test_idx = grouped_holdout(groups)
-    x_train_raw, x_test_raw = x[train_idx], x[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
-    x_train, pre_state = fit_transform_preprocessor(x_train_raw, preprocessing)
     from quality_algorithm.preprocessing import transform_preprocessor
 
-    x_test = transform_preprocessor(x_test_raw, pre_state)
-    model = fit_regressor(model_type, x_train, y_train)
-    pred = np.asarray(model.predict(x_test)).reshape(-1)
-    metrics = evaluate_predictions(y_test, pred)
+    validation_name = validation_method or "GroupKFold"
+    if validation_name.lower().replace(" ", "") in {"groupkfold", "groupk-fold"}:
+        y_true_parts = []
+        y_pred_parts = []
+        for train_idx, test_idx in group_kfold_indices(groups):
+            x_train, pre_state_fold = fit_transform_preprocessor(x[train_idx], preprocessing)
+            x_test = transform_preprocessor(x[test_idx], pre_state_fold)
+            fold_model = fit_regressor(model_type, x_train, y[train_idx])
+            y_true_parts.extend(y[test_idx].tolist())
+            y_pred_parts.extend(np.asarray(fold_model.predict(x_test)).reshape(-1).tolist())
+        metrics = evaluate_predictions(np.asarray(y_true_parts, dtype=np.float32), np.asarray(y_pred_parts, dtype=np.float32))
+        validation_label = "GroupKFold_by_sample_id"
+    else:
+        train_idx, test_idx = grouped_holdout(groups)
+        x_train, pre_state_holdout = fit_transform_preprocessor(x[train_idx], preprocessing)
+        x_test = transform_preprocessor(x[test_idx], pre_state_holdout)
+        holdout_model = fit_regressor(model_type, x_train, y[train_idx])
+        pred = np.asarray(holdout_model.predict(x_test)).reshape(-1)
+        metrics = evaluate_predictions(y[test_idx], pred)
+        validation_label = "grouped_holdout_by_sample_id"
+
+    x_all, pre_state = fit_transform_preprocessor(x, preprocessing)
+    model = fit_regressor(model_type, x_all, y)
     metadata = {
         "target": target,
         "model_type": model_type.upper(),
@@ -131,7 +165,7 @@ def train_one(
         "feature_names": feature_names,
         "training_date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "sample_count": int(len(y)),
-        "validation_method": "grouped_holdout_by_sample_id",
+        "validation_method": validation_label,
         "r2": metrics["r2"],
         "rmse": metrics["rmse"],
         "mae": metrics["mae"],
@@ -202,4 +236,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

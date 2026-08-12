@@ -19,6 +19,10 @@ __pycache__/
 !**/sample_data/README.md
 **/Data/
 **/uploads/
+**/trained_models/
+**/model_studio/database/
+**/model_studio/artifacts/
+**/model_studio/models/candidates/
 
 # Local/temp files
 临时文件/
