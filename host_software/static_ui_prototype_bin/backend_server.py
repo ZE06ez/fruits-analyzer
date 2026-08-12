@@ -110,10 +110,19 @@ def default_sample_dataset(app_dir: Path) -> str:
     return ""
 
 
-def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore, session: SessionState):
+def create_handler(
+    static_dir: Path,
+    outputs_dir: Path,
+    app_dir: Path,
+    store: JobStore,
+    session: SessionState,
+    device_manager: DeviceManager | None = None,
+):
     static_dir = static_dir.resolve()
     outputs_dir = outputs_dir.resolve()
     app_dir = app_dir.resolve()
+
+    device_manager = device_manager or DeviceManager()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "FruitTasteAnalyzer/1.0"
