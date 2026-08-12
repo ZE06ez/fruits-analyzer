@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
 
 class JobStore:
