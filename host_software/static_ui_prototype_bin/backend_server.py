@@ -149,6 +149,38 @@ def create_handler(
                     **session_info,
                 })
                 return
+                if path == "/api/device/ports":
+    try:
+        self.json_response({
+            "ok": True,
+            "ports": device_manager.list_ports(),
+        })
+    except Exception as exc:
+        self.json_response(
+            {"ok": False, "error": str(exc)},
+            status=503,
+        )
+    return
+
+if path == "/api/device/status":
+    try:
+        self.json_response({
+            "ok": True,
+            "device": device_manager.status(),
+        })
+    except Exception as exc:
+        self.json_response(
+            {"ok": False, "error": str(exc)},
+            status=503,
+        )
+    return
+
+if path == "/api/capture/status":
+    self.json_response({
+        "ok": True,
+        "capture": device_manager.capture_status(),
+    })
+    return
             if path == "/api/sample-folder":
                 self.handle_sample_folder(parsed.query)
                 return
@@ -176,6 +208,175 @@ def create_handler(
 
         def do_POST(self):  # noqa: N802
             parsed = urlparse(self.path)
+            # 连接STM32F407
+    if parsed.path == "/api/device/connect":
+        payload = self.read_json()
+        port = str(payload.get("port") or "").strip()
+
+        if not port:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": "请选择串口",
+                },
+                status=400,
+            )
+            return
+
+        try:
+            device = device_manager.connect(port)
+
+            self.json_response({
+                "ok": True,
+                "device": device,
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+
+    # 断开STM32F407
+    if parsed.path == "/api/device/disconnect":
+        try:
+            device_manager.disconnect()
+
+            self.json_response({
+                "ok": True,
+                "device": device_manager.status(),
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=500,
+            )
+        return
+
+    # STM32设备自检
+    if parsed.path == "/api/device/self-test":
+        payload = self.read_json()
+
+        try:
+            result = device_manager.self_test(
+                include_motion=bool(
+                    payload.get("includeMotion", False)
+                )
+            )
+
+            self.json_response({
+                "ok": True,
+                "result": result,
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+
+    # 紧急停止
+    if parsed.path == "/api/device/emergency-stop":
+        try:
+            device = device_manager.emergency_stop()
+
+            self.json_response({
+                "ok": True,
+                "device": device,
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+
+    # 清除故障
+    if parsed.path == "/api/device/fault-clear":
+        try:
+            device = device_manager.fault_clear()
+
+            self.json_response({
+                "ok": True,
+                "device": device,
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+            # 开始真实采集
+    if parsed.path == "/api/capture/start":
+        payload = self.read_json()
+
+        try:
+            capture = device_manager.start_capture(
+                sample_id=str(
+                    payload.get("sampleId") or ""
+                )
+            )
+
+            self.json_response({
+                "ok": True,
+                "capture": capture,
+            })
+
+        except CameraIntegrationRequired as exc:
+            # STM32已经接入，但相机SDK尚未接入
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=409,
+            )
+
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+
+    # 取消采集并安全停止
+    if parsed.path == "/api/capture/cancel":
+        try:
+            capture = device_manager.cancel_capture()
+
+            self.json_response({
+                "ok": True,
+                "capture": capture,
+            })
+        except Exception as exc:
+            self.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                },
+                status=503,
+            )
+        return
+
+    # 从这里开始是项目原有接口
             if parsed.path == "/api/upload-dataset":
                 self.handle_upload_dataset()
                 return
@@ -196,10 +397,19 @@ def create_handler(
                 self.json_response({"ok": store.cancel(job_id)})
                 return
             if parsed.path == "/api/shutdown":
-                setattr(self.server, "should_exit", True)
-                self.json_response({"ok": True})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
-                return
+    try:
+        device_manager.disconnect()
+    except Exception:
+        pass
+
+    setattr(self.server, "should_exit", True)
+    self.json_response({"ok": True})
+
+    threading.Thread(
+        target=self.server.shutdown,
+        daemon=True,
+    ).start()
+    return
             self.json_response({"ok": False, "error": "未知 API"}, status=404)
 
         def handle_select_dataset(self) -> None:
