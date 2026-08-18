@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import shutil
 import socket
+import subprocess
 import threading
 import time
 import traceback
@@ -70,8 +72,18 @@ class JobStore:
 class SessionState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self.sample_id: str = ""
+        self.sample_name: str = ""
+        self.created_at: str = ""
+        self.save_root_dir: str = ""
         self.current_capture_dir: str = ""
         self.analysis_data_dir: str = ""
+        self.capture_started: bool = False
+        self.fruit_type: str = ""
+        self.variety: str = "generic"
+        self.selected_ssc_model_id: str = ""
+        self.selected_ta_model_id: str = ""
+        self.selected_ph_model_id: str = ""
 
     def set_current_capture_dir(self, value: str | Path) -> None:
         with self._lock:
@@ -81,10 +93,80 @@ class SessionState:
         with self._lock:
             self.analysis_data_dir = str(value)
 
+    def create_sample(self, payload: dict, model_resolver=None) -> dict:
+        sample_name = str(payload.get("sampleName") or payload.get("sample_name") or "").strip()
+        if not sample_name:
+            raise ValueError("sample_name is required")
+        fruit_type = str(payload.get("fruitType") or payload.get("fruit_type") or "").strip()
+        if not fruit_type:
+            raise ValueError("fruit_type is required")
+        save_root_dir = str(payload.get("saveRootDir") or payload.get("save_root_dir") or "").strip()
+        if not save_root_dir:
+            raise ValueError("save_root_dir is required")
+        capture_dir = str(payload.get("captureDir") or payload.get("capture_dir") or "").strip()
+        if not capture_dir:
+            raise ValueError("capture_dir is required")
+        variety = str(payload.get("variety") or "generic").strip() or "generic"
+        selected_ssc = str(payload.get("selectedSscModelId") or payload.get("selected_ssc_model_id") or "")
+        selected_ta = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or "")
+        selected_ph = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or "")
+        if model_resolver:
+            selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc) if selected_ssc else ""
+            selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta) if selected_ta else ""
+            selected_ph = model_resolver(fruit_type, variety, "ph", selected_ph) if selected_ph else ""
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        sample_id = f"S{stamp}_{uuid.uuid4().hex[:8]}"
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self._lock:
+            self.sample_id = sample_id
+            self.sample_name = sample_name
+            self.created_at = created_at
+            self.save_root_dir = save_root_dir
+            self.fruit_type = fruit_type
+            self.variety = variety
+            self.selected_ssc_model_id = selected_ssc
+            self.selected_ta_model_id = selected_ta
+            self.selected_ph_model_id = selected_ph
+            self.current_capture_dir = capture_dir
+            self.analysis_data_dir = ""
+            self.capture_started = False
+        return self.snapshot()
+
+    def update_model_selection(self, payload: dict) -> None:
+        with self._lock:
+            self.fruit_type = str(payload.get("fruitType") or payload.get("fruit_type") or self.fruit_type or "").strip()
+            self.variety = str(payload.get("variety") or self.variety or "generic").strip() or "generic"
+            self.selected_ssc_model_id = str(payload.get("selectedSscModelId") or payload.get("selected_ssc_model_id") or self.selected_ssc_model_id or "")
+            self.selected_ta_model_id = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or self.selected_ta_model_id or "")
+            self.selected_ph_model_id = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or self.selected_ph_model_id or "")
+
+    def apply_sample_metadata(self, metadata: dict) -> None:
+        with self._lock:
+            fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
+            variety = str(metadata.get("variety") or "").strip()
+            if fruit_type:
+                self.fruit_type = fruit_type
+            if variety:
+                self.variety = variety
+            if not self.sample_name:
+                self.sample_name = str(metadata.get("sample_name") or metadata.get("sampleName") or "").strip()
+            if not self.sample_id:
+                self.sample_id = str(metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
+
     def snapshot(self) -> dict:
         with self._lock:
+            sample_id = self.sample_id
+            sample_name = self.sample_name
+            created_at = self.created_at
+            save_root_dir = self.save_root_dir
             current = self.current_capture_dir
             analysis = self.analysis_data_dir
+            capture_started = self.capture_started
+            fruit_type = self.fruit_type
+            variety = self.variety
+            selected_ssc_model_id = self.selected_ssc_model_id
+            selected_ta_model_id = self.selected_ta_model_id
+            selected_ph_model_id = self.selected_ph_model_id
         current_path = Path(current).expanduser() if current else None
         current_valid = bool(current_path and current_path.exists() and current_path.is_dir())
         if current and not current_valid:
@@ -92,11 +174,26 @@ class SessionState:
             with self._lock:
                 self.current_capture_dir = ""
         return {
+            "hasSample": bool(sample_id),
+            "sampleId": sample_id,
+            "sampleName": sample_name,
+            "createdAt": created_at,
+            "saveRootDir": save_root_dir,
             "currentCaptureDir": current if current_valid else "",
             "currentCaptureValid": current_valid,
             "analysisDataDir": analysis,
+            "captureStarted": capture_started,
+            "fruitType": fruit_type,
+            "variety": variety,
+            "selectedSscModelId": selected_ssc_model_id,
+            "selectedTaModelId": selected_ta_model_id,
+            "selectedPhModelId": selected_ph_model_id,
             "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
         }
+
+    def set_capture_started(self, value: bool = True) -> None:
+        with self._lock:
+            self.capture_started = value
 
 
 def free_port() -> int:
@@ -109,10 +206,33 @@ def default_sample_dataset(app_dir: Path) -> str:
     return ""
 
 
+def default_save_root(app_dir: Path) -> str:
+    return str(app_dir.parent / "Data")
+
+
+def read_sample_metadata(dataset_dir: str | Path) -> dict:
+    root = Path(dataset_dir).expanduser()
+    metadata_path = root / "metadata.json"
+    if not metadata_path.exists() or not metadata_path.is_file():
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore, session: SessionState):
     static_dir = static_dir.resolve()
     outputs_dir = outputs_dir.resolve()
     app_dir = app_dir.resolve()
+    model_studio_static = app_dir / "model_studio" / "static"
+    try:
+        from model_studio.service import ModelStudioService
+
+        model_studio = ModelStudioService(app_dir)
+    except Exception:
+        model_studio = None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "FruitTasteAnalyzer/1.0"
@@ -123,6 +243,12 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
         def do_GET(self):  # noqa: N802
             parsed = urlparse(self.path)
             path = parsed.path
+            if path == "/model-studio":
+                self.serve_file(model_studio_static, "index.html")
+                return
+            if path.startswith("/model-studio/"):
+                self.serve_file(model_studio_static, path.removeprefix("/model-studio/") or "index.html")
+                return
             if path == "/api/status":
                 try:
                     from pointcloud_service import dependency_status
@@ -136,6 +262,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     "dependencies": dependencies,
                     "sampleDataset": default_sample_dataset(app_dir),
                     "sampleDatasets": {},
+                    "defaultSaveRoot": default_save_root(app_dir),
                     **session_info,
                 })
                 return
@@ -144,6 +271,12 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 return
             if path == "/api/select-dataset":
                 self.handle_select_dataset()
+                return
+            if path == "/api/select-save-root":
+                self.handle_select_save_root()
+                return
+            if path == "/api/quality-models":
+                self.handle_quality_models(parsed.query)
                 return
             if path == "/api/dataset-images":
                 self.handle_dataset_images(parsed.query)
@@ -159,6 +292,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     return
                 self.json_response({"ok": True, "job": job})
                 return
+            if path.startswith("/api/model-studio"):
+                self.handle_model_studio_get(parsed)
+                return
             if path.startswith("/outputs/"):
                 self.serve_file(outputs_dir, path.removeprefix("/outputs/"))
                 return
@@ -168,6 +304,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             parsed = urlparse(self.path)
             if parsed.path == "/api/upload-dataset":
                 self.handle_upload_dataset()
+                return
+            if parsed.path == "/api/new-sample":
+                self.handle_new_sample()
                 return
             if parsed.path == "/api/complete-capture":
                 self.handle_complete_capture()
@@ -181,6 +320,15 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if parsed.path == "/api/predict-acid":
                 self.handle_predict_acid()
                 return
+            if parsed.path == "/api/model-selection":
+                self.handle_model_selection()
+                return
+            if parsed.path == "/api/open-folder":
+                self.handle_open_folder()
+                return
+            if parsed.path.startswith("/api/model-studio"):
+                self.handle_model_studio_post(parsed)
+                return
             if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
                 job_id = parsed.path.split("/")[-2]
                 self.json_response({"ok": store.cancel(job_id)})
@@ -192,22 +340,289 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 return
             self.json_response({"ok": False, "error": "未知 API"}, status=404)
 
+        def require_model_studio(self):
+            if model_studio is None:
+                self.json_response({"ok": False, "error": "Model Studio backend is not available."}, status=500)
+                return None
+            return model_studio
+
+        def require_current_sample(self) -> dict | None:
+            info = session.snapshot()
+            if not info.get("hasSample"):
+                self.json_response({"ok": False, "code": "SAMPLE_REQUIRED", "error": "请先创建当前样品。"}, status=400)
+                return None
+            return info
+
+        def resolve_model_id(self, fruit_type: str, variety: str, target: str, selected_id: str = "") -> str:
+            studio = self.require_model_studio()
+            if studio is None:
+                return ""
+            if selected_id:
+                model = studio.get_model(selected_id)
+                if model.get("status") not in {"Published", "Default", "Production"}:
+                    raise ValueError("只能选择已发布、默认或生产模型。")
+                if str(model.get("target") or "").lower() != target:
+                    raise ValueError(f"{target.upper()} 不能选择其他指标模型。")
+                if str(model.get("fruit_type") or "").lower() != str(fruit_type or "").lower():
+                    raise ValueError("模型水果类型与当前样品不匹配。")
+                model_variety = str(model.get("variety") or "generic").lower()
+                sample_variety = str(variety or "generic").lower()
+                if model_variety not in {"", "generic", sample_variety}:
+                    raise ValueError("模型品种与当前样品不匹配。")
+                return selected_id
+            catalog = studio.model_catalog(fruit_type=fruit_type, variety=variety)
+            model = (catalog.get("defaults") or {}).get(target)
+            return model.get("model_id") if model else ""
+
+        def resolve_creation_model_id(self, fruit_type: str, variety: str, target: str, selected_id: str = "") -> str:
+            try:
+                return self.resolve_model_id(fruit_type, variety, target, selected_id)
+            except Exception:
+                return self.resolve_model_id(fruit_type, variety, target, "")
+
+        def handle_model_studio_get(self, parsed) -> None:
+            studio = self.require_model_studio()
+            if studio is None:
+                return
+            params = parse_qs(parsed.query)
+            path = parsed.path.removeprefix("/api/model-studio").strip("/")
+            try:
+                if path in {"", "dashboard"}:
+                    self.json_response({"ok": True, "dashboard": studio.dashboard()})
+                    return
+                if path == "datasets":
+                    self.json_response({"ok": True, "datasets": studio.list_datasets()})
+                    return
+                if path == "dataset-versions":
+                    dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
+                    self.json_response({"ok": True, "versions": studio.list_dataset_versions(dataset_id)})
+                    return
+                if path == "samples":
+                    dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
+                    self.json_response({
+                        "ok": True,
+                        "samples": studio.list_samples(
+                            dataset_id,
+                            limit=int(params.get("limit", ["50"])[0]),
+                            offset=int(params.get("offset", ["0"])[0]),
+                            query=params.get("query", [""])[0],
+                        ),
+                    })
+                    return
+                if path == "quality":
+                    dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
+                    self.json_response({"ok": True, "quality": studio.quality_report(dataset_id)})
+                    return
+                if path == "experiments":
+                    self.json_response({"ok": True, "experiments": studio.list_experiments()})
+                    return
+                if path == "jobs":
+                    self.json_response({"ok": True, "jobs": studio.list_jobs()})
+                    return
+                if path.startswith("jobs/"):
+                    self.json_response({"ok": True, "job": studio.get_job(path.split("/")[-1])})
+                    return
+                if path == "models":
+                    self.json_response({"ok": True, "models": studio.list_models()})
+                    return
+                if path == "published-models":
+                    self.json_response({"ok": True, "models": studio.list_published_models(
+                        fruit_type=params.get("fruitType", params.get("fruit_type", [""]))[0],
+                        variety=params.get("variety", [""])[0],
+                        target=params.get("target", [""])[0],
+                    )})
+                    return
+                if path == "logs":
+                    self.json_response({"ok": True, "logs": studio.logs()})
+                    return
+                self.json_response({"ok": False, "error": "Unknown Model Studio API."}, status=404)
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_model_studio_post(self, parsed) -> None:
+            studio = self.require_model_studio()
+            if studio is None:
+                return
+            path = parsed.path.removeprefix("/api/model-studio").strip("/")
+            payload = self.read_json()
+            try:
+                if path == "datasets":
+                    storage_path = payload.get("storagePath") or payload.get("storage_path")
+                    if storage_path:
+                        payload["storage_path"] = str(resolve_user_path(storage_path, app_dir))
+                    self.json_response({"ok": True, "dataset": studio.create_dataset(payload)})
+                    return
+                if path == "samples/import":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    source_path = payload.get("sourcePath") or payload.get("source_path")
+                    if source_path:
+                        source_path = resolve_user_path(source_path, app_dir)
+                    self.json_response({"ok": True, "result": studio.import_samples(dataset_id, source_path)})
+                    return
+                if path == "samples/status":
+                    self.json_response({"ok": True, "sample": studio.update_sample_status(
+                        payload.get("datasetId") or payload.get("dataset_id"),
+                        payload.get("sampleId") or payload.get("sample_id"),
+                        payload.get("includeStatus") or payload.get("include_status") or "Included",
+                        payload.get("reason") or payload.get("excludeReason") or "",
+                    )})
+                    return
+                if path == "labels/import":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    labels_path = payload.get("labelsCsvPath") or payload.get("labels_csv")
+                    self.json_response({"ok": True, "result": studio.import_labels(dataset_id, resolve_user_path(labels_path, app_dir))})
+                    return
+                if path == "dataset-versions":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    self.json_response({"ok": True, "version": studio.create_dataset_version(dataset_id, payload.get("description") or "")})
+                    return
+                if path == "features":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    self.json_response({"ok": True, "features": studio.generate_features(dataset_id, payload.get("datasetVersionId") or payload.get("dataset_version_id"))})
+                    return
+                if path == "experiments":
+                    self.json_response({"ok": True, "experiment": studio.create_experiment(payload)})
+                    return
+                if path == "experiments/clone":
+                    self.json_response({"ok": True, "experiment": studio.clone_experiment(
+                        payload.get("experimentId") or payload.get("experiment_id"),
+                        payload.get("experimentName") or payload.get("name"),
+                    )})
+                    return
+                if path == "experiments/retrain":
+                    self.json_response({"ok": True, "experiment": studio.retrain_from_model(
+                        payload.get("modelId") or payload.get("model_id"),
+                        payload.get("datasetVersionId") or payload.get("dataset_version_id"),
+                        payload.get("experimentName") or payload.get("name"),
+                    )})
+                    return
+                if path == "jobs":
+                    experiment_id = payload.get("experimentId") or payload.get("experiment_id")
+                    self.json_response({"ok": True, "job": studio.create_training_job(experiment_id)})
+                    return
+                if path.startswith("jobs/") and path.endswith("/cancel"):
+                    job_id = path.split("/")[-2]
+                    self.json_response({"ok": True, "job": studio.cancel_job(job_id)})
+                    return
+                if path == "models/publish":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "model": studio.publish_model(model_id, payload)})
+                    return
+                if path == "models/validate":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "model": studio.validate_model(model_id, payload)})
+                    return
+                if path == "models/default":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "model": studio.set_default_model(model_id)})
+                    return
+                if path == "models/export":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "bundle": studio.export_model_bundle(model_id)})
+                    return
+                if path == "models/archive":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "model": studio.archive_model(model_id)})
+                    return
+                self.json_response({"ok": False, "error": "Unknown Model Studio API."}, status=404)
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_quality_models(self, query: str) -> None:
+            studio = self.require_model_studio()
+            if studio is None:
+                return
+            params = parse_qs(query)
+            fruit_type = params.get("fruitType", params.get("fruit_type", [""]))[0]
+            variety = params.get("variety", ["generic"])[0] or "generic"
+            try:
+                catalog = studio.model_catalog(fruit_type=fruit_type, variety=variety)
+                self.json_response({
+                    "ok": True,
+                    "fruitType": fruit_type,
+                    "variety": variety,
+                    "fruitTypes": catalog["fruitTypes"],
+                    "varieties": catalog["varieties"],
+                    "defaults": catalog["defaults"],
+                    "ssc": catalog["compatible"]["ssc"],
+                    "ta": catalog["compatible"]["ta"],
+                    "ph": catalog["compatible"]["ph"],
+                })
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_new_sample(self) -> None:
+            payload = self.read_json()
+            try:
+                save_root = resolve_user_path(str(payload.get("saveRootDir") or ""), app_dir)
+                if not str(payload.get("saveRootDir") or "").strip():
+                    raise ValueError("save_root_dir is required")
+                save_root.mkdir(parents=True, exist_ok=True)
+                sample_name = str(payload.get("sampleName") or payload.get("sample_name") or "").strip()
+                capture_dir = create_unique_sample_folder(save_root, sample_name)
+                payload["saveRootDir"] = str(save_root)
+                payload["captureDir"] = str(capture_dir)
+                sample = session.create_sample(payload, self.resolve_model_id)
+                ensure_sample_capture_folder(capture_dir, sample)
+                self.json_response({"ok": True, "sample": sample})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_model_selection(self) -> None:
+            payload = self.read_json()
+            current = session.snapshot()
+            if not current.get("hasSample"):
+                self.json_response({"ok": False, "code": "SAMPLE_REQUIRED", "error": "请先创建当前样品。"}, status=400)
+                return
+            try:
+                fruit_type = str(payload.get("fruitType") or payload.get("fruit_type") or current.get("fruitType") or "").strip()
+                variety = str(payload.get("variety") or current.get("variety") or "generic").strip() or "generic"
+                payload["selectedSscModelId"] = self.resolve_model_id(fruit_type, variety, "ssc", str(payload.get("selectedSscModelId") or ""))
+                payload["selectedTaModelId"] = self.resolve_model_id(fruit_type, variety, "ta", str(payload.get("selectedTaModelId") or ""))
+                payload["selectedPhModelId"] = self.resolve_model_id(fruit_type, variety, "ph", str(payload.get("selectedPhModelId") or ""))
+                session.update_model_selection(payload)
+                self.json_response({"ok": True, "session": session.snapshot()})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
         def handle_select_dataset(self) -> None:
             try:
-                import tkinter as tk
-                from tkinter import filedialog
-
-                root = tk.Tk()
-                root.withdraw()
-                selected = filedialog.askdirectory(title="选择样品文件夹")
-                root.destroy()
+                info = session.snapshot()
+                initial = info.get("analysisDataDir") or info.get("currentCaptureDir") or info.get("saveRootDir") or default_save_root(app_dir)
+                selected = select_directory_dialog("选择样品文件夹", initial)
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
                     return
-                session.set_analysis_data_dir(selected)
+                if info.get("hasSample"):
+                    session.set_analysis_data_dir(selected)
                 self.json_response({"ok": True, "datasetDir": selected})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"打开目录选择器失败: {exc}"}, status=500)
+
+        def handle_select_save_root(self) -> None:
+            try:
+                selected = select_directory_dialog("选择样品保存位置", default_save_root(app_dir))
+                if not selected:
+                    self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
+                    return
+                self.json_response({"ok": True, "saveRootDir": selected})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开保存位置选择器失败: {exc}"}, status=500)
+
+        def handle_open_folder(self) -> None:
+            info = self.require_current_sample()
+            if info is None:
+                return
+            payload = self.read_json()
+            target = resolve_user_path(str(payload.get("path") or info.get("currentCaptureDir") or ""), app_dir)
+            if not target.exists() or not target.is_dir():
+                self.json_response({"ok": False, "error": "样品文件夹不存在。"}, status=400)
+                return
+            try:
+                open_folder_in_explorer(target)
+                self.json_response({"ok": True, "path": str(target)})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开文件夹失败: {exc}"}, status=500)
 
         def handle_sample_folder(self, query: str) -> None:
             params = parse_qs(query)
@@ -239,8 +654,14 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             try:
                 from pointcloud_service import inspect_sample_folder
 
-                report = inspect_sample_folder(resolve_user_path(dataset_dir, app_dir) if dataset_dir else "", color_dir, depth_dir)
-                if report.get("valid"):
+                resolved_dataset = resolve_user_path(dataset_dir, app_dir) if dataset_dir else ""
+                report = inspect_sample_folder(resolved_dataset, color_dir, depth_dir)
+                metadata = read_sample_metadata(report.get("datasetDir") or resolved_dataset) if report.get("datasetDir") or resolved_dataset else {}
+                if metadata:
+                    report["sampleMetadata"] = metadata
+                    if session.snapshot().get("hasSample"):
+                        session.apply_sample_metadata(metadata)
+                if report.get("valid") and session.snapshot().get("hasSample"):
                     session.set_analysis_data_dir(report["datasetDir"])
                 self.json_response(report)
             except Exception as exc:
@@ -324,6 +745,8 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             self.wfile.write(data)
 
         def handle_upload_dataset(self) -> None:
+            if self.require_current_sample() is None:
+                return
             content_type = self.headers.get("Content-Type", "")
             if "multipart/form-data" not in content_type:
                 self.json_response({"ok": False, "error": "请选择样品图像文件夹。"}, status=400)
@@ -376,10 +799,18 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": f"上传数据集失败: {exc}"}, status=500)
 
         def handle_complete_capture(self) -> None:
+            info = self.require_current_sample()
+            if info is None:
+                return
             payload = self.read_json()
-            sample_id = str(payload.get("sampleId") or "").strip()
+            capture_dir = str(info.get("currentCaptureDir") or "").strip()
+            if not capture_dir:
+                self.json_response({"ok": False, "error": "当前样品保存目录不存在，请重新创建样品。"}, status=400)
+                return
+            sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
-                capture_dir = create_offline_capture_dataset(app_dir, sample_id)
+                session.set_capture_started(True)
+                capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=info)
                 session.set_current_capture_dir(capture_dir)
                 session.set_analysis_data_dir(capture_dir)
                 self.json_response({
@@ -392,6 +823,8 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": f"保存本次拍摄数据失败: {exc}"}, status=500)
 
         def handle_analyze_shape(self) -> None:
+            if self.require_current_sample() is None:
+                return
             payload = self.read_json()
             dataset_dir = payload.get("datasetDir") or str(default_sample_dataset(app_dir))
             color_dir = payload.get("colorDir") or None
@@ -500,21 +933,36 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": f"酸度预测接口执行失败: {exc}"}, status=500)
 
         def build_quality_session(self, payload: dict):
-            dataset_dir = payload.get("datasetDir") or session.snapshot().get("analysisDataDir", "")
+            if self.require_current_sample() is None:
+                return None
+            session.update_model_selection(payload)
+            session_info = session.snapshot()
+            dataset_dir = payload.get("datasetDir") or session_info.get("analysisDataDir", "")
             if not dataset_dir:
                 self.json_response({"ok": False, "error": "请先在形态分析页面加载当前样品数据。"}, status=400)
                 return None
             color_dir = payload.get("colorDir") or None
             depth_dir = payload.get("depthDir") or None
-            sample_id = str(payload.get("sampleId") or "").strip()
             try:
+                resolved_dataset = resolve_user_path(dataset_dir, app_dir)
+                metadata = read_sample_metadata(resolved_dataset)
+                sample_id = str(session_info.get("sampleId") or payload.get("sampleId") or metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
+                fruit_type = session_info.get("fruitType") or payload.get("fruitType") or metadata.get("fruit_type") or metadata.get("fruitType") or ""
+                variety = session_info.get("variety") or payload.get("variety") or metadata.get("variety") or "generic"
                 from quality_prediction import build_sample_session
 
                 sample_data, report = build_sample_session(
-                    resolve_user_path(dataset_dir, app_dir),
+                    resolved_dataset,
                     sample_id=sample_id,
+                    sample_name=session_info.get("sampleName") or metadata.get("sample_name") or metadata.get("sampleName") or "",
                     rgb_dir=color_dir,
                     spectral_dir=depth_dir,
+                    capture_time=metadata.get("captured_at") or metadata.get("capturedAt") or metadata.get("created_at") or "",
+                    fruit_type=fruit_type,
+                    variety=variety,
+                    selected_ssc_model_id=session_info.get("selectedSscModelId") or payload.get("selectedSscModelId") or "",
+                    selected_ta_model_id=session_info.get("selectedTaModelId") or payload.get("selectedTaModelId") or "",
+                    selected_ph_model_id=session_info.get("selectedPhModelId") or payload.get("selectedPhModelId") or "",
                 )
                 if report.get("valid"):
                     session.set_analysis_data_dir(sample_data.analysis_data_dir)
@@ -581,6 +1029,65 @@ def resolve_user_path(value: str | Path, app_dir: Path) -> Path:
     return app_dir / path
 
 
+def select_directory_dialog(title: str, initial_dir: str | Path | None = None) -> str:
+    initial_path = Path(initial_dir).expanduser() if initial_dir else None
+    initial = str(initial_path) if initial_path and initial_path.exists() else ""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        root.lift()
+        root.focus_force()
+        selected = filedialog.askdirectory(parent=root, title=title, initialdir=initial or None, mustexist=True)
+        root.destroy()
+        return selected or ""
+    except Exception:
+        return select_directory_with_powershell(title, initial)
+
+
+def select_directory_with_powershell(title: str, initial_dir: str = "") -> str:
+    if os.name != "nt":
+        return ""
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;"
+        f"$dialog.Description = {json.dumps(title, ensure_ascii=False)};"
+        "$dialog.ShowNewFolderButton = $true;"
+    )
+    if initial_dir:
+        script += f"$dialog.SelectedPath = {json.dumps(initial_dir, ensure_ascii=False)};"
+    script += "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
+
+
+def open_folder_in_explorer(target: Path) -> None:
+    if os.name == "nt":
+        try:
+            os.startfile(str(target))  # type: ignore[attr-defined]
+            return
+        except Exception:
+            subprocess.Popen(["explorer.exe", str(target)])
+            return
+    subprocess.Popen(["xdg-open", str(target)])
+
+
 def safe_upload_relative(filename: str) -> Path | None:
     parts = []
     for part in filename.replace("\\", "/").split("/"):
@@ -593,21 +1100,68 @@ def safe_upload_relative(filename: str) -> Path | None:
     return Path(*parts)
 
 
-def create_offline_capture_dataset(app_dir: Path, sample_id: str = "") -> Path:
+WINDOWS_INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def sanitize_windows_name(value: str, fallback: str = "sample") -> str:
+    clean = WINDOWS_INVALID_CHARS.sub("_", str(value or "").strip())
+    clean = re.sub(r"\s+", "_", clean).strip(" ._")
+    return (clean or fallback)[:48]
+
+
+def create_unique_sample_folder(save_root: Path, sample_name: str) -> Path:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_name = sanitize_windows_name(sample_name)
+    base = f"{stamp}_{safe_name}"
+    candidate = save_root / base
+    index = 2
+    while candidate.exists():
+        candidate = save_root / f"{base}_{index:02d}"
+        index += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = None) -> None:
+    (capture_root / "rgb").mkdir(parents=True, exist_ok=True)
+    (capture_root / "multispectral").mkdir(parents=True, exist_ok=True)
+    (capture_root / "calibration" / "dark").mkdir(parents=True, exist_ok=True)
+    (capture_root / "calibration" / "white").mkdir(parents=True, exist_ok=True)
+    if metadata is not None:
+        meta = {
+            "sample_id": metadata.get("sampleId") or metadata.get("sample_id") or "",
+            "sample_name": metadata.get("sampleName") or metadata.get("sample_name") or "",
+            "fruit_type": metadata.get("fruitType") or metadata.get("fruit_type") or "",
+            "variety": metadata.get("variety") or "generic",
+            "selected_ssc_model_id": metadata.get("selectedSscModelId") or "",
+            "selected_ta_model_id": metadata.get("selectedTaModelId") or "",
+            "selected_ph_model_id": metadata.get("selectedPhModelId") or "",
+            "save_root_dir": metadata.get("saveRootDir") or "",
+            "created_at": metadata.get("createdAt") or "",
+            "captured_at": metadata.get("capturedAt") or metadata.get("captured_at") or "",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        (capture_root / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_dir: str | Path | None = None, metadata: dict | None = None) -> Path:
     """Create a small current-capture folder for offline UI verification.
 
     Real camera integration should replace this function's image-writing block with
     camera frame saves, while keeping the returned sample root directory contract.
     """
 
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_sample = "".join(ch for ch in sample_id if ch.isalnum() or ch in "-_")[:24]
-    folder_name = f"{stamp}_{safe_sample}" if safe_sample else stamp
-    capture_root = app_dir.parent / "Data" / folder_name
+    if capture_dir:
+        capture_root = Path(capture_dir)
+    else:
+        default_root = app_dir.parent / "Data"
+        default_root.mkdir(parents=True, exist_ok=True)
+        capture_root = create_unique_sample_folder(default_root, sample_id)
+    ensure_sample_capture_folder(capture_root, metadata)
     rgb_dir = capture_root / "rgb"
     spectral_dir = capture_root / "multispectral"
-    rgb_dir.mkdir(parents=True, exist_ok=True)
-    spectral_dir.mkdir(parents=True, exist_ok=True)
+    dark_dir = capture_root / "calibration" / "dark"
+    white_dir = capture_root / "calibration" / "white"
 
     for index in range(3):
         rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
@@ -630,7 +1184,14 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "") -> Path:
         spectral_path = spectral_dir / f"{band}.png"
         spectral_image.save(spectral_path)
 
-    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png"]
+        Image.new("L", (640, 420), 6).save(dark_dir / f"dark_{index + 1:03d}.png")
+        Image.new("L", (640, 420), 235).save(white_dir / f"white_{index + 1:03d}.png")
+
+    if metadata is not None:
+        metadata = {**metadata, "capturedAt": time.strftime("%Y-%m-%d %H:%M:%S")}
+        ensure_sample_capture_folder(capture_root, metadata)
+
+    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png", dark_dir / "dark_001.png", white_dir / "white_001.png"]
     if not all(path.exists() for path in expected):
         raise RuntimeError("采集文件写入校验失败")
     return capture_root

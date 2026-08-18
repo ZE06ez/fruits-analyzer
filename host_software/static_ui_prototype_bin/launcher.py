@@ -45,7 +45,7 @@ def prepare_runtime_site() -> Path:
     for filename in ("index.html", "styles.css", "app.js"):
         shutil.copy2(resource_path(filename), target / filename)
 
-    for dirname in ("assets", "sample_data"):
+    for dirname in ("assets", "sample_data", "model_studio"):
         source_dir = resource_path(dirname)
         target_dir = target / dirname
         if source_dir.exists():

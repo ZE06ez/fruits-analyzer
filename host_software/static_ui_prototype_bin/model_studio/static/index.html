@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>模型训练中心 / Model Studio</title>
+  <link rel="stylesheet" href="/model-studio/model_studio.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">MS</div>
+      <div>
+        <h1>模型训练中心</h1>
+        <p>Dataset · Training · Evaluation · Deployment</p>
+      </div>
+    </div>
+    <button class="nav active" data-view="dashboard">Dashboard</button>
+    <button class="nav" data-view="datasets">数据集</button>
+    <button class="nav" data-view="samples">样品与标签</button>
+    <button class="nav" data-view="workspace">训练工作区</button>
+    <button class="nav" data-view="features">特征工程</button>
+    <button class="nav" data-view="experiments">训练实验</button>
+    <button class="nav" data-view="models">模型库</button>
+    <button class="nav" data-view="logs">任务日志</button>
+    <a class="station-link" href="/">返回检测工作站</a>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div>
+        <div class="breadcrumb">Model Studio / <span id="activeViewName">Dashboard</span></div>
+        <h2 id="pageTitle">总览 Dashboard</h2>
+      </div>
+      <div class="status-strip">
+        <span id="dbPath">SQLite: --</span>
+        <span id="toast" class="toast" hidden></span>
+      </div>
+    </header>
+
+    <section class="page active" data-page="dashboard">
+      <div class="metric-grid">
+        <article class="metric"><span>数据集</span><strong id="countDatasets">0</strong></article>
+        <article class="metric"><span>数据集版本</span><strong id="countVersions">0</strong></article>
+        <article class="metric"><span>样品</span><strong id="countSamples">0</strong></article>
+        <article class="metric"><span>有效标签</span><strong id="countLabels">0</strong></article>
+        <article class="metric"><span>训练实验</span><strong id="countExperiments">0</strong></article>
+        <article class="metric"><span>训练任务</span><strong id="countJobs">0</strong></article>
+        <article class="metric"><span>已发布模型</span><strong id="countProduction">0</strong></article>
+        <article class="metric"><span>默认模型</span><strong id="countDefault">0</strong></article>
+        <article class="metric"><span>待确认模型</span><strong id="countReview">0</strong></article>
+      </div>
+      <div class="two-col">
+        <article class="panel">
+          <div class="panel-head"><h3>当前正式模型</h3><span class="badge">Production</span></div>
+          <div id="productionModels" class="empty">暂无已发布模型</div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h3>滤光片 / 波段配置</h3><span class="badge">Config</span></div>
+          <div class="table-wrap"><table><thead><tr><th>位置</th><th>波长</th><th>带宽</th><th>曝光</th><th>增益</th><th>状态</th></tr></thead><tbody id="filterRows"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" data-page="datasets">
+      <div class="panel">
+        <div class="panel-head"><h3>新建 Dataset</h3><span class="badge">Metadata Only</span></div>
+        <div class="form-grid">
+          <label>名称<input id="datasetName" placeholder="Blueberry_2026_batch_A" /></label>
+          <label>果种<input id="fruitType" placeholder="蓝莓" /></label>
+          <label>品种<input id="variety" placeholder="品种A" /></label>
+          <label>样品根目录<input id="storagePath" placeholder="D:/FruitData/samples" /></label>
+          <label>追加样品目录<input id="sourceSamplePath" placeholder="可选：D:/FruitData/new_samples" /></label>
+          <label class="wide">描述<input id="datasetDescription" placeholder="实验批次、采集条件、备注" /></label>
+        </div>
+        <div class="actions">
+          <button id="createDataset">创建 Dataset</button>
+          <button id="importSamples">扫描/追加样品</button>
+          <button id="createDatasetVersion">创建数据集版本</button>
+          <button id="refreshDatasets">刷新</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>数据集列表</h3><span id="datasetState" class="badge">Empty</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Dataset</th><th>果种</th><th>品种</th><th>样品</th><th>标签</th><th>版本</th><th>状态</th><th>路径</th></tr></thead><tbody id="datasetRows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="samples">
+      <div class="panel">
+        <div class="panel-head"><h3>样品与标签</h3><span id="sampleDatasetName" class="badge">未选择 Dataset</span></div>
+        <div class="form-grid">
+          <label>当前 Dataset<select id="datasetSelect"></select></label>
+          <label>labels.csv 路径<input id="labelsPath" placeholder="D:/FruitData/labels.csv" /></label>
+          <label>搜索 Sample<input id="sampleQuery" placeholder="sample_id" /></label>
+          <label>样品状态<select id="sampleIncludeStatus"><option>Included</option><option>Needs Review</option><option>Excluded</option></select></label>
+          <label>状态原因<input id="sampleStatusReason" placeholder="异常原因或备注" /></label>
+        </div>
+        <div class="actions">
+          <button id="loadSamples">加载样品</button>
+          <button id="importLabels">导入 labels.csv</button>
+          <button id="runQualityCheck">数据质量检查</button>
+          <button id="updateSampleStatus">更新选中样品状态</button>
+        </div>
+      </div>
+      <div class="two-col">
+        <article class="panel">
+          <div class="panel-head"><h3>样品表</h3><span class="badge">Paged</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Sample ID</th><th>RGB</th><th>多光谱</th><th>Dark</th><th>White</th><th>SSC</th><th>TA</th><th>pH</th><th>使用状态</th><th>数据状态</th></tr></thead><tbody id="sampleRows"></tbody></table></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h3>数据质量</h3><span class="badge warn">Validation</span></div>
+          <pre id="qualityReport" class="report">暂无数据质量报告</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" data-page="workspace">
+      <div class="workspace-grid">
+        <aside class="flow-panel">
+          <h3>训练工作区</h3>
+          <button class="flow-step done">数据准备</button>
+          <button class="flow-step warn">数据质量</button>
+          <button class="flow-step">特征工程</button>
+          <button class="flow-step">训练配置</button>
+          <button class="flow-step">模型训练</button>
+          <button class="flow-step">模型评估</button>
+          <button class="flow-step">模型注册</button>
+          <button class="flow-step">发布部署</button>
+        </aside>
+        <article class="panel">
+          <div class="panel-head"><h3>当前实验流程</h3><span class="badge">Lifecycle</span></div>
+          <div class="pipeline large">
+            <span>Dataset Version</span><b></b><span>Feature Pipeline</span><b></b><span>Training Job</span><b></b><span>Evaluation</span><b></b><span>Candidate</span><b></b><span>Published / Default</span>
+          </div>
+          <pre id="workspaceSummary" class="report">选择 Dataset 并创建版本后，可在这里按流程追踪训练生命周期。</pre>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h3>实验摘要</h3><span class="badge">Summary</span></div>
+          <dl class="summary-list">
+            <dt>Dataset Version</dt><dd id="wsDatasetVersion">--</dd>
+            <dt>Samples</dt><dd id="wsSamples">--</dd>
+            <dt>Labels</dt><dd id="wsLabels">--</dd>
+            <dt>Latest Job</dt><dd id="wsJob">--</dd>
+          </dl>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" data-page="features">
+      <div class="panel">
+        <div class="panel-head"><h3>Feature Engineering / 特征工程</h3><span class="badge">Shared Pipeline</span></div>
+        <div class="pipeline">
+          <span>Raw Images</span><b></b><span>Calibration</span><b></b><span>ROI</span><b></b><span>Spectral Feature</span><b></b><span>Preprocessing</span>
+        </div>
+        <div class="actions">
+          <button id="generateFeatures">生成特征数据集</button>
+          <button id="exportFeatureHint">features.csv 路径</button>
+        </div>
+      </div>
+      <div class="two-col">
+        <article class="panel">
+          <div class="panel-head"><h3>特征数据预览</h3><span id="featureState" class="badge">Not Generated</span></div>
+          <div id="featurePreview" class="empty">暂无特征数据</div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h3>光谱曲线</h3><span class="badge">Dataset Mean</span></div>
+          <canvas id="spectrumChart" width="520" height="260"></canvas>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" data-page="experiments">
+      <div class="panel">
+        <div class="panel-head"><h3>新建训练实验</h3><span class="badge">One Target</span></div>
+        <div class="form-grid">
+          <label>实验名称<input id="experimentName" placeholder="SSC_Blueberry_2026_001" /></label>
+          <label>Dataset Version<select id="datasetVersionSelect"></select></label>
+          <label>预测目标<select id="targetSelect"><option value="ssc">SSC</option><option value="ta">TA</option><option value="ph">pH</option></select></label>
+          <label>训练方式<select id="validationMethod"><option>GroupKFold</option><option>TrainTestSplit</option></select></label>
+          <label class="wide">描述<input id="experimentDescription" placeholder="实验目的、数据筛选说明" /></label>
+        </div>
+        <div class="check-row">
+          <label><input type="checkbox" value="PLSR" name="modelType" checked /> PLSR</label>
+          <label><input type="checkbox" value="SVR" name="modelType" checked /> SVR</label>
+          <label><input type="checkbox" value="RF" name="modelType" /> Random Forest</label>
+          <label><input type="checkbox" value="RAW" name="preprocess" checked /> RAW</label>
+          <label><input type="checkbox" value="SNV" name="preprocess" checked /> SNV</label>
+          <label><input type="checkbox" value="MSC" name="preprocess" checked /> MSC</label>
+        </div>
+        <div class="actions">
+          <button id="createExperiment">创建实验</button>
+          <button id="startTraining">开始训练</button>
+          <button id="cloneExperiment">复制实验</button>
+          <button id="refreshJobs">刷新任务</button>
+        </div>
+      </div>
+      <div class="two-col">
+        <article class="panel">
+          <div class="panel-head"><h3>训练任务</h3><span id="jobState" class="badge">Idle</span></div>
+          <div id="jobProgress" class="progress"><i></i></div>
+          <pre id="jobLog" class="report">暂无训练任务</pre>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h3>模型比较</h3><span class="badge">RMSE First</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Preprocessing</th><th>Model</th><th>R2</th><th>RMSE</th><th>MAE</th><th>RPD</th><th>Status</th></tr></thead><tbody id="resultRows"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="page" data-page="models">
+      <div class="panel">
+        <div class="panel-head"><h3>Model Registry / 模型库</h3><span class="badge">Candidate · Published · Default</span></div>
+        <div class="form-grid">
+          <label>模型显示名称<input id="publishDisplayName" placeholder="Blueberry Duke SSC Final" /></label>
+          <label>显示版本<input id="publishVersion" placeholder="v1.0.0" /></label>
+          <label>标签<input id="publishTags" placeholder="2026, Duke, validated" /></label>
+          <label>备注<input id="publishNotes" placeholder="验证说明" /></label>
+          <label><input id="publishAsDefault" type="checkbox" /> 发布时设为默认模型</label>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>模型</th><th>Fruit</th><th>Variety</th><th>Target</th><th>算法</th><th>预处理</th><th>Dataset Version</th><th>版本</th><th>R2</th><th>RMSE</th><th>状态</th><th>操作</th></tr></thead><tbody id="modelRows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="page" data-page="logs">
+      <div class="panel">
+        <div class="panel-head"><h3>系统日志</h3><span class="badge">Operation Log</span></div>
+        <pre id="operationLogs" class="report">暂无日志</pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/model-studio/model_studio.js"></script>
+</body>
+</html>
