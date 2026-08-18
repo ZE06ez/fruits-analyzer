@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import shutil
 import socket
+import subprocess
 import threading
 import time
 import traceback
@@ -73,8 +75,10 @@ class SessionState:
         self.sample_id: str = ""
         self.sample_name: str = ""
         self.created_at: str = ""
+        self.save_root_dir: str = ""
         self.current_capture_dir: str = ""
         self.analysis_data_dir: str = ""
+        self.capture_started: bool = False
         self.fruit_type: str = ""
         self.variety: str = "generic"
         self.selected_ssc_model_id: str = ""
@@ -96,14 +100,20 @@ class SessionState:
         fruit_type = str(payload.get("fruitType") or payload.get("fruit_type") or "").strip()
         if not fruit_type:
             raise ValueError("fruit_type is required")
+        save_root_dir = str(payload.get("saveRootDir") or payload.get("save_root_dir") or "").strip()
+        if not save_root_dir:
+            raise ValueError("save_root_dir is required")
+        capture_dir = str(payload.get("captureDir") or payload.get("capture_dir") or "").strip()
+        if not capture_dir:
+            raise ValueError("capture_dir is required")
         variety = str(payload.get("variety") or "generic").strip() or "generic"
         selected_ssc = str(payload.get("selectedSscModelId") or payload.get("selected_ssc_model_id") or "")
         selected_ta = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or "")
         selected_ph = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or "")
         if model_resolver:
-            selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc)
-            selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta)
-            selected_ph = model_resolver(fruit_type, variety, "ph", selected_ph)
+            selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc) if selected_ssc else ""
+            selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta) if selected_ta else ""
+            selected_ph = model_resolver(fruit_type, variety, "ph", selected_ph) if selected_ph else ""
         stamp = time.strftime("%Y%m%d_%H%M%S")
         sample_id = f"S{stamp}_{uuid.uuid4().hex[:8]}"
         created_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -111,13 +121,15 @@ class SessionState:
             self.sample_id = sample_id
             self.sample_name = sample_name
             self.created_at = created_at
+            self.save_root_dir = save_root_dir
             self.fruit_type = fruit_type
             self.variety = variety
             self.selected_ssc_model_id = selected_ssc
             self.selected_ta_model_id = selected_ta
             self.selected_ph_model_id = selected_ph
-            self.current_capture_dir = ""
+            self.current_capture_dir = capture_dir
             self.analysis_data_dir = ""
+            self.capture_started = False
         return self.snapshot()
 
     def update_model_selection(self, payload: dict) -> None:
@@ -128,13 +140,28 @@ class SessionState:
             self.selected_ta_model_id = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or self.selected_ta_model_id or "")
             self.selected_ph_model_id = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or self.selected_ph_model_id or "")
 
+    def apply_sample_metadata(self, metadata: dict) -> None:
+        with self._lock:
+            fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
+            variety = str(metadata.get("variety") or "").strip()
+            if fruit_type:
+                self.fruit_type = fruit_type
+            if variety:
+                self.variety = variety
+            if not self.sample_name:
+                self.sample_name = str(metadata.get("sample_name") or metadata.get("sampleName") or "").strip()
+            if not self.sample_id:
+                self.sample_id = str(metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
+
     def snapshot(self) -> dict:
         with self._lock:
             sample_id = self.sample_id
             sample_name = self.sample_name
             created_at = self.created_at
+            save_root_dir = self.save_root_dir
             current = self.current_capture_dir
             analysis = self.analysis_data_dir
+            capture_started = self.capture_started
             fruit_type = self.fruit_type
             variety = self.variety
             selected_ssc_model_id = self.selected_ssc_model_id
@@ -151,9 +178,11 @@ class SessionState:
             "sampleId": sample_id,
             "sampleName": sample_name,
             "createdAt": created_at,
+            "saveRootDir": save_root_dir,
             "currentCaptureDir": current if current_valid else "",
             "currentCaptureValid": current_valid,
             "analysisDataDir": analysis,
+            "captureStarted": capture_started,
             "fruitType": fruit_type,
             "variety": variety,
             "selectedSscModelId": selected_ssc_model_id,
@@ -161,6 +190,10 @@ class SessionState:
             "selectedPhModelId": selected_ph_model_id,
             "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
         }
+
+    def set_capture_started(self, value: bool = True) -> None:
+        with self._lock:
+            self.capture_started = value
 
 
 def free_port() -> int:
@@ -171,6 +204,22 @@ def free_port() -> int:
 
 def default_sample_dataset(app_dir: Path) -> str:
     return ""
+
+
+def default_save_root(app_dir: Path) -> str:
+    return str(app_dir.parent / "Data")
+
+
+def read_sample_metadata(dataset_dir: str | Path) -> dict:
+    root = Path(dataset_dir).expanduser()
+    metadata_path = root / "metadata.json"
+    if not metadata_path.exists() or not metadata_path.is_file():
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore, session: SessionState):
@@ -213,6 +262,7 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     "dependencies": dependencies,
                     "sampleDataset": default_sample_dataset(app_dir),
                     "sampleDatasets": {},
+                    "defaultSaveRoot": default_save_root(app_dir),
                     **session_info,
                 })
                 return
@@ -221,6 +271,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 return
             if path == "/api/select-dataset":
                 self.handle_select_dataset()
+                return
+            if path == "/api/select-save-root":
+                self.handle_select_save_root()
                 return
             if path == "/api/quality-models":
                 self.handle_quality_models(parsed.query)
@@ -270,6 +323,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if parsed.path == "/api/model-selection":
                 self.handle_model_selection()
                 return
+            if parsed.path == "/api/open-folder":
+                self.handle_open_folder()
+                return
             if parsed.path.startswith("/api/model-studio"):
                 self.handle_model_studio_post(parsed)
                 return
@@ -317,6 +373,12 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             catalog = studio.model_catalog(fruit_type=fruit_type, variety=variety)
             model = (catalog.get("defaults") or {}).get(target)
             return model.get("model_id") if model else ""
+
+        def resolve_creation_model_id(self, fruit_type: str, variety: str, target: str, selected_id: str = "") -> str:
+            try:
+                return self.resolve_model_id(fruit_type, variety, target, selected_id)
+            except Exception:
+                return self.resolve_model_id(fruit_type, variety, target, "")
 
         def handle_model_studio_get(self, parsed) -> None:
             studio = self.require_model_studio()
@@ -492,7 +554,16 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
         def handle_new_sample(self) -> None:
             payload = self.read_json()
             try:
+                save_root = resolve_user_path(str(payload.get("saveRootDir") or ""), app_dir)
+                if not str(payload.get("saveRootDir") or "").strip():
+                    raise ValueError("save_root_dir is required")
+                save_root.mkdir(parents=True, exist_ok=True)
+                sample_name = str(payload.get("sampleName") or payload.get("sample_name") or "").strip()
+                capture_dir = create_unique_sample_folder(save_root, sample_name)
+                payload["saveRootDir"] = str(save_root)
+                payload["captureDir"] = str(capture_dir)
                 sample = session.create_sample(payload, self.resolve_model_id)
+                ensure_sample_capture_folder(capture_dir, sample)
                 self.json_response({"ok": True, "sample": sample})
             except Exception as exc:
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
@@ -515,27 +586,45 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
 
         def handle_select_dataset(self) -> None:
-            if self.require_current_sample() is None:
-                return
             try:
-                import tkinter as tk
-                from tkinter import filedialog
-
-                root = tk.Tk()
-                root.withdraw()
-                selected = filedialog.askdirectory(title="选择样品文件夹")
-                root.destroy()
+                info = session.snapshot()
+                initial = info.get("analysisDataDir") or info.get("currentCaptureDir") or info.get("saveRootDir") or default_save_root(app_dir)
+                selected = select_directory_dialog("选择样品文件夹", initial)
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
                     return
-                session.set_analysis_data_dir(selected)
+                if info.get("hasSample"):
+                    session.set_analysis_data_dir(selected)
                 self.json_response({"ok": True, "datasetDir": selected})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"打开目录选择器失败: {exc}"}, status=500)
 
-        def handle_sample_folder(self, query: str) -> None:
-            if self.require_current_sample() is None:
+        def handle_select_save_root(self) -> None:
+            try:
+                selected = select_directory_dialog("选择样品保存位置", default_save_root(app_dir))
+                if not selected:
+                    self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
+                    return
+                self.json_response({"ok": True, "saveRootDir": selected})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开保存位置选择器失败: {exc}"}, status=500)
+
+        def handle_open_folder(self) -> None:
+            info = self.require_current_sample()
+            if info is None:
                 return
+            payload = self.read_json()
+            target = resolve_user_path(str(payload.get("path") or info.get("currentCaptureDir") or ""), app_dir)
+            if not target.exists() or not target.is_dir():
+                self.json_response({"ok": False, "error": "样品文件夹不存在。"}, status=400)
+                return
+            try:
+                open_folder_in_explorer(target)
+                self.json_response({"ok": True, "path": str(target)})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开文件夹失败: {exc}"}, status=500)
+
+        def handle_sample_folder(self, query: str) -> None:
             params = parse_qs(query)
             dataset_dir = params.get("datasetDir", [""])[0]
             color_dir = params.get("colorDir", [""])[0] or None
@@ -565,8 +654,14 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             try:
                 from pointcloud_service import inspect_sample_folder
 
-                report = inspect_sample_folder(resolve_user_path(dataset_dir, app_dir) if dataset_dir else "", color_dir, depth_dir)
-                if report.get("valid"):
+                resolved_dataset = resolve_user_path(dataset_dir, app_dir) if dataset_dir else ""
+                report = inspect_sample_folder(resolved_dataset, color_dir, depth_dir)
+                metadata = read_sample_metadata(report.get("datasetDir") or resolved_dataset) if report.get("datasetDir") or resolved_dataset else {}
+                if metadata:
+                    report["sampleMetadata"] = metadata
+                    if session.snapshot().get("hasSample"):
+                        session.apply_sample_metadata(metadata)
+                if report.get("valid") and session.snapshot().get("hasSample"):
                     session.set_analysis_data_dir(report["datasetDir"])
                 self.json_response(report)
             except Exception as exc:
@@ -708,9 +803,14 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if info is None:
                 return
             payload = self.read_json()
+            capture_dir = str(info.get("currentCaptureDir") or "").strip()
+            if not capture_dir:
+                self.json_response({"ok": False, "error": "当前样品保存目录不存在，请重新创建样品。"}, status=400)
+                return
             sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
-                capture_dir = create_offline_capture_dataset(app_dir, sample_id)
+                session.set_capture_started(True)
+                capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=info)
                 session.set_current_capture_dir(capture_dir)
                 session.set_analysis_data_dir(capture_dir)
                 self.json_response({
@@ -843,18 +943,23 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 return None
             color_dir = payload.get("colorDir") or None
             depth_dir = payload.get("depthDir") or None
-            sample_id = str(session_info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
+                resolved_dataset = resolve_user_path(dataset_dir, app_dir)
+                metadata = read_sample_metadata(resolved_dataset)
+                sample_id = str(session_info.get("sampleId") or payload.get("sampleId") or metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
+                fruit_type = session_info.get("fruitType") or payload.get("fruitType") or metadata.get("fruit_type") or metadata.get("fruitType") or ""
+                variety = session_info.get("variety") or payload.get("variety") or metadata.get("variety") or "generic"
                 from quality_prediction import build_sample_session
 
                 sample_data, report = build_sample_session(
-                    resolve_user_path(dataset_dir, app_dir),
+                    resolved_dataset,
                     sample_id=sample_id,
-                    sample_name=session_info.get("sampleName") or "",
+                    sample_name=session_info.get("sampleName") or metadata.get("sample_name") or metadata.get("sampleName") or "",
                     rgb_dir=color_dir,
                     spectral_dir=depth_dir,
-                    fruit_type=session_info.get("fruitType") or payload.get("fruitType") or "",
-                    variety=session_info.get("variety") or payload.get("variety") or "generic",
+                    capture_time=metadata.get("captured_at") or metadata.get("capturedAt") or metadata.get("created_at") or "",
+                    fruit_type=fruit_type,
+                    variety=variety,
                     selected_ssc_model_id=session_info.get("selectedSscModelId") or payload.get("selectedSscModelId") or "",
                     selected_ta_model_id=session_info.get("selectedTaModelId") or payload.get("selectedTaModelId") or "",
                     selected_ph_model_id=session_info.get("selectedPhModelId") or payload.get("selectedPhModelId") or "",
@@ -924,6 +1029,65 @@ def resolve_user_path(value: str | Path, app_dir: Path) -> Path:
     return app_dir / path
 
 
+def select_directory_dialog(title: str, initial_dir: str | Path | None = None) -> str:
+    initial_path = Path(initial_dir).expanduser() if initial_dir else None
+    initial = str(initial_path) if initial_path and initial_path.exists() else ""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        root.lift()
+        root.focus_force()
+        selected = filedialog.askdirectory(parent=root, title=title, initialdir=initial or None, mustexist=True)
+        root.destroy()
+        return selected or ""
+    except Exception:
+        return select_directory_with_powershell(title, initial)
+
+
+def select_directory_with_powershell(title: str, initial_dir: str = "") -> str:
+    if os.name != "nt":
+        return ""
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;"
+        f"$dialog.Description = {json.dumps(title, ensure_ascii=False)};"
+        "$dialog.ShowNewFolderButton = $true;"
+    )
+    if initial_dir:
+        script += f"$dialog.SelectedPath = {json.dumps(initial_dir, ensure_ascii=False)};"
+    script += "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
+
+
+def open_folder_in_explorer(target: Path) -> None:
+    if os.name == "nt":
+        try:
+            os.startfile(str(target))  # type: ignore[attr-defined]
+            return
+        except Exception:
+            subprocess.Popen(["explorer.exe", str(target)])
+            return
+    subprocess.Popen(["xdg-open", str(target)])
+
+
 def safe_upload_relative(filename: str) -> Path | None:
     parts = []
     for part in filename.replace("\\", "/").split("/"):
@@ -936,21 +1100,68 @@ def safe_upload_relative(filename: str) -> Path | None:
     return Path(*parts)
 
 
-def create_offline_capture_dataset(app_dir: Path, sample_id: str = "") -> Path:
+WINDOWS_INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def sanitize_windows_name(value: str, fallback: str = "sample") -> str:
+    clean = WINDOWS_INVALID_CHARS.sub("_", str(value or "").strip())
+    clean = re.sub(r"\s+", "_", clean).strip(" ._")
+    return (clean or fallback)[:48]
+
+
+def create_unique_sample_folder(save_root: Path, sample_name: str) -> Path:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_name = sanitize_windows_name(sample_name)
+    base = f"{stamp}_{safe_name}"
+    candidate = save_root / base
+    index = 2
+    while candidate.exists():
+        candidate = save_root / f"{base}_{index:02d}"
+        index += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = None) -> None:
+    (capture_root / "rgb").mkdir(parents=True, exist_ok=True)
+    (capture_root / "multispectral").mkdir(parents=True, exist_ok=True)
+    (capture_root / "calibration" / "dark").mkdir(parents=True, exist_ok=True)
+    (capture_root / "calibration" / "white").mkdir(parents=True, exist_ok=True)
+    if metadata is not None:
+        meta = {
+            "sample_id": metadata.get("sampleId") or metadata.get("sample_id") or "",
+            "sample_name": metadata.get("sampleName") or metadata.get("sample_name") or "",
+            "fruit_type": metadata.get("fruitType") or metadata.get("fruit_type") or "",
+            "variety": metadata.get("variety") or "generic",
+            "selected_ssc_model_id": metadata.get("selectedSscModelId") or "",
+            "selected_ta_model_id": metadata.get("selectedTaModelId") or "",
+            "selected_ph_model_id": metadata.get("selectedPhModelId") or "",
+            "save_root_dir": metadata.get("saveRootDir") or "",
+            "created_at": metadata.get("createdAt") or "",
+            "captured_at": metadata.get("capturedAt") or metadata.get("captured_at") or "",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        (capture_root / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_dir: str | Path | None = None, metadata: dict | None = None) -> Path:
     """Create a small current-capture folder for offline UI verification.
 
     Real camera integration should replace this function's image-writing block with
     camera frame saves, while keeping the returned sample root directory contract.
     """
 
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_sample = "".join(ch for ch in sample_id if ch.isalnum() or ch in "-_")[:24]
-    folder_name = f"{stamp}_{safe_sample}" if safe_sample else stamp
-    capture_root = app_dir.parent / "Data" / folder_name
+    if capture_dir:
+        capture_root = Path(capture_dir)
+    else:
+        default_root = app_dir.parent / "Data"
+        default_root.mkdir(parents=True, exist_ok=True)
+        capture_root = create_unique_sample_folder(default_root, sample_id)
+    ensure_sample_capture_folder(capture_root, metadata)
     rgb_dir = capture_root / "rgb"
     spectral_dir = capture_root / "multispectral"
-    rgb_dir.mkdir(parents=True, exist_ok=True)
-    spectral_dir.mkdir(parents=True, exist_ok=True)
+    dark_dir = capture_root / "calibration" / "dark"
+    white_dir = capture_root / "calibration" / "white"
 
     for index in range(3):
         rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
@@ -973,7 +1184,14 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "") -> Path:
         spectral_path = spectral_dir / f"{band}.png"
         spectral_image.save(spectral_path)
 
-    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png"]
+        Image.new("L", (640, 420), 6).save(dark_dir / f"dark_{index + 1:03d}.png")
+        Image.new("L", (640, 420), 235).save(white_dir / f"white_{index + 1:03d}.png")
+
+    if metadata is not None:
+        metadata = {**metadata, "capturedAt": time.strftime("%Y-%m-%d %H:%M:%S")}
+        ensure_sample_capture_folder(capture_root, metadata)
+
+    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png", dark_dir / "dark_001.png", white_dir / "white_001.png"]
     if not all(path.exists() for path in expected):
         raise RuntimeError("采集文件写入校验失败")
     return capture_root

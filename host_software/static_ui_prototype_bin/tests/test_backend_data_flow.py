@@ -57,6 +57,7 @@ class BackendDataFlowTests(unittest.TestCase):
             "sampleName": name,
             "fruitType": "blueberry",
             "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
         })["sample"]
 
     def make_dataset(self, name: str) -> Path:
@@ -118,19 +119,33 @@ class BackendDataFlowTests(unittest.TestCase):
 
     def test_new_sample_requires_name_and_generates_unique_id(self):
         with self.assertRaises(urllib.error.HTTPError):
-            self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry"})
+            self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
+        with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry"})
         first = self.create_sample("蓝莓实验A-第5颗")
+        first_dir = Path(first["currentCaptureDir"])
+        self.assertTrue(first_dir.exists())
+        self.assertTrue((first_dir / "rgb").is_dir())
+        self.assertTrue((first_dir / "multispectral").is_dir())
+        self.assertTrue((first_dir / "calibration" / "dark").is_dir())
+        self.assertTrue((first_dir / "calibration" / "white").is_dir())
+        self.assertTrue((first_dir / "metadata.json").is_file())
+        metadata = json.loads((first_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["fruit_type"], "blueberry")
+        self.assertEqual(metadata["variety"], "Duke")
         self.post_json("/api/complete-capture", {})
         status_after_capture = self.get_json("/api/status")
         self.assertTrue(status_after_capture["currentCaptureDir"])
+        self.assertEqual(Path(status_after_capture["currentCaptureDir"]), first_dir)
 
         second = self.create_sample("蓝莓实验A-第5颗")
         self.assertNotEqual(first["sampleId"], second["sampleId"])
         self.assertEqual(second["sampleName"], "蓝莓实验A-第5颗")
-        self.assertFalse(second["currentCaptureDir"])
+        self.assertNotEqual(Path(second["currentCaptureDir"]), first_dir)
+        self.assertTrue(Path(second["currentCaptureDir"]).exists())
         self.assertFalse(second["analysisDataDir"])
 
-    def test_new_sample_uses_registry_defaults_and_validates_model_scope(self):
+    def test_quality_models_catalog_and_analysis_model_selection_scope(self):
         self.insert_model("duke_ssc", target="ssc", fruit_type="blueberry", variety="Duke", status="Default", is_default=1)
         self.insert_model("generic_ta", target="ta", fruit_type="blueberry", variety="generic", status="Default", is_default=1)
         self.insert_model("apple_ssc", target="ssc", fruit_type="apple", variety="Fuji", status="Default", is_default=1)
@@ -147,10 +162,29 @@ class BackendDataFlowTests(unittest.TestCase):
             "sampleName": "蓝莓Duke-01",
             "fruitType": "blueberry",
             "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
         })["sample"]
-        self.assertEqual(sample["selectedSscModelId"], "duke_ssc")
-        self.assertEqual(sample["selectedTaModelId"], "generic_ta")
+        self.assertEqual(sample["selectedSscModelId"], "")
+        self.assertEqual(sample["selectedTaModelId"], "")
         self.assertEqual(sample["selectedPhModelId"], "")
+
+        selection = self.post_json("/api/model-selection", {
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "selectedSscModelId": "duke_ssc",
+            "selectedTaModelId": "generic_ta",
+        })["session"]
+        self.assertEqual(selection["selectedSscModelId"], "duke_ssc")
+        self.assertEqual(selection["selectedTaModelId"], "generic_ta")
+
+        second = self.post_json("/api/new-sample", {
+            "sampleName": "苹果Fuji-01",
+            "fruitType": "apple",
+            "variety": "Fuji",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+        self.assertEqual(second["selectedSscModelId"], "")
+        self.assertEqual(second["fruitType"], "apple")
 
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/model-selection", {
@@ -183,6 +217,10 @@ class BackendDataFlowTests(unittest.TestCase):
         capture = self.post_json("/api/complete-capture", {"sampleId": "S001"})
         capture_dir = Path(capture["currentCaptureDir"])
         self.assertEqual(Path(capture["analysisDataDir"]), capture_dir)
+        self.assertTrue((capture_dir / "rgb" / "rgb_001.png").is_file())
+        self.assertTrue((capture_dir / "multispectral" / "450.png").is_file())
+        self.assertTrue((capture_dir / "calibration" / "dark" / "dark_001.png").is_file())
+        self.assertTrue((capture_dir / "calibration" / "white" / "white_001.png").is_file())
 
         status = self.get_json("/api/status")
         self.assertEqual(Path(status["currentCaptureDir"]), capture_dir)
@@ -195,6 +233,8 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertTrue(report["valid"])
         self.assertEqual(report["rgbCount"], 3)
         self.assertEqual(report["spectralCount"], 3)
+        self.assertEqual(report["sampleMetadata"]["fruit_type"], "blueberry")
+        self.assertEqual(report["sampleMetadata"]["variety"], "Duke")
 
         ssc = self.post_json("/api/predict-ssc")
         self.assertEqual(Path(ssc["sample"]["analysis_data_dir"]), capture_dir)

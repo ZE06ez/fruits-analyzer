@@ -112,23 +112,6 @@
             <p class="eyebrow">当前模块 / Current Module</p>
             <h2 id="viewTitle">电机检测</h2>
           </div>
-          <div class="sample-meta">
-            <span>当前样品</span>
-            <strong id="currentSampleName">未创建样品</strong>
-            <small id="currentSampleId">请先创建当前样品</small>
-            <input id="sampleId" type="hidden" value="" />
-            <div class="sample-actions">
-              <button id="newSampleButton" type="button">新建样品</button>
-              <button id="changeModelButton" type="button" disabled>更换模型</button>
-            </div>
-          </div>
-          <div class="model-meta">
-            <label>样品类型<select id="qualityFruitType"></select></label>
-            <label>品种<select id="qualityVariety"></select></label>
-            <label>糖度模型<select id="sscModelSelect"><option value="">自动选择默认模型</option></select></label>
-            <label>酸度模型<select id="taModelSelect"><option value="">自动选择默认模型</option></select></label>
-            <label>pH 模型<select id="phModelSelect"><option value="">自动选择默认模型</option></select></label>
-          </div>
           <div class="mode-badge" id="runMode">离线调试模式</div>
         </section>
 
@@ -201,6 +184,42 @@
               <h3>样品采集 / Sample Acquisition</h3>
               <span>暗场、白板、彩色图、多波段</span>
             </div>
+            <div class="sample-create-panel">
+              <div class="sample-create-head">
+                <div>
+                  <span>当前样品</span>
+                  <strong id="currentSampleName">未创建样品</strong>
+                  <small id="currentSampleId">请先创建当前样品</small>
+                  <input id="sampleId" type="hidden" value="" />
+                </div>
+                <span class="status-chip" id="sampleCreateStatus">等待创建</span>
+              </div>
+              <div class="sample-create-grid">
+                <label>样品名称 *
+                  <input id="captureSampleName" placeholder="Duke成熟组03" />
+                </label>
+                <label>样品种类 *
+                  <select id="qualityFruitType"></select>
+                </label>
+                <label>品种
+                  <select id="qualityVariety"></select>
+                </label>
+                <label class="wide">保存位置 *
+                  <div class="path-picker">
+                    <input id="saveRootDir" placeholder="请选择样品保存根目录" readonly />
+                    <button id="chooseSaveRoot" type="button">选择文件夹</button>
+                  </div>
+                </label>
+                <label class="wide">当前保存目录
+                  <input id="sampleFolderPath" placeholder="创建样品后自动生成本次样品目录" readonly />
+                </label>
+              </div>
+              <div class="sample-create-actions">
+                <button class="primary-action" id="createSampleInline" type="button">新建样品</button>
+                <button id="openCaptureFolder" type="button" disabled>打开文件夹</button>
+              </div>
+              <p class="hint">样品种类和品种会写入 metadata.json；糖度、酸度和 pH 模型在对应分析页面选择。</p>
+            </div>
             <div class="process-steps">
               <button data-step="1">1. 暗场与白板校正</button>
               <button data-step="2">2. RGB 外观采集</button>
@@ -208,7 +227,7 @@
               <button data-step="4">4. 进入分析</button>
             </div>
             <div class="progress-track"><div id="captureProgress"></div></div>
-            <p id="captureProgressText">采集进度: 0 / 12</p>
+            <p id="captureProgressText">采集进度: 0 / 4</p>
             <div class="capture-actions">
               <span id="captureSaveStatus">等待采集完成</span>
               <button id="enterAnalysisFromCapture" type="button" disabled>进入分析</button>
@@ -334,6 +353,9 @@
                 <span>SSC 预测值</span>
                 <strong><b id="sscValue">--</b> <small>°Brix</small></strong>
                 <p id="sscMessage">暂无预测结果</p>
+                <label class="prediction-model-picker">糖度模型
+                  <select id="sscModelSelect"><option value="">自动选择默认模型</option></select>
+                </label>
                 <button class="test-button" id="startSscAnalysis">开始糖度分析</button>
               </section>
               <section class="prediction-card">
@@ -374,6 +396,12 @@
                   <strong><b id="phValue">--</b></strong>
                 </div>
                 <p id="acidMessage">暂无预测结果</p>
+                <label class="prediction-model-picker">酸度模型
+                  <select id="taModelSelect"><option value="">自动选择默认模型</option></select>
+                </label>
+                <label class="prediction-model-picker">pH 模型
+                  <select id="phModelSelect"><option value="">自动选择默认模型</option></select>
+                </label>
                 <button class="test-button" id="startAcidAnalysis">开始酸度分析</button>
               </section>
               <section class="prediction-card">
@@ -414,13 +442,27 @@
           <article class="view-page" data-page="camera-settings">
             <div class="panel-title">
               <h3>相机设定 / Camera Settings</h3>
-              <span>默认参数</span>
+              <span id="cameraSettingsStatus">可编辑参数</span>
             </div>
             <div class="settings-grid">
-              <label>分辨率<input value="1280 x 720" /></label>
-              <label>曝光时间<input value="自动" /></label>
-              <label>焦距 fx/fy<input value="652.77 / 652.77" /></label>
-              <label>主点 cx/cy<input value="631.75 / 364.95" /></label>
+              <label>分辨率<input id="cameraResolution" value="1280 x 720" /></label>
+              <label>曝光时间<input id="cameraExposure" value="自动" /></label>
+              <label>焦距 fx<input id="cameraFx" type="number" step="0.01" value="652.77" /></label>
+              <label>焦距 fy<input id="cameraFy" type="number" step="0.01" value="652.77" /></label>
+              <label>主点 cx<input id="cameraCx" type="number" step="0.01" value="631.75" /></label>
+              <label>主点 cy<input id="cameraCy" type="number" step="0.01" value="364.95" /></label>
+            </div>
+            <div class="button-row">
+              <button id="saveCameraSettings" type="button">保存参数</button>
+              <button id="resetCameraSettings" type="button">恢复默认</button>
+            </div>
+            <p class="hint">fx/fy/cx/cy 会用于需要相机内参的形态分析；分辨率和曝光时间将在真实相机 SDK 接入后用于相机采集配置。</p>
+            <div class="calibration-confirm">
+              <div>
+                <strong>标定检查</strong>
+                <span id="calibrationConfirmText">未确认。本按钮仅记录人工检查结果，不代表已连接真实标定设备。</span>
+              </div>
+              <button id="confirmCalibration" type="button">确认检查通过</button>
             </div>
           </article>
 
@@ -518,17 +560,8 @@
           <label>Variety
             <select id="newSampleVariety"></select>
           </label>
-          <label>SSC Model
-            <select id="newSampleSscModel"></select>
-          </label>
-          <label>TA Model
-            <select id="newSampleTaModel"></select>
-          </label>
-          <label>pH Model
-            <select id="newSamplePhModel"></select>
-          </label>
         </div>
-        <p class="modal-note" id="newSampleHint">Fruit Type 和 Variety 来自已发布模型。</p>
+        <p class="modal-note" id="newSampleHint">Fruit Type 和 Variety 来自已发布模型；具体糖酸模型在分析页面选择。</p>
         <footer>
           <button id="cancelNewSample" type="button">取消</button>
           <button class="primary-action" id="createNewSample" type="button">创建样品</button>
