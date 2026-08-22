@@ -31,6 +31,8 @@ class ModelStudioService:
     def __init__(self, app_dir: str | Path) -> None:
         self.app_dir = Path(app_dir).resolve()
         self.root = self.app_dir / "model_studio"
+        self.data_dir = self.app_dir / "model_studio_data"
+        self.dataset_store_dir = self.data_dir / "datasets"
         self.database_dir = self.root / "database"
         self.artifact_dir = self.root / "artifacts"
         self.model_dir = self.root / "models"
@@ -38,6 +40,7 @@ class ModelStudioService:
         self.database_path = self.database_dir / "model_studio.sqlite"
         self._lock = threading.Lock()
         self.database_dir.mkdir(parents=True, exist_ok=True)
+        self.dataset_store_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.production_dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +63,8 @@ class ModelStudioService:
                     description TEXT,
                     created_at TEXT NOT NULL,
                     storage_path TEXT NOT NULL,
+                    local_path TEXT,
+                    import_source_path TEXT,
                     sample_count INTEGER DEFAULT 0,
                     label_count INTEGER DEFAULT 0,
                     enabled_wavelengths TEXT,
@@ -80,6 +85,8 @@ class ModelStudioService:
                     created_by TEXT,
                     description TEXT,
                     parent_version TEXT,
+                    sample_snapshot_json TEXT,
+                    label_snapshot_json TEXT,
                     snapshot_hash TEXT NOT NULL,
                     UNIQUE(dataset_id, version)
                 );
@@ -90,13 +97,18 @@ class ModelStudioService:
                     sample_id TEXT NOT NULL,
                     fruit_type TEXT,
                     variety TEXT,
+                    sample_name TEXT,
                     maturity TEXT,
                     weight_g REAL,
                     storage_path TEXT NOT NULL,
+                    source_path TEXT,
+                    local_path TEXT,
                     rgb_count INTEGER DEFAULT 0,
                     multispectral_count INTEGER DEFAULT 0,
                     dark_count INTEGER DEFAULT 0,
                     white_count INTEGER DEFAULT 0,
+                    available_bands TEXT,
+                    calibration_status TEXT,
                     ssc REAL,
                     ta REAL,
                     ph REAL,
@@ -107,6 +119,7 @@ class ModelStudioService:
                     include_status TEXT DEFAULT 'Included',
                     exclude_reason TEXT,
                     created_at TEXT NOT NULL,
+                    imported_at TEXT,
                     UNIQUE(dataset_id, sample_id)
                 );
 
@@ -207,12 +220,24 @@ class ModelStudioService:
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         migrations = {
             "datasets": {
+                "local_path": "TEXT",
+                "import_source_path": "TEXT",
                 "dirty": "INTEGER DEFAULT 0",
                 "latest_version_id": "TEXT",
             },
+            "dataset_versions": {
+                "sample_snapshot_json": "TEXT",
+                "label_snapshot_json": "TEXT",
+            },
             "samples": {
+                "sample_name": "TEXT",
+                "source_path": "TEXT",
+                "local_path": "TEXT",
+                "available_bands": "TEXT",
+                "calibration_status": "TEXT",
                 "include_status": "TEXT DEFAULT 'Included'",
                 "exclude_reason": "TEXT",
+                "imported_at": "TEXT",
             },
             "training_experiments": {
                 "dataset_version_id": "TEXT",
@@ -245,6 +270,9 @@ class ModelStudioService:
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         conn.execute("UPDATE samples SET include_status='Included' WHERE include_status IS NULL OR include_status=''")
+        conn.execute("UPDATE samples SET local_path=storage_path WHERE local_path IS NULL OR local_path=''")
+        conn.execute("UPDATE samples SET sample_name=sample_id WHERE sample_name IS NULL OR sample_name=''")
+        conn.execute("UPDATE datasets SET local_path=storage_path WHERE local_path IS NULL OR local_path=''")
         conn.execute("UPDATE datasets SET dirty=COALESCE(dirty, 0)")
         conn.execute("UPDATE models SET display_name=model_name WHERE display_name IS NULL OR display_name=''")
         conn.execute("UPDATE models SET is_default=0 WHERE is_default IS NULL")
@@ -300,18 +328,24 @@ class ModelStudioService:
     def create_dataset(self, payload: dict) -> dict:
         dataset_id = payload.get("dataset_id") or f"ds_{uuid.uuid4().hex[:10]}"
         name = (payload.get("dataset_name") or payload.get("datasetName") or "").strip()
-        path = Path(payload.get("storage_path") or payload.get("storagePath") or "").expanduser()
+        source_path = str(payload.get("storage_path") or payload.get("storagePath") or "").strip()
+        source = Path(source_path).expanduser() if source_path else None
         if not name:
             raise ModelStudioError("dataset_name is required")
-        if not path.exists() or not path.is_dir():
-            raise ModelStudioError(f"dataset path does not exist: {path}")
+        if source and (not source.exists() or not source.is_dir()):
+            raise ModelStudioError(f"dataset path does not exist: {source}")
+        local_path = self._dataset_local_path(dataset_id)
+        (local_path / "samples").mkdir(parents=True, exist_ok=True)
+        labels_csv = local_path / "labels.csv"
+        if not labels_csv.exists():
+            self._write_labels_csv_file(labels_csv, [])
         now = _now()
         wavelengths = expected_wavelengths(load_filter_config())
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO datasets(dataset_id,dataset_name,fruit_type,variety,description,created_at,storage_path,enabled_wavelengths)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO datasets(dataset_id,dataset_name,fruit_type,variety,description,created_at,storage_path,local_path,import_source_path,enabled_wavelengths)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     dataset_id,
@@ -320,7 +354,9 @@ class ModelStudioService:
                     _normalize_variety(payload.get("variety") or ""),
                     payload.get("description") or "",
                     now,
-                    str(path),
+                    str(local_path),
+                    str(local_path),
+                    str(source) if source else "",
                     json.dumps(wavelengths),
                 ),
             )
@@ -334,44 +370,89 @@ class ModelStudioService:
             raise ModelStudioError(f"dataset not found: {dataset_id}")
         return dict(row)
 
-    def import_samples(self, dataset_id: str, source_path: str | Path | None = None) -> dict:
-        dataset = self.get_dataset(dataset_id)
-        root = Path(source_path).expanduser() if source_path else Path(dataset["storage_path"])
+    def validate_sample_folder(self, source_path: str | Path) -> dict:
+        root = Path(source_path).expanduser()
         if not root.exists() or not root.is_dir():
             raise ModelStudioError(f"sample path does not exist: {root}")
+        reports = [self._sample_import_report(sample_dir) for sample_dir in self._sample_dirs(root)]
+        if not reports:
+            raise ModelStudioError(f"no sample folders found: {root}")
+        status = "Valid"
+        if any(item["status"] == "Invalid" for item in reports):
+            status = "Invalid"
+        elif any(item["status"] == "Warning" for item in reports):
+            status = "Warning"
+        return {"sourcePath": str(root), "status": status, "samples": reports}
+
+    def import_samples(self, dataset_id: str, source_path: str | Path | None = None, duplicate_policy: str = "skip") -> dict:
+        dataset = self.get_dataset(dataset_id)
+        default_source = dataset.get("import_source_path") or ""
+        root = Path(source_path).expanduser() if source_path else Path(default_source or dataset["storage_path"])
+        if not root.exists() or not root.is_dir():
+            raise ModelStudioError(f"sample path does not exist: {root}")
+        duplicate_policy = duplicate_policy if duplicate_policy in {"skip", "new", "cancel"} else "skip"
+        local_root = Path(dataset.get("local_path") or dataset["storage_path"]).expanduser()
+        samples_root = local_root / "samples"
+        samples_root.mkdir(parents=True, exist_ok=True)
         sample_dirs = self._sample_dirs(root)
         imported = 0
         new_count = 0
         existing_count = 0
         conflicts = 0
+        skipped = 0
         warnings: list[str] = []
+        duplicates: list[dict] = []
         calibration_statuses: list[str] = []
         for sample_dir in sample_dirs:
-            existed = self._sample_exists(dataset_id, sample_dir.name)
-            report = inspect_sample_structure(sample_dir)
+            import_report = self._sample_import_report(sample_dir)
+            report = import_report["structure"]
+            if import_report["status"] == "Invalid":
+                skipped += 1
+                warnings.append(f"{sample_dir.name}: " + "; ".join(import_report.get("warnings") or ["invalid sample folder"]))
+                continue
+            duplicate = self._find_duplicate_sample(dataset_id, sample_dir.name, sample_dir)
+            if duplicate:
+                conflicts += 1
+                existing_count += 1
+                duplicates.append({
+                    "sampleId": duplicate.get("sample_id"),
+                    "sourcePath": duplicate.get("source_path") or "",
+                    "localPath": duplicate.get("local_path") or duplicate.get("storage_path") or "",
+                })
+                if duplicate_policy == "cancel":
+                    raise ModelStudioError(f"sample already exists: {sample_dir.name}")
+                if duplicate_policy == "skip":
+                    skipped += 1
+                    continue
+            sample_id = sample_dir.name if not duplicate else self._unique_sample_id(dataset_id, sample_dir.name)
+            local_sample_dir = self._unique_sample_path(samples_root, sample_id)
+            shutil.copytree(sample_dir, local_sample_dir)
             calibration_statuses.append(str(report["calibration_status"]))
             row = {
                 "dataset_id": dataset_id,
-                "sample_id": sample_dir.name,
+                "sample_id": sample_id,
+                "sample_name": sample_dir.name,
                 "fruit_type": dataset.get("fruit_type") or "",
                 "variety": dataset.get("variety") or "",
-                "storage_path": str(sample_dir),
+                "storage_path": str(local_sample_dir),
+                "source_path": str(sample_dir),
+                "local_path": str(local_sample_dir),
                 "rgb_count": int(report["rgb_count"]),
                 "multispectral_count": int(report["multispectral_count"]),
                 "dark_count": _calibration_count(sample_dir, "dark"),
                 "white_count": _calibration_count(sample_dir, "white"),
+                "available_bands": json.dumps(report.get("available_bands") or []),
+                "calibration_status": str(report["calibration_status"]),
                 "data_status": "complete" if report["complete"] else "incomplete",
-                "quality_json": json.dumps(report, ensure_ascii=False),
+                "quality_json": json.dumps(import_report, ensure_ascii=False),
                 "created_at": _now(),
+                "imported_at": _now(),
             }
-            if not report["complete"]:
-                warnings.append(f"{sample_dir.name}: " + "; ".join(report.get("warnings") or report.get("missing_bands") or []))
+            if import_report["status"] != "Valid":
+                warnings.append(f"{sample_dir.name}: " + "; ".join(import_report.get("warnings") or []))
             self._upsert_sample(row)
             imported += 1
-            if existed:
-                existing_count += 1
-            else:
-                new_count += 1
+            new_count += 1
         self._refresh_dataset_counts(dataset_id, calibration_statuses)
         self._mark_dataset_dirty(dataset_id)
         self.log("samples.import", "dataset", dataset_id, f"Imported {imported} samples")
@@ -381,6 +462,8 @@ class ModelStudioService:
             "newSamples": new_count,
             "existingSamples": existing_count,
             "conflicts": conflicts,
+            "skipped": skipped,
+            "duplicates": duplicates[:50],
             "warnings": warnings[:50],
         }
 
@@ -407,8 +490,70 @@ class ModelStudioService:
                 )
         self._refresh_dataset_counts(dataset_id)
         self._mark_dataset_dirty(dataset_id)
+        self._write_dataset_labels_csv(dataset_id)
         self.log("labels.import", "dataset", dataset_id, f"Imported {len(labels)} labels")
         return {"imported": len(labels), "duplicates": duplicate_count, "dataset": self.get_dataset(dataset_id)}
+
+    def save_sample_label(self, dataset_id: str, sample_id: str, payload: dict) -> dict:
+        values = {
+            "ssc": _optional_float(payload.get("ssc")),
+            "ta": _optional_float(payload.get("ta")),
+            "ph": _optional_float(payload.get("ph")),
+        }
+        now = _now()
+        with self.connect() as conn:
+            sample = conn.execute(
+                "SELECT sample_id FROM samples WHERE dataset_id=? AND sample_id=?",
+                (dataset_id, sample_id),
+            ).fetchone()
+            if not sample:
+                raise ModelStudioError(f"sample not found: {sample_id}")
+            conn.execute(
+                """
+                INSERT INTO labels(dataset_id,sample_id,ssc,ta,ph,updated_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(dataset_id,sample_id) DO UPDATE SET
+                  ssc=excluded.ssc, ta=excluded.ta, ph=excluded.ph, updated_at=excluded.updated_at
+                """,
+                (dataset_id, sample_id, values["ssc"], values["ta"], values["ph"], now),
+            )
+            conn.execute(
+                "UPDATE samples SET ssc=?, ta=?, ph=? WHERE dataset_id=? AND sample_id=?",
+                (values["ssc"], values["ta"], values["ph"], dataset_id, sample_id),
+            )
+        self._refresh_dataset_counts(dataset_id)
+        self._mark_dataset_dirty(dataset_id)
+        self._write_dataset_labels_csv(dataset_id)
+        self.log("labels.save", "sample", sample_id, f"Label saved for {sample_id}")
+        return self.get_sample(dataset_id, sample_id)
+
+    def delete_sample(self, dataset_id: str, sample_id: str, *, delete_local_copy: bool = False) -> dict:
+        sample = self.get_sample(dataset_id, sample_id)
+        dataset = self.get_dataset(dataset_id)
+        local_path = Path(sample.get("local_path") or sample.get("storage_path") or "")
+        source_path = Path(sample.get("source_path") or "") if sample.get("source_path") else None
+        with self.connect() as conn:
+            conn.execute("DELETE FROM labels WHERE dataset_id=? AND sample_id=?", (dataset_id, sample_id))
+            conn.execute("DELETE FROM samples WHERE dataset_id=? AND sample_id=?", (dataset_id, sample_id))
+        local_deleted = False
+        if delete_local_copy and local_path:
+            local_root = (Path(dataset.get("local_path") or dataset["storage_path"]) / "samples").resolve()
+            resolved = local_path.resolve()
+            if local_root == resolved or local_root not in resolved.parents:
+                raise ModelStudioError("refusing to delete a path outside the managed dataset samples folder")
+            shutil.rmtree(resolved, ignore_errors=True)
+            local_deleted = True
+        self._refresh_dataset_counts(dataset_id)
+        self._mark_dataset_dirty(dataset_id)
+        self._write_dataset_labels_csv(dataset_id)
+        self.log("samples.delete", "sample", sample_id, f"Deleted sample record; local_deleted={local_deleted}")
+        return {
+            "dataset": self.get_dataset(dataset_id),
+            "sampleId": sample_id,
+            "localDeleted": local_deleted,
+            "sourcePath": str(source_path) if source_path else "",
+            "sourceExists": bool(source_path and source_path.exists()),
+        }
 
     def list_samples(self, dataset_id: str, *, limit: int = 50, offset: int = 0, query: str = "") -> dict:
         params: list[object] = [dataset_id]
@@ -422,7 +567,22 @@ class ModelStudioService:
                 f"SELECT * FROM samples {where} ORDER BY sample_id LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             )]
+        for row in rows:
+            row["label_status"] = _label_status(row)
         return {"total": total, "items": rows, "limit": limit, "offset": offset}
+
+    def get_sample(self, dataset_id: str, sample_id: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM samples WHERE dataset_id=? AND sample_id=?",
+                (dataset_id, sample_id),
+            ).fetchone()
+        if not row:
+            raise ModelStudioError(f"sample not found: {sample_id}")
+        sample = dict(row)
+        sample["label_status"] = _label_status(sample)
+        sample["quality"] = json.loads(sample.get("quality_json") or "{}")
+        return sample
 
     def quality_report(self, dataset_id: str) -> dict:
         with self.connect() as conn:
@@ -476,20 +636,23 @@ class ModelStudioService:
         rows = []
         failures = []
         sample_ids = json.loads(version["sample_ids"] or "[]")
-        with self.connect() as conn:
-            if sample_ids:
-                placeholders = ",".join("?" for _ in sample_ids)
-                samples = [dict(row) for row in conn.execute(
-                    f"SELECT * FROM samples WHERE dataset_id=? AND sample_id IN ({placeholders}) ORDER BY sample_id",
-                    [dataset_id, *sample_ids],
-                )]
-            else:
-                samples = []
+        samples = json.loads(version.get("sample_snapshot_json") or "[]")
+        if not samples:
+            with self.connect() as conn:
+                if sample_ids:
+                    placeholders = ",".join("?" for _ in sample_ids)
+                    samples = [dict(row) for row in conn.execute(
+                        f"SELECT * FROM samples WHERE dataset_id=? AND sample_id IN ({placeholders}) ORDER BY sample_id",
+                        [dataset_id, *sample_ids],
+                    )]
+                else:
+                    samples = []
         for sample in samples:
             if sample.get("include_status") == "Excluded":
                 continue
             try:
-                record = extract_feature_record(sample["storage_path"], sample_id=sample["sample_id"], allow_uncalibrated=True)
+                sample_path = sample.get("local_path") or sample.get("storage_path")
+                record = extract_feature_record(sample_path, sample_id=sample["sample_id"], allow_uncalibrated=True)
                 row = {"sample_id": record.sample_id}
                 for wavelength, value in zip(record.wavelengths, record.features):
                     row[f"R{wavelength}"] = value
@@ -527,9 +690,20 @@ class ModelStudioService:
         dataset = self.get_dataset(dataset_id)
         with self.connect() as conn:
             samples = [dict(row) for row in conn.execute(
-                "SELECT sample_id FROM samples WHERE dataset_id=? AND include_status!='Excluded' ORDER BY sample_id",
+                """
+                SELECT sample_id,storage_path,source_path,local_path,include_status,ssc,ta,ph
+                FROM samples
+                WHERE dataset_id=? AND include_status!='Excluded'
+                ORDER BY sample_id
+                """,
                 (dataset_id,),
             )]
+            labels = {
+                row["sample_id"]: dict(row) for row in conn.execute(
+                    "SELECT sample_id,ssc,ta,ph,updated_at FROM labels WHERE dataset_id=? ORDER BY sample_id",
+                    (dataset_id,),
+                )
+            }
             label_count = conn.execute(
                 "SELECT COUNT(*) FROM labels WHERE dataset_id=? AND (ssc IS NOT NULL OR ta IS NOT NULL OR ph IS NOT NULL)",
                 (dataset_id,),
@@ -538,13 +712,41 @@ class ModelStudioService:
             version_no = int(latest["version"]) + 1 if latest else 1
             parent_version = latest["dataset_version_id"] if latest else None
             sample_ids = [row["sample_id"] for row in samples]
-            snapshot_hash = _snapshot_hash(dataset_id, sample_ids, label_count)
+            sample_snapshot = []
+            label_snapshot = {}
+            for sample in samples:
+                sample_id = sample["sample_id"]
+                label = labels.get(sample_id) or {
+                    "sample_id": sample_id,
+                    "ssc": sample.get("ssc"),
+                    "ta": sample.get("ta"),
+                    "ph": sample.get("ph"),
+                    "updated_at": "",
+                }
+                sample_snapshot.append({
+                    "sample_id": sample_id,
+                    "storage_path": sample.get("local_path") or sample.get("storage_path") or "",
+                    "local_path": sample.get("local_path") or sample.get("storage_path") or "",
+                    "source_path": sample.get("source_path") or "",
+                    "ssc": label.get("ssc"),
+                    "ta": label.get("ta"),
+                    "ph": label.get("ph"),
+                })
+                label_snapshot[sample_id] = {
+                    "ssc": label.get("ssc"),
+                    "ta": label.get("ta"),
+                    "ph": label.get("ph"),
+                    "updated_at": label.get("updated_at") or "",
+                }
+            sample_snapshot_json = json.dumps(sample_snapshot, ensure_ascii=False, sort_keys=True)
+            label_snapshot_json = json.dumps(label_snapshot, ensure_ascii=False, sort_keys=True)
+            snapshot_hash = _snapshot_hash(dataset_id, sample_snapshot_json, label_snapshot_json)
             version_id = f"dsv_{uuid.uuid4().hex[:10]}"
             version_name = f"Dataset V{version_no}"
             conn.execute(
                 """
-                INSERT INTO dataset_versions(dataset_version_id,dataset_id,version,version_name,sample_count,sample_ids,label_count,created_at,created_by,description,parent_version,snapshot_hash)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO dataset_versions(dataset_version_id,dataset_id,version,version_name,sample_count,sample_ids,label_count,created_at,created_by,description,parent_version,sample_snapshot_json,label_snapshot_json,snapshot_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     version_id,
@@ -558,6 +760,8 @@ class ModelStudioService:
                     created_by,
                     description,
                     parent_version,
+                    sample_snapshot_json,
+                    label_snapshot_json,
                     snapshot_hash,
                 ),
             )
@@ -1014,6 +1218,92 @@ class ModelStudioService:
             ).fetchone()
         return bool(row)
 
+    def _dataset_local_path(self, dataset_id: str) -> Path:
+        return self.dataset_store_dir / dataset_id
+
+    def _sample_import_report(self, sample_dir: Path) -> dict:
+        structure = inspect_sample_structure(sample_dir)
+        warnings = list(structure.get("warnings") or [])
+        metadata_path = sample_dir / "metadata.json"
+        metadata_status = "present" if metadata_path.exists() and metadata_path.is_file() else "missing"
+        if metadata_status == "missing":
+            warnings.append("missing metadata.json")
+        if not structure["valid"]:
+            status = "Invalid"
+        elif warnings or structure.get("calibration_status") != "complete" or not structure.get("complete"):
+            status = "Warning"
+        else:
+            status = "Valid"
+        return {
+            "sample_id": sample_dir.name,
+            "sample_dir": str(sample_dir),
+            "status": status,
+            "rgb_count": int(structure.get("rgb_count") or 0),
+            "multispectral_count": int(structure.get("multispectral_count") or 0),
+            "available_bands": structure.get("available_bands") or [],
+            "dark_count": _calibration_count(sample_dir, "dark"),
+            "white_count": _calibration_count(sample_dir, "white"),
+            "calibration_status": structure.get("calibration_status") or "missing",
+            "metadata_status": metadata_status,
+            "warnings": warnings,
+            "structure": structure,
+        }
+
+    def _find_duplicate_sample(self, dataset_id: str, sample_id: str, source_path: Path) -> dict | None:
+        source = str(source_path)
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM samples
+                WHERE dataset_id=? AND (sample_id=? OR source_path=?)
+                ORDER BY id LIMIT 1
+                """,
+                (dataset_id, sample_id, source),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def _unique_sample_id(self, dataset_id: str, base: str) -> str:
+        suffix = 2
+        candidate = f"{base}_{suffix}"
+        while self._sample_exists(dataset_id, candidate):
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        return candidate
+
+    def _unique_sample_path(self, samples_root: Path, sample_id: str) -> Path:
+        candidate = samples_root / sample_id
+        if not candidate.exists():
+            return candidate
+        suffix = 2
+        while True:
+            candidate = samples_root / f"{sample_id}_{suffix}"
+            if not candidate.exists():
+                return candidate
+            suffix += 1
+
+    def _write_dataset_labels_csv(self, dataset_id: str) -> None:
+        dataset = self.get_dataset(dataset_id)
+        target = Path(dataset.get("local_path") or dataset["storage_path"]) / "labels.csv"
+        with self.connect() as conn:
+            rows = [dict(row) for row in conn.execute(
+                "SELECT sample_id,ssc,ta,ph FROM labels WHERE dataset_id=? ORDER BY sample_id",
+                (dataset_id,),
+            )]
+        self._write_labels_csv_file(target, rows)
+
+    def _write_labels_csv_file(self, target: Path, rows: list[dict]) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["sample_id", "ssc", "ta", "ph"])
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({
+                    "sample_id": row.get("sample_id") or "",
+                    "ssc": "" if row.get("ssc") is None else row.get("ssc"),
+                    "ta": "" if row.get("ta") is None else row.get("ta"),
+                    "ph": "" if row.get("ph") is None else row.get("ph"),
+                })
+
     def _mark_dataset_dirty(self, dataset_id: str) -> None:
         with self.connect() as conn:
             conn.execute("UPDATE datasets SET dirty=1 WHERE dataset_id=?", (dataset_id,))
@@ -1035,16 +1325,22 @@ class ModelStudioService:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,storage_path,rgb_count,multispectral_count,dark_count,white_count,data_status,quality_json,created_at)
-                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:storage_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:data_status,:quality_json,:created_at)
+                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,sample_name,storage_path,source_path,local_path,rgb_count,multispectral_count,dark_count,white_count,available_bands,calibration_status,data_status,quality_json,created_at,imported_at)
+                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:sample_name,:storage_path,:source_path,:local_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:available_bands,:calibration_status,:data_status,:quality_json,:created_at,:imported_at)
                 ON CONFLICT(dataset_id,sample_id) DO UPDATE SET
                   storage_path=excluded.storage_path,
+                  source_path=excluded.source_path,
+                  local_path=excluded.local_path,
+                  sample_name=excluded.sample_name,
                   rgb_count=excluded.rgb_count,
                   multispectral_count=excluded.multispectral_count,
                   dark_count=excluded.dark_count,
                   white_count=excluded.white_count,
+                  available_bands=excluded.available_bands,
+                  calibration_status=excluded.calibration_status,
                   data_status=excluded.data_status,
-                  quality_json=excluded.quality_json
+                  quality_json=excluded.quality_json,
+                  imported_at=excluded.imported_at
                 """,
                 row,
             )
@@ -1194,13 +1490,34 @@ def _normalize_variety(value: str) -> str:
     return text or "generic"
 
 
-def _snapshot_hash(dataset_id: str, sample_ids: list[str], label_count: int) -> str:
+def _snapshot_hash(dataset_id: str, sample_snapshot_json: str, label_snapshot_json: str) -> str:
     digest = hashlib.sha256()
     digest.update(dataset_id.encode("utf-8"))
-    digest.update(str(label_count).encode("utf-8"))
-    for sample_id in sample_ids:
-        digest.update(sample_id.encode("utf-8"))
+    digest.update(sample_snapshot_json.encode("utf-8"))
+    digest.update(label_snapshot_json.encode("utf-8"))
     return digest.hexdigest()
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ModelStudioError(f"label value must be numeric: {value}") from exc
+
+
+def _label_status(sample: dict) -> str:
+    values = [sample.get("ssc"), sample.get("ta"), sample.get("ph")]
+    present = sum(1 for value in values if value is not None and value != "")
+    if present == 3:
+        return "Complete"
+    if present:
+        return "Partial"
+    return "Missing"
 
 
 def _best_default(models: list[dict], variety: str = "") -> dict | None:

@@ -291,6 +291,18 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function selectFolderPath({ purpose = "folder", initial = "" } = {}) {
+  const query = new URLSearchParams({ purpose, initial });
+  return api(`/api/select-folder?${query.toString()}`);
+}
+
+function setPathDisplay(selector, value = "") {
+  const node = $(selector);
+  if (!node) return;
+  node.value = value || "";
+  node.title = value || "";
+}
+
 function initPointcloudViewer() {
   const canvas = $("#pointcloudCanvas");
   if (!canvas) return;
@@ -1070,19 +1082,21 @@ async function chooseSaveRoot() {
     return;
   }
   try {
-    const payload = await api("/api/select-save-root");
-    if (payload.saveRootDir) {
-      state.saveRootDir = payload.saveRootDir;
-      if ($("#saveRootDir")) {
-        $("#saveRootDir").value = payload.saveRootDir;
-        $("#saveRootDir").title = payload.saveRootDir;
-      }
+    const payload = await selectFolderPath({ purpose: "save", initial: state.saveRootDir || $("#saveRootDir")?.value || "" });
+    const selected = payload.path || payload.saveRootDir || "";
+    if (selected) {
+      state.saveRootDir = selected;
+      setPathDisplay("#saveRootDir", selected);
       setText("sampleCreateStatus", "保存位置已选择");
-      addLog(`样品保存位置已选择: ${payload.saveRootDir}`);
+      addLog(`样品保存位置已选择: ${selected}`);
     }
   } catch (error) {
-    setText("sampleCreateStatus", "未选择保存位置");
-    addLog(error.message || "用户取消选择保存位置。", "WARN");
+    if (error.payload?.cancelled) {
+      addLog("用户取消选择保存位置，已保留原路径。", "WARN");
+      return;
+    }
+    setText("sampleCreateStatus", "保存位置无效");
+    addLog(error.message || "选择保存位置失败。", "WARN");
   }
 }
 
@@ -1263,18 +1277,18 @@ async function selectDataset() {
   try {
     setDataSource("other");
     setText("shapeStepLabel", "打开其他文件夹选择器");
-    const payload = await api("/api/select-dataset");
-    if (payload.datasetDir) {
-      await loadSampleFolder(payload.datasetDir, { source: "other" });
+    const payload = await selectFolderPath({ purpose: "sample", initial: state.analysisDataDir || state.currentCaptureDir || state.saveRootDir || "" });
+    if (payload.path) {
+      await loadSampleFolder(payload.path, { source: "other" });
     }
   } catch (error) {
-    addLog(error.message || "用户取消选择数据集。", "WARN");
-    if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) return;
-    const picker = $("#datasetPicker");
-    if (picker) {
-      picker.value = "";
-      picker.click();
+    if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) {
+      addLog("用户取消选择样品文件夹，已保留原路径。", "WARN");
+      return;
     }
+    setStepStatus("load-rgbd", "warning");
+    setText("shapeStepLabel", "样品文件夹选择失败");
+    addLog(error.message || "样品文件夹选择失败。", "WARN");
   }
 }
 
@@ -1371,7 +1385,7 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
   const target = datasetDir || "";
   state.analysisDataDir = target;
   setDataSource(source);
-  if ($("#datasetDir")) $("#datasetDir").value = target;
+  setPathDisplay("#datasetDir", target);
   $("#colorDir").value = $("#colorDir").value || "rgb";
   $("#depthDir").value = $("#depthDir").value || "multispectral";
 
@@ -1866,7 +1880,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#enterAnalysisFromCapture")?.addEventListener("click", enterAnalysisFromCapture);
   $("#selectDataset")?.addEventListener("click", selectDataset);
-  $("#datasetPicker")?.addEventListener("change", uploadSelectedDataset);
   $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
   $("#nextImage")?.addEventListener("click", () => stepDatasetImage(1));
   $("#refreshImages")?.addEventListener("click", () => loadSampleFolder(state.analysisDataDir || $("#datasetDir")?.value || "", { source: state.dataSource }));
