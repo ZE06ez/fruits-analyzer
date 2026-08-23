@@ -9,7 +9,9 @@
 <body>
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">MS</div>
+      <div class="brand-mark">
+        <img src="/model-studio/assets/model-training-icon.png" alt="模型训练平台" />
+      </div>
       <div>
         <h1>模型训练中心</h1>
         <p>Dataset · Training · Evaluation · Deployment</p>
@@ -64,21 +66,33 @@
 
     <section class="page" data-page="datasets">
       <div class="panel">
-        <div class="panel-head"><h3>新建 Dataset</h3><span class="badge">Metadata Only</span></div>
+        <div class="panel-head"><h3>新建 Dataset</h3><span class="badge">Managed Local</span></div>
         <div class="form-grid">
           <label>名称<input id="datasetName" placeholder="Blueberry_2026_batch_A" /></label>
           <label>果种<input id="fruitType" placeholder="蓝莓" /></label>
           <label>品种<input id="variety" placeholder="品种A" /></label>
-          <label>样品根目录<input id="storagePath" placeholder="D:/FruitData/samples" /></label>
-          <label>追加样品目录<input id="sourceSamplePath" placeholder="可选：D:/FruitData/new_samples" /></label>
+          <label>默认导入来源
+            <div class="path-picker">
+              <input id="storagePath" placeholder="可选：选择样品来源根目录" readonly />
+              <button id="selectDatasetSource" type="button">选择文件夹</button>
+            </div>
+          </label>
+          <label>导入样品文件夹
+            <div class="path-picker">
+              <input id="sourceSamplePath" placeholder="请选择要导入的样品文件夹" readonly />
+              <button id="selectSampleFolder" type="button">选择文件夹</button>
+            </div>
+          </label>
           <label class="wide">描述<input id="datasetDescription" placeholder="实验批次、采集条件、备注" /></label>
         </div>
         <div class="actions">
           <button id="createDataset">创建 Dataset</button>
-          <button id="importSamples">扫描/追加样品</button>
+          <button id="validateSampleFolder">验证导入目录</button>
+          <button id="importSamples">导入样品</button>
           <button id="createDatasetVersion">创建数据集版本</button>
           <button id="refreshDatasets">刷新</button>
         </div>
+        <pre id="sampleImportReport" class="report compact">等待选择样品文件夹</pre>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>数据集列表</h3><span id="datasetState" class="badge">Empty</span></div>
@@ -91,7 +105,12 @@
         <div class="panel-head"><h3>样品与标签</h3><span id="sampleDatasetName" class="badge">未选择 Dataset</span></div>
         <div class="form-grid">
           <label>当前 Dataset<select id="datasetSelect"></select></label>
-          <label>labels.csv 路径<input id="labelsPath" placeholder="D:/FruitData/labels.csv" /></label>
+          <label>labels.csv 路径
+            <div class="path-picker">
+              <input id="labelsPath" placeholder="请选择 labels.csv 文件" readonly />
+              <button id="selectLabelsCsv" type="button">选择文件</button>
+            </div>
+          </label>
           <label>搜索 Sample<input id="sampleQuery" placeholder="sample_id" /></label>
           <label>样品状态<select id="sampleIncludeStatus"><option>Included</option><option>Needs Review</option><option>Excluded</option></select></label>
           <label>状态原因<input id="sampleStatusReason" placeholder="异常原因或备注" /></label>
@@ -106,12 +125,30 @@
       <div class="two-col">
         <article class="panel">
           <div class="panel-head"><h3>样品表</h3><span class="badge">Paged</span></div>
-          <div class="table-wrap"><table><thead><tr><th>Sample ID</th><th>RGB</th><th>多光谱</th><th>Dark</th><th>White</th><th>SSC</th><th>TA</th><th>pH</th><th>使用状态</th><th>数据状态</th></tr></thead><tbody id="sampleRows"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Sample ID</th><th>RGB</th><th>多光谱</th><th>Dark</th><th>White</th><th>SSC</th><th>TA</th><th>pH</th><th>标签状态</th><th>使用状态</th><th>数据状态</th></tr></thead><tbody id="sampleRows"></tbody></table></div>
         </article>
         <article class="panel">
-          <div class="panel-head"><h3>数据质量</h3><span class="badge warn">Validation</span></div>
-          <pre id="qualityReport" class="report">暂无数据质量报告</pre>
+          <div class="panel-head"><h3>样品详情 / Ground Truth</h3><span id="labelSaveState" class="badge warn">未选择样品</span></div>
+          <dl class="summary-list">
+            <dt>Sample</dt><dd id="detailSampleId">--</dd>
+            <dt>Local Path</dt><dd id="detailLocalPath">--</dd>
+            <dt>Source Path</dt><dd id="detailSourcePath">--</dd>
+          </dl>
+          <div class="form-grid detail-form">
+            <label>SSC<input id="labelSsc" inputmode="decimal" placeholder="输入 SSC 实测值" /></label>
+            <label>TA<input id="labelTa" inputmode="decimal" placeholder="输入 TA 实测值" /></label>
+            <label>pH<input id="labelPh" inputmode="decimal" placeholder="输入 pH 实测值" /></label>
+          </div>
+          <div class="actions">
+            <button id="saveSampleLabel">保存标签</button>
+            <button class="danger" id="deleteSampleRecord">删除样品记录</button>
+            <button class="danger" id="deleteSampleLocalCopy">删除记录和本地副本</button>
+          </div>
         </article>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>数据质量</h3><span class="badge warn">Validation</span></div>
+          <pre id="qualityReport" class="report">暂无数据质量报告</pre>
       </div>
     </section>
 

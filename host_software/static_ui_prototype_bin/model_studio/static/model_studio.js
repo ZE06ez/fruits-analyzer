@@ -6,6 +6,8 @@ const studio = {
   selectedExperimentId: "",
   latestFeature: null,
   jobTimer: null,
+  labelDirty: false,
+  selectedSample: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -21,8 +23,29 @@ async function api(path, options = {}) {
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok || payload.ok === false) {
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.payload = payload;
+    throw error;
+  }
   return payload;
+}
+
+async function selectFolderPath({ purpose = "folder", initial = "" } = {}) {
+  const query = new URLSearchParams({ purpose, initial });
+  return api(`/api/select-folder?${query.toString()}`);
+}
+
+async function selectFilePath({ purpose = "file", initial = "" } = {}) {
+  const query = new URLSearchParams({ purpose, initial });
+  return api(`/api/select-file?${query.toString()}`);
+}
+
+function setPathDisplay(selector, value = "") {
+  const node = $(selector);
+  if (!node) return;
+  node.value = value || "";
+  node.title = value || "";
 }
 
 function toast(message) {
@@ -35,6 +58,8 @@ function toast(message) {
 }
 
 function switchView(view) {
+  if (studio.labelDirty && !window.confirm("当前标签尚未保存，是否放弃修改？")) return;
+  studio.labelDirty = false;
   document.querySelectorAll(".page").forEach((page) => page.classList.toggle("active", page.dataset.page === view));
   document.querySelectorAll(".nav").forEach((nav) => nav.classList.toggle("active", nav.dataset.view === view));
   const names = {
@@ -52,7 +77,7 @@ function switchView(view) {
 }
 
 function badge(status) {
-  const cls = status === "Production" || status === "complete" || status === "Completed" ? "good" : status === "Failed" || status === "Archived" ? "bad" : "warn";
+  const cls = ["Production", "complete", "Completed", "Complete", "Valid"].includes(status) ? "good" : ["Failed", "Archived", "Invalid"].includes(status) ? "bad" : "warn";
   return `<span class="badge ${cls}">${status || "--"}</span>`;
 }
 
@@ -98,7 +123,7 @@ async function loadDatasets() {
       <td>${ds.label_count || 0}</td>
       <td>${(ds.versions || []).map((v) => v.version_name).join(", ") || "--"}</td>
       <td>${Number(ds.dirty || 0) ? badge("Dataset Changed") : badge(ds.calibration_status)}</td>
-      <td><small>${ds.storage_path}</small></td>
+      <td><small>${ds.local_path || ds.storage_path}</small></td>
     </tr>
   `).join("");
   $("#datasetRows").innerHTML = rows || `<tr><td colspan="8" class="empty">暂无数据集</td></tr>`;
@@ -127,9 +152,44 @@ async function createDataset() {
 async function importSamples() {
   const datasetId = currentDatasetId();
   const sourcePath = $("#sourceSamplePath")?.value.trim() || "";
-  const result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath }) });
+  text("sampleImportReport", "正在导入样品...");
+  let result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath, duplicatePolicy: "skip" }) });
+  if (result.result.conflicts && window.confirm("该样品可能已经存在。是否作为新样品导入？")) {
+    result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath, duplicatePolicy: "new" }) });
+  }
+  $("#sampleImportReport").textContent = JSON.stringify(result.result, null, 2);
   toast(`新样品 ${result.result.newSamples} · 已有 ${result.result.existingSamples} · 冲突 ${result.result.conflicts}`);
   await refreshAll();
+}
+
+async function selectDatasetSource() {
+  const payload = await selectFolderPath({
+    purpose: "model-studio-source",
+    initial: $("#storagePath")?.value.trim() || $("#sourceSamplePath")?.value.trim() || "",
+  });
+  if (payload.path) {
+    setPathDisplay("#storagePath", payload.path);
+    toast("默认导入来源已选择");
+  }
+}
+
+async function selectSampleFolder() {
+  const payload = await selectFolderPath({
+    purpose: "model-studio-sample",
+    initial: $("#sourceSamplePath")?.value.trim() || $("#storagePath")?.value.trim() || "",
+  });
+  if (payload.path) {
+    setPathDisplay("#sourceSamplePath", payload.path);
+    await validateSampleFolder();
+  }
+}
+
+async function validateSampleFolder() {
+  const sourcePath = $("#sourceSamplePath")?.value.trim() || "";
+  if (!sourcePath) throw new Error("请先选择样品文件夹");
+  const payload = await api("/api/model-studio/samples/validate", { method: "POST", body: JSON.stringify({ sourcePath }) });
+  $("#sampleImportReport").textContent = JSON.stringify(payload.validation, null, 2);
+  toast(`导入目录状态：${payload.validation.status}`);
 }
 
 function currentDatasetId() {
@@ -178,14 +238,81 @@ async function loadSamples() {
       <td><b>${sample.sample_id}</b></td><td>${sample.rgb_count}</td><td>${sample.multispectral_count}</td>
       <td>${sample.dark_count}</td><td>${sample.white_count}</td>
       <td>${sample.ssc ?? "--"}</td><td>${sample.ta ?? "--"}</td><td>${sample.ph ?? "--"}</td>
+      <td>${badge(sample.label_status || "Missing")}</td>
       <td>${badge(sample.include_status || "Included")}<br><small>${sample.exclude_reason || ""}</small></td>
       <td>${badge(sample.data_status)}</td>
     </tr>
-  `).join("") || `<tr><td colspan="10" class="empty">暂无样品</td></tr>`;
-  document.querySelectorAll("[data-sample]").forEach((row) => row.addEventListener("click", () => {
+  `).join("") || `<tr><td colspan="11" class="empty">暂无样品</td></tr>`;
+  document.querySelectorAll("[data-sample]").forEach((row) => row.addEventListener("click", async () => {
+    if (studio.labelDirty && !window.confirm("当前标签尚未保存，是否放弃修改？")) return;
     studio.selectedSampleId = row.dataset.sample;
     text("sampleDatasetName", `${selected ? selected.dataset_name : datasetId} · ${studio.selectedSampleId}`);
+    await loadSampleDetail();
   }));
+}
+
+async function loadSampleDetail() {
+  const datasetId = currentDatasetId();
+  if (!studio.selectedSampleId) return;
+  const payload = await api(`/api/model-studio/samples?datasetId=${encodeURIComponent(datasetId)}&sampleId=${encodeURIComponent(studio.selectedSampleId)}`);
+  studio.selectedSample = payload.sample;
+  text("detailSampleId", payload.sample.sample_id);
+  text("detailLocalPath", payload.sample.local_path || payload.sample.storage_path || "--");
+  text("detailSourcePath", payload.sample.source_path || "--");
+  $("#labelSsc").value = payload.sample.ssc ?? "";
+  $("#labelTa").value = payload.sample.ta ?? "";
+  $("#labelPh").value = payload.sample.ph ?? "";
+  studio.labelDirty = false;
+  text("labelSaveState", payload.sample.label_status || "Missing");
+}
+
+function markLabelDirty() {
+  if (!studio.selectedSampleId) return;
+  studio.labelDirty = true;
+  text("labelSaveState", "未保存");
+}
+
+async function saveSampleLabel() {
+  const datasetId = currentDatasetId();
+  if (!studio.selectedSampleId) throw new Error("请先选择 Sample");
+  const payload = await api("/api/model-studio/labels/save", {
+    method: "POST",
+    body: JSON.stringify({
+      datasetId,
+      sampleId: studio.selectedSampleId,
+      ssc: $("#labelSsc").value.trim(),
+      ta: $("#labelTa").value.trim(),
+      ph: $("#labelPh").value.trim(),
+    }),
+  });
+  studio.selectedSample = payload.sample;
+  studio.labelDirty = false;
+  text("labelSaveState", payload.sample.label_status || "Saved");
+  toast("标签已保存");
+  await refreshAll();
+}
+
+async function deleteSelectedSample(deleteLocalCopy = false) {
+  const datasetId = currentDatasetId();
+  if (!studio.selectedSampleId) throw new Error("请先选择 Sample");
+  const message = deleteLocalCopy
+    ? "将删除 Model Studio 数据库记录和本地托管副本，但不会删除原始 source_path。确认继续？"
+    : "只删除 Model Studio 数据库记录，不删除本地副本或原始 source_path。确认继续？";
+  if (!window.confirm(message)) return;
+  if (deleteLocalCopy && !window.confirm("危险操作二次确认：本地托管副本会被删除，原始拍摄目录仍会保留。")) return;
+  const payload = await api("/api/model-studio/samples/delete", {
+    method: "POST",
+    body: JSON.stringify({ datasetId, sampleId: studio.selectedSampleId, deleteLocalCopy }),
+  });
+  studio.selectedSampleId = "";
+  studio.selectedSample = null;
+  studio.labelDirty = false;
+  text("detailSampleId", "--");
+  text("detailLocalPath", "--");
+  text("detailSourcePath", payload.result.sourcePath || "--");
+  text("labelSaveState", "已删除");
+  toast(payload.result.localDeleted ? "样品记录和本地副本已删除，原始目录未删除" : "样品记录已删除");
+  await refreshAll();
 }
 
 async function importLabels() {
@@ -194,6 +321,17 @@ async function importLabels() {
   const payload = await api("/api/model-studio/labels/import", { method: "POST", body: JSON.stringify({ datasetId, labelsCsvPath }) });
   toast(`已导入 ${payload.result.imported} 条标签`);
   await refreshAll();
+}
+
+async function selectLabelsCsv() {
+  const payload = await selectFilePath({
+    purpose: "labels-csv",
+    initial: $("#labelsPath")?.value.trim() || $("#storagePath")?.value.trim() || "",
+  });
+  if (payload.path) {
+    setPathDisplay("#labelsPath", payload.path);
+    toast("labels.csv 已选择");
+  }
 }
 
 async function updateSampleStatus() {
@@ -421,15 +559,41 @@ async function refreshAll() {
 document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#createDataset").addEventListener("click", () => createDataset().catch((error) => toast(error.message)));
+  $("#selectDatasetSource").addEventListener("click", () => selectDatasetSource().catch((error) => {
+    if (error.payload?.cancelled) return toast("已取消选择，原路径保持不变");
+    toast(error.message);
+  }));
+  $("#selectSampleFolder").addEventListener("click", () => selectSampleFolder().catch((error) => {
+    if (error.payload?.cancelled) return toast("已取消选择，原路径保持不变");
+    toast(error.message);
+  }));
+  $("#validateSampleFolder").addEventListener("click", () => validateSampleFolder().catch((error) => toast(error.message)));
   $("#importSamples").addEventListener("click", () => importSamples().catch((error) => toast(error.message)));
   $("#createDatasetVersion").addEventListener("click", () => createDatasetVersion().catch((error) => toast(error.message)));
   $("#refreshDatasets").addEventListener("click", () => loadDatasets().catch((error) => toast(error.message)));
-  $("#datasetSelect").addEventListener("change", () => { studio.selectedDatasetId = $("#datasetSelect").value; studio.selectedDatasetVersionId = ""; loadDatasetVersions().then(loadSamples).catch((error) => toast(error.message)); });
+  $("#datasetSelect").addEventListener("change", () => {
+    if (studio.labelDirty && !window.confirm("当前标签尚未保存，是否放弃修改？")) {
+      $("#datasetSelect").value = studio.selectedDatasetId;
+      return;
+    }
+    studio.labelDirty = false;
+    studio.selectedDatasetId = $("#datasetSelect").value;
+    studio.selectedDatasetVersionId = "";
+    loadDatasetVersions().then(loadSamples).catch((error) => toast(error.message));
+  });
   $("#datasetVersionSelect").addEventListener("change", () => { studio.selectedDatasetVersionId = $("#datasetVersionSelect").value; });
   $("#loadSamples").addEventListener("click", () => loadSamples().catch((error) => toast(error.message)));
+  $("#selectLabelsCsv").addEventListener("click", () => selectLabelsCsv().catch((error) => {
+    if (error.payload?.cancelled) return toast("已取消选择，原路径保持不变");
+    toast(error.message);
+  }));
   $("#importLabels").addEventListener("click", () => importLabels().catch((error) => toast(error.message)));
   $("#runQualityCheck").addEventListener("click", () => qualityCheck().catch((error) => toast(error.message)));
   $("#updateSampleStatus").addEventListener("click", () => updateSampleStatus().catch((error) => toast(error.message)));
+  $("#saveSampleLabel").addEventListener("click", () => saveSampleLabel().catch((error) => toast(error.message)));
+  $("#deleteSampleRecord").addEventListener("click", () => deleteSelectedSample(false).catch((error) => toast(error.message)));
+  $("#deleteSampleLocalCopy").addEventListener("click", () => deleteSelectedSample(true).catch((error) => toast(error.message)));
+  ["labelSsc", "labelTa", "labelPh"].forEach((id) => document.getElementById(id).addEventListener("input", markLabelDirty));
   $("#generateFeatures").addEventListener("click", () => generateFeatures().catch((error) => toast(error.message)));
   $("#exportFeatureHint").addEventListener("click", () => toast(studio.latestFeature?.featureCsv || "尚未生成 features.csv"));
   $("#createExperiment").addEventListener("click", () => createExperiment().catch((error) => toast(error.message)));
@@ -437,4 +601,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#cloneExperiment").addEventListener("click", () => cloneExperiment().catch((error) => toast(error.message)));
   $("#refreshJobs").addEventListener("click", () => refreshJobs().catch((error) => toast(error.message)));
   await refreshAll().catch((error) => toast(error.message));
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!studio.labelDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
 });

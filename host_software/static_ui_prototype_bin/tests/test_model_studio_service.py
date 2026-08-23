@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import time
 import unittest
@@ -67,6 +68,79 @@ class ModelStudioServiceTests(unittest.TestCase):
         v2 = self.service.create_dataset_version(dataset["dataset_id"], "V2 with new samples")
         self.assertEqual(v2["sample_count"], 11)
         self.assertNotIn("sample_011", ",".join(v2["sample_ids"]))
+
+    def test_sample_import_copies_into_managed_dataset_and_handles_duplicates(self):
+        source_sample = self.samples_root / "sample_000"
+        (source_sample / "metadata.json").write_text('{"sample_id":"sample_000"}', encoding="utf-8")
+        dataset = self.service.create_dataset({
+            "datasetName": "Blueberry_Managed_Copy",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root),
+        })
+        validation = self.service.validate_sample_folder(source_sample)
+        self.assertEqual(validation["status"], "Valid")
+
+        imported = self.service.import_samples(dataset["dataset_id"], source_sample)
+        self.assertEqual(imported["imported"], 1)
+        sample = self.service.get_sample(dataset["dataset_id"], "sample_000")
+        self.assertEqual(Path(sample["source_path"]), source_sample)
+        self.assertNotEqual(Path(sample["local_path"]), source_sample)
+        self.assertTrue((Path(sample["local_path"]) / "rgb" / "rgb_001.png").exists())
+        self.assertTrue((Path(sample["local_path"]) / "multispectral" / "450.png").exists())
+        self.assertTrue((Path(sample["local_path"]) / "calibration" / "dark" / "450.png").exists())
+        self.assertTrue((Path(sample["local_path"]) / "metadata.json").exists())
+        self.assertTrue(source_sample.exists())
+
+        duplicate = self.service.import_samples(dataset["dataset_id"], source_sample)
+        self.assertEqual(duplicate["imported"], 0)
+        self.assertEqual(duplicate["conflicts"], 1)
+        self.assertEqual(duplicate["skipped"], 1)
+
+        copied_as_new = self.service.import_samples(dataset["dataset_id"], source_sample, duplicate_policy="new")
+        self.assertEqual(copied_as_new["imported"], 1)
+        samples = self.service.list_samples(dataset["dataset_id"])["items"]
+        self.assertIn("sample_000_2", {item["sample_id"] for item in samples})
+        copied_sample = self.service.get_sample(dataset["dataset_id"], "sample_000_2")
+        copied_path = Path(copied_sample["local_path"])
+        deleted = self.service.delete_sample(dataset["dataset_id"], "sample_000_2", delete_local_copy=True)
+        self.assertTrue(deleted["sourceExists"])
+        self.assertFalse(copied_path.exists())
+        self.assertTrue(source_sample.exists())
+
+    def test_save_sample_label_updates_sqlite_csv_dirty_and_version_snapshot(self):
+        source_sample = self.samples_root / "sample_001"
+        (source_sample / "metadata.json").write_text('{"sample_id":"sample_001"}', encoding="utf-8")
+        dataset = self.service.create_dataset({
+            "datasetName": "Blueberry_Label_Save",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+        })
+        self.service.import_samples(dataset["dataset_id"], source_sample)
+
+        first = self.service.save_sample_label(dataset["dataset_id"], "sample_001", {"ssc": "10.5", "ta": "0.41", "ph": "3.42"})
+        self.assertEqual(first["label_status"], "Complete")
+        v1 = self.service.create_dataset_version(dataset["dataset_id"], "Frozen labels")
+
+        updated = self.service.save_sample_label(dataset["dataset_id"], "sample_001", {"ssc": "11.6", "ta": "", "ph": "3.58"})
+        self.assertEqual(updated["label_status"], "Partial")
+        self.assertEqual(self.service.get_dataset(dataset["dataset_id"])["dirty"], 1)
+        labels_csv = Path(self.service.get_dataset(dataset["dataset_id"])["local_path"]) / "labels.csv"
+        with labels_csv.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(rows[0]["sample_id"], "sample_001")
+        self.assertEqual(rows[0]["ssc"], "11.6")
+        self.assertEqual(rows[0]["ta"], "")
+        self.assertEqual(rows[0]["ph"], "3.58")
+
+        frozen = self.service.get_dataset_version(v1["dataset_version_id"])
+        label_snapshot = json.loads(frozen["label_snapshot_json"])
+        self.assertEqual(label_snapshot["sample_001"]["ssc"], 10.5)
+
+        features = self.service.generate_features(dataset["dataset_id"], v1["dataset_version_id"])
+        with Path(features["featureCsv"]).open("r", encoding="utf-8", newline="") as handle:
+            feature_rows = list(csv.DictReader(handle))
+        self.assertEqual(feature_rows[0]["ssc"], "10.5")
 
     def test_multiple_published_models_and_one_default_per_scope(self):
         dataset = self.service.create_dataset({

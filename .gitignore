@@ -23,6 +23,7 @@ __pycache__/
 **/model_studio/database/
 **/model_studio/artifacts/
 **/model_studio/models/candidates/
+**/test_datasets/
 
 # Local/temp files
 临时文件/

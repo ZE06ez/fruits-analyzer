@@ -269,6 +269,12 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if path == "/api/sample-folder":
                 self.handle_sample_folder(parsed.query)
                 return
+            if path == "/api/select-folder":
+                self.handle_select_folder(parsed.query)
+                return
+            if path == "/api/select-file":
+                self.handle_select_file(parsed.query)
+                return
             if path == "/api/select-dataset":
                 self.handle_select_dataset()
                 return
@@ -399,6 +405,10 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     return
                 if path == "samples":
                     dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
+                    sample_id = params.get("sampleId", params.get("sample_id", [""]))[0]
+                    if sample_id:
+                        self.json_response({"ok": True, "sample": studio.get_sample(dataset_id, sample_id)})
+                        return
                     self.json_response({
                         "ok": True,
                         "samples": studio.list_samples(
@@ -408,6 +418,14 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                             query=params.get("query", [""])[0],
                         ),
                     })
+                    return
+                if path == "select-sample-folder":
+                    initial = params.get("initial", [""])[0] or default_save_root(app_dir)
+                    selected = select_directory_dialog("选择要导入 Model Studio 的样品文件夹", initial)
+                    if not selected:
+                        self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
+                        return
+                    self.json_response({"ok": True, "sourcePath": selected})
                     return
                 if path == "quality":
                     dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
@@ -457,7 +475,15 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     source_path = payload.get("sourcePath") or payload.get("source_path")
                     if source_path:
                         source_path = resolve_user_path(source_path, app_dir)
-                    self.json_response({"ok": True, "result": studio.import_samples(dataset_id, source_path)})
+                    self.json_response({"ok": True, "result": studio.import_samples(
+                        dataset_id,
+                        source_path,
+                        payload.get("duplicatePolicy") or payload.get("duplicate_policy") or "skip",
+                    )})
+                    return
+                if path == "samples/validate":
+                    source_path = payload.get("sourcePath") or payload.get("source_path")
+                    self.json_response({"ok": True, "validation": studio.validate_sample_folder(resolve_user_path(source_path, app_dir))})
                     return
                 if path == "samples/status":
                     self.json_response({"ok": True, "sample": studio.update_sample_status(
@@ -467,10 +493,22 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                         payload.get("reason") or payload.get("excludeReason") or "",
                     )})
                     return
+                if path == "samples/delete":
+                    self.json_response({"ok": True, "result": studio.delete_sample(
+                        payload.get("datasetId") or payload.get("dataset_id"),
+                        payload.get("sampleId") or payload.get("sample_id"),
+                        delete_local_copy=bool(payload.get("deleteLocalCopy") or payload.get("delete_local_copy")),
+                    )})
+                    return
                 if path == "labels/import":
                     dataset_id = payload.get("datasetId") or payload.get("dataset_id")
                     labels_path = payload.get("labelsCsvPath") or payload.get("labels_csv")
                     self.json_response({"ok": True, "result": studio.import_labels(dataset_id, resolve_user_path(labels_path, app_dir))})
+                    return
+                if path == "labels/save":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    sample_id = payload.get("sampleId") or payload.get("sample_id")
+                    self.json_response({"ok": True, "sample": studio.save_sample_label(dataset_id, sample_id, payload)})
                     return
                 if path == "dataset-versions":
                     dataset_id = payload.get("datasetId") or payload.get("dataset_id")
@@ -593,9 +631,13 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
                     return
+                status = validate_folder_path(selected, purpose="sample", app_dir=app_dir)
+                if not status["exists"] or not status["isDirectory"] or not status["readable"]:
+                    self.json_response({"ok": False, "error": status["message"], "pathStatus": status}, status=400)
+                    return
                 if info.get("hasSample"):
                     session.set_analysis_data_dir(selected)
-                self.json_response({"ok": True, "datasetDir": selected})
+                self.json_response({"ok": True, "datasetDir": selected, "pathStatus": status})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"打开目录选择器失败: {exc}"}, status=500)
 
@@ -605,9 +647,51 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 if not selected:
                     self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
                     return
-                self.json_response({"ok": True, "saveRootDir": selected})
+                status = validate_folder_path(selected, purpose="save", app_dir=app_dir)
+                if not status["writable"]:
+                    self.json_response({"ok": False, "error": status["message"], "pathStatus": status}, status=400)
+                    return
+                self.json_response({"ok": True, "saveRootDir": selected, "pathStatus": status})
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"打开保存位置选择器失败: {exc}"}, status=500)
+
+        def handle_select_folder(self, query: str) -> None:
+            params = parse_qs(query)
+            purpose = params.get("purpose", ["folder"])[0] or "folder"
+            initial = params.get("initial", [""])[0] or default_save_root(app_dir)
+            title = folder_picker_title(purpose)
+            try:
+                selected = select_directory_dialog(title, initial)
+                if not selected:
+                    self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
+                    return
+                status = validate_folder_path(selected, purpose=purpose, app_dir=app_dir)
+                if not status["exists"] or not status["isDirectory"] or not status["readable"]:
+                    self.json_response({"ok": False, "error": status["message"], "pathStatus": status}, status=400)
+                    return
+                if purpose in {"save", "export"} and not status["writable"]:
+                    self.json_response({"ok": False, "error": status["message"], "pathStatus": status}, status=400)
+                    return
+                self.json_response({"ok": True, "path": selected, "purpose": purpose, "pathStatus": status})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开文件夹选择器失败: {exc}"}, status=500)
+
+        def handle_select_file(self, query: str) -> None:
+            params = parse_qs(query)
+            purpose = params.get("purpose", ["file"])[0] or "file"
+            initial = params.get("initial", [""])[0] or default_save_root(app_dir)
+            try:
+                selected = select_file_dialog(file_picker_title(purpose), initial, purpose=purpose)
+                if not selected:
+                    self.json_response({"ok": False, "cancelled": True, "error": "用户取消选择"})
+                    return
+                status = validate_file_path(selected, purpose=purpose, app_dir=app_dir)
+                if not status["exists"] or not status["isFile"] or not status["readable"] or status["state"] != "已选择":
+                    self.json_response({"ok": False, "error": status["message"], "pathStatus": status}, status=400)
+                    return
+                self.json_response({"ok": True, "path": selected, "purpose": purpose, "pathStatus": status})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": f"打开文件选择器失败: {exc}"}, status=500)
 
         def handle_open_folder(self) -> None:
             info = self.require_current_sample()
@@ -1029,6 +1113,133 @@ def resolve_user_path(value: str | Path, app_dir: Path) -> Path:
     return app_dir / path
 
 
+def folder_picker_title(purpose: str) -> str:
+    titles = {
+        "save": "选择样品保存位置",
+        "sample": "选择样品文件夹",
+        "dataset": "选择数据来源目录",
+        "model-studio-source": "选择 Model Studio 数据来源目录",
+        "model-studio-sample": "选择要导入 Model Studio 的样品文件夹",
+        "export": "选择导出目录",
+    }
+    return titles.get(purpose, "选择文件夹")
+
+
+def file_picker_title(purpose: str) -> str:
+    titles = {
+        "labels-csv": "选择 labels.csv",
+        "csv": "选择 CSV 文件",
+        "json": "选择 JSON 文件",
+        "joblib": "选择模型文件",
+        "model-bundle": "选择模型 Bundle 文件",
+    }
+    return titles.get(purpose, "选择文件")
+
+
+def validate_folder_path(value: str | Path, *, purpose: str = "folder", app_dir: Path) -> dict:
+    raw = str(value or "").strip()
+    if not raw:
+        return {
+            "path": "",
+            "state": "未选择",
+            "exists": False,
+            "isDirectory": False,
+            "readable": False,
+            "writable": False,
+            "message": "未选择目录",
+        }
+    path = resolve_user_path(raw, app_dir)
+    exists = path.exists()
+    is_dir = exists and path.is_dir()
+    readable = bool(is_dir and os.access(path, os.R_OK))
+    writable = bool(is_dir and os.access(path, os.W_OK))
+    if is_dir and purpose in {"save", "export"}:
+        writable = writable and _can_write_directory(path)
+    state = "已选择"
+    message = "目录已选择"
+    if not exists:
+        state = "无效"
+        message = "所选目录不存在"
+    elif not is_dir:
+        state = "无效"
+        message = "所选路径不是文件夹"
+    elif not readable:
+        state = "不可读"
+        message = "当前目录没有读取权限"
+    elif purpose in {"save", "export"} and not writable:
+        state = "不可写"
+        message = "当前目录没有写入权限"
+    return {
+        "path": str(path),
+        "state": state,
+        "exists": exists,
+        "isDirectory": is_dir,
+        "readable": readable,
+        "writable": writable,
+        "message": message,
+    }
+
+
+def validate_file_path(value: str | Path, *, purpose: str = "file", app_dir: Path) -> dict:
+    raw = str(value or "").strip()
+    if not raw:
+        return {
+            "path": "",
+            "state": "未选择",
+            "exists": False,
+            "isFile": False,
+            "readable": False,
+            "message": "未选择文件",
+        }
+    path = resolve_user_path(raw, app_dir)
+    exists = path.exists()
+    is_file = exists and path.is_file()
+    readable = bool(is_file and os.access(path, os.R_OK))
+    message = "文件已选择"
+    state = "已选择"
+    if not exists:
+        state = "无效"
+        message = "所选文件不存在"
+    elif not is_file:
+        state = "无效"
+        message = "所选路径不是文件"
+    elif not readable:
+        state = "不可读"
+        message = "当前文件没有读取权限"
+    elif purpose in {"labels-csv", "csv"} and path.suffix.lower() != ".csv":
+        state = "无效"
+        message = "请选择 .csv 文件"
+    elif purpose == "json" and path.suffix.lower() != ".json":
+        state = "无效"
+        message = "请选择 .json 文件"
+    elif purpose == "joblib" and path.suffix.lower() not in {".joblib", ".pkl"}:
+        state = "无效"
+        message = "请选择 .joblib 或 .pkl 模型文件"
+    return {
+        "path": str(path),
+        "state": state,
+        "exists": exists,
+        "isFile": is_file,
+        "readable": readable,
+        "message": message,
+    }
+
+
+def _can_write_directory(path: Path) -> bool:
+    probe = path / f".fruit_analyzer_write_test_{uuid.uuid4().hex}.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            if probe.exists():
+                probe.unlink()
+        except Exception:
+            pass
+
+
 def select_directory_dialog(title: str, initial_dir: str | Path | None = None) -> str:
     initial_path = Path(initial_dir).expanduser() if initial_dir else None
     initial = str(initial_path) if initial_path and initial_path.exists() else ""
@@ -1062,6 +1273,81 @@ def select_directory_with_powershell(title: str, initial_dir: str = "") -> str:
     if initial_dir:
         script += f"$dialog.SelectedPath = {json.dumps(initial_dir, ensure_ascii=False)};"
     script += "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }"
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else ""
+
+
+def select_file_dialog(title: str, initial_dir: str | Path | None = None, *, purpose: str = "file") -> str:
+    initial_path = Path(initial_dir).expanduser() if initial_dir else None
+    if initial_path and initial_path.is_file():
+        initial = str(initial_path.parent)
+    else:
+        initial = str(initial_path) if initial_path and initial_path.exists() else ""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        root.lift()
+        root.focus_force()
+        selected = filedialog.askopenfilename(
+            parent=root,
+            title=title,
+            initialdir=initial or None,
+            filetypes=file_dialog_filters(purpose),
+        )
+        root.destroy()
+        return selected or ""
+    except Exception:
+        return select_file_with_powershell(title, initial, purpose)
+
+
+def file_dialog_filters(purpose: str):
+    if purpose in {"labels-csv", "csv"}:
+        return [("CSV files", "*.csv"), ("All files", "*.*")]
+    if purpose == "json":
+        return [("JSON files", "*.json"), ("All files", "*.*")]
+    if purpose == "joblib":
+        return [("Model files", "*.joblib *.pkl"), ("All files", "*.*")]
+    if purpose == "model-bundle":
+        return [("Model bundles", "*.zip *.joblib *.pkl"), ("All files", "*.*")]
+    return [("All files", "*.*")]
+
+
+def select_file_with_powershell(title: str, initial_dir: str = "", purpose: str = "file") -> str:
+    if os.name != "nt":
+        return ""
+    filter_text = {
+        "labels-csv": "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
+        "csv": "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
+        "json": "JSON files (*.json)|*.json|All files (*.*)|*.*",
+        "joblib": "Model files (*.joblib;*.pkl)|*.joblib;*.pkl|All files (*.*)|*.*",
+        "model-bundle": "Model bundles (*.zip;*.joblib;*.pkl)|*.zip;*.joblib;*.pkl|All files (*.*)|*.*",
+    }.get(purpose, "All files (*.*)|*.*")
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        f"$dialog.Title = {json.dumps(title, ensure_ascii=False)};"
+        f"$dialog.Filter = {json.dumps(filter_text, ensure_ascii=False)};"
+    )
+    if initial_dir:
+        script += f"$dialog.InitialDirectory = {json.dumps(initial_dir, ensure_ascii=False)};"
+    script += "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"
     try:
         completed = subprocess.run(
             ["powershell.exe", "-NoProfile", "-STA", "-Command", script],
