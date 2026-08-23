@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 import quality_prediction
-from model_studio.service import ModelStudioService
+from model_studio.service import ModelStudioError, ModelStudioService
 from quality_prediction import build_sample_session, predict_ssc
 
 
@@ -262,6 +262,24 @@ class ModelStudioServiceTests(unittest.TestCase):
             self.assertEqual(result.model_id, production["model_id"])
         finally:
             quality_prediction.MODEL_ROOT = old_root
+
+    def test_empty_dataset_version_cannot_start_training_job(self):
+        dataset = self.service.create_dataset({
+            "datasetName": "Empty_Training_Set",
+            "fruitType": "blueberry",
+            "storagePath": str(self.samples_root),
+        })
+        version = self.service.create_dataset_version(dataset["dataset_id"], "Empty snapshot")
+        self.assertEqual(version["sample_count"], 0)
+        experiment = self.service.create_experiment({
+            "datasetId": dataset["dataset_id"],
+            "datasetVersionId": version["dataset_version_id"],
+            "target": "ssc",
+            "models": ["PLSR"],
+            "preprocessing": ["RAW"],
+        })
+        with self.assertRaisesRegex(ModelStudioError, "没有样品"):
+            self.service.create_training_job(experiment["experiment_id"])
 
 
 if __name__ == "__main__":

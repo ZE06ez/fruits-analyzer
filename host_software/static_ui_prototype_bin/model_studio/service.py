@@ -884,6 +884,7 @@ class ModelStudioService:
 
     def create_training_job(self, experiment_id: str) -> dict:
         experiment = self.get_experiment(experiment_id)
+        self._validate_experiment_training_inputs(experiment)
         job_id = f"job_{uuid.uuid4().hex[:10]}"
         with self.connect() as conn:
             last_run = conn.execute("SELECT MAX(run_number) FROM jobs WHERE experiment_id=?", (experiment_id,)).fetchone()[0] or 0
@@ -910,6 +911,21 @@ class ModelStudioService:
         thread.start()
         self.log("training.start", "job", job_id, f"Training started for {experiment['experiment_name']}")
         return self.get_job(job_id)
+
+    def _validate_experiment_training_inputs(self, experiment: dict) -> None:
+        version = self.get_dataset_version(experiment["dataset_version_id"])
+        sample_count = int(version.get("sample_count") or 0)
+        if sample_count <= 0:
+            raise ModelStudioError("Dataset Version 里没有样品。请先导入样品，保存标签，然后创建新的 Dataset Version 再训练。")
+        target = str(experiment.get("target") or "").lower()
+        labels = json.loads(version.get("label_snapshot_json") or "{}")
+        labeled_count = sum(
+            1
+            for values in labels.values()
+            if isinstance(values, dict) and values.get(target) is not None
+        )
+        if labeled_count <= 0:
+            raise ModelStudioError(f"Dataset Version 里没有 {target.upper()} 标签。请先保存该指标标签，然后创建新的 Dataset Version 再训练。")
 
     def list_jobs(self) -> list[dict]:
         with self.connect() as conn:
@@ -1452,9 +1468,10 @@ class ModelStudioService:
     def _job_fail(self, job_id: str, error: str, trace: str) -> None:
         with self.connect() as conn:
             conn.execute(
-                "UPDATE jobs SET status='Failed',step='Failed',message=?,error=?,finished_at=? WHERE job_id=?",
+                "UPDATE jobs SET status='Failed',step='Failed',progress=100,message=?,error=?,finished_at=? WHERE job_id=?",
                 (error, trace, _now(), job_id),
             )
+        self._job_log(job_id, f"Failed: {error}")
 
     def _decode_job(self, row: dict) -> dict:
         row["logs"] = json.loads(row.pop("logs_json") or "[]")

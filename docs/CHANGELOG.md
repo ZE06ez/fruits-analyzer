@@ -2,6 +2,42 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-08-24 Model Studio 数据准备流程 UI 重组
+
+- 修改内容：将 Dataset 页面从按钮平铺改为 Dataset Preparation workflow，包含创建数据集、导入样品、标签录入、数据质量、创建版本五步；将 Dataset Summary、Readiness 和 Quality 状态移到右侧检查栏；将“样品与标签”页面重组为样品列表、选中样品 Ground Truth、批量 labels.csv 和 Sample Quality 区域；刷新/检查/选择文件夹改为辅助或 Ghost 操作。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/model_studio/static/index.html`
+  - `host_software/static_ui_prototype_bin/model_studio/static/model_studio.css`
+  - `host_software/static_ui_prototype_bin/model_studio/static/model_studio.js`
+  - `docs/CHANGELOG.md`
+- 为什么修改：减少 Dataset 和样品标签页面的按钮同质化，让用户按“Dataset -> Samples -> Labels -> Quality -> Version -> Training”的依赖顺序自然完成数据准备，降低创建空 Dataset Version 后训练失败的概率。
+- 是否影响原有功能：不改业务 API、数据库结构、Dataset Version 语义、训练算法、模型发布逻辑；属于前端 UI/UX 增量优化。
+
+## 2026-08-24 Model Studio 空数据集训练错误处理
+
+- 修改内容：开始训练前校验 Dataset Version 是否包含样品和当前目标标签；空版本或无目标标签时直接返回明确错误，不再启动必然失败的训练任务；失败任务进度显示为终止状态，避免看起来像进度条卡住。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/model_studio/service.py`
+  - `host_software/static_ui_prototype_bin/model_studio/static/model_studio.js`
+  - `host_software/static_ui_prototype_bin/tests/test_model_studio_service.py`
+  - `docs/CHANGELOG.md`
+- 为什么修改：用户在 `Dataset V1 · 0 samples` 上启动训练时会得到 `Insufficient training dataset`，旧进度条停在失败前进度，容易误解为训练仍在运行。
+- 是否影响原有功能：不影响正常训练；只阻止没有样品或没有目标标签的训练任务创建。测试已覆盖空 Dataset Version 不能启动训练。
+
+## 2026-08-23 本地形态分析与采集前置条件调整
+
+- 修改内容：本地已有样品目录可直接进行形态分析，不再要求先创建当前样品；样品采集链路新增设备准备前置条件，连接检查、电机、光源、相机和标定检查全部完成后才能创建样品/完成采集；RGB/多光谱目录名输入框不再被后端绝对路径覆盖。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：区分“分析本地已有样品目录”和“通过设备采集新样品”两条流程，避免用户导入有效目录后仍因未创建样品而无法形态分析，同时保证采集流程必须先经过设备准备。
+- 是否影响原有功能：影响主工作站采集入口；当前设备准备仍是离线模拟状态，不代表真实硬件已接入。测试已覆盖无当前样品的本地形态分析和采集前置条件。
+
 ## 2026-08-22 统一系统路径选择器
 
 - 修改内容：新增通用 `/api/select-folder` 和 `/api/select-file`；主程序保存位置/其他样品文件夹、Model Studio 默认导入来源/样品文件夹/labels.csv 改为只读路径显示 + 系统选择按钮；取消选择时保留原路径；选择后返回路径校验状态。

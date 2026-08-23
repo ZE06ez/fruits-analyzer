@@ -39,6 +39,7 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
+| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，采集前置门槛 | 当前为离线模拟 |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata | 写模拟图片和校准图 | PIL |
 | 主 UI | `index.html` | 页面结构 | 用户操作 | 显示工作站 | `app.js` |
@@ -70,13 +71,26 @@ GET /api/status
   -> defaultSaveRoot
 ```
 
-输出包括 Python 依赖、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。
+输出包括 Python 依赖、设备准备状态、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。
+
+### 设备准备
+
+```text
+app.js runDeviceTest()/confirmCalibrationCheck()
+  -> POST /api/device-preparation
+  -> SessionState.update_device_preparation()
+  -> SessionState.devicePrepared = all(connect, motor, light, camera, calibration)
+```
+
+当前状态来自离线 UI 操作，不代表真实硬件通信已经接入。`/api/new-sample` 和 `/api/complete-capture` 会通过 `require_device_preparation()` 阻止未完成设备准备时开始样品采集。
 
 ### 样品创建
 
 ```text
 app.js createNewSample()
+  -> requireDevicePreparation()
   -> POST /api/new-sample
+  -> backend_server.require_device_preparation()
   -> backend_server.handle_new_sample()
   -> create_unique_sample_folder()
   -> SessionState.create_sample()
@@ -157,6 +171,8 @@ POST /api/analyze-shape
   -> background thread
   -> pointcloud_service.analyze_rgbd_dataset()
 ```
+
+`/api/analyze-shape` 只依赖请求中的 `datasetDir` 和目录结构检查，不强制要求当前样品会话；因此用户可直接选择本地已有样品文件夹进行形态分析。
 
 优先路径：
 

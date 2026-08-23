@@ -52,7 +52,17 @@ class BackendDataFlowTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def prepare_device(self) -> dict:
+        return self.post_json("/api/device-preparation", {
+            "connect": True,
+            "motor": True,
+            "light": True,
+            "camera": True,
+            "calibration": True,
+        })
+
     def create_sample(self, name: str = "Duke成熟组03") -> dict:
+        self.prepare_device()
         return self.post_json("/api/new-sample", {
             "sampleName": name,
             "fruitType": "blueberry",
@@ -147,6 +157,9 @@ class BackendDataFlowTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
         with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
+        self.prepare_device()
+        with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry"})
         first = self.create_sample("蓝莓实验A-第5颗")
         first_dir = Path(first["currentCaptureDir"])
@@ -184,6 +197,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(catalog["defaults"]["ta"]["model_id"], "generic_ta")
         self.assertEqual(catalog["ph"], [])
 
+        self.prepare_device()
         sample = self.post_json("/api/new-sample", {
             "sampleName": "蓝莓Duke-01",
             "fruitType": "blueberry",
@@ -235,6 +249,7 @@ class BackendDataFlowTests(unittest.TestCase):
         status = self.get_json("/api/status")
         self.assertFalse(status["hasSample"])
         self.assertFalse(status["sampleId"])
+        self.assertFalse(status["devicePrepared"])
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/complete-capture", {"sampleId": "S001"})
         sample = self.create_sample()
@@ -278,6 +293,16 @@ class BackendDataFlowTests(unittest.TestCase):
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
         self.assertEqual(Path(job["result"]["datasetDir"]), capture_dir)
+
+    def test_manual_folder_shape_analysis_does_not_require_current_sample(self):
+        dataset = self.make_dataset("manual_shape_only")
+        shape = self.post_json(
+            "/api/analyze-shape",
+            {"datasetDir": str(dataset), "colorDir": "rgb", "depthDir": "multispectral"},
+        )
+        job = self.wait_job(shape["jobId"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(Path(job["result"]["datasetDir"]), dataset)
 
     def test_manual_folder_switches_session_to_latest_dataset(self):
         self.create_sample("苹果测试01")

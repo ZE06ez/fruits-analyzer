@@ -88,13 +88,13 @@ UI
 1. 启动软件：运行 `python launcher.py` 或打包后的 EXE。
 2. `launcher.py` 启动本地后端并打开浏览器页面。
 3. UI 加载 `/api/status`，获取依赖状态、默认保存根目录、当前样品会话、Model Studio 发布模型目录。
-4. 用户进行设备准备页面的连接/电机/光源/相机自检：当前只更新状态和日志，属于离线模拟。
+4. 用户进行设备准备页面的连接检查、电机自检、光源自检、相机自检和标定检查：当前仍属于离线模拟，但前端和后端都会把它作为样品采集前置条件。
 5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
-6. 点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，写入 `metadata.json`，并创建 `rgb/`、`multispectral/`、`calibration/dark/`、`calibration/white/`。
+6. 完成设备准备后点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，写入 `metadata.json`，并创建 `rgb/`、`multispectral/`、`calibration/dark/`、`calibration/white/`。
 7. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
 8. 用户点击采集步骤：当前只更新 UI 进度与日志。
 9. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`，向当前样品目录写入模拟 RGB、多光谱、暗场、白板图片，并把本次目录设为 `analysisDataDir`。
-10. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。
+10. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
 11. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
 12. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
 13. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
@@ -169,7 +169,7 @@ UI
 | 主工作站静态 UI | DONE | `index.html`/`styles.css`/`app.js` 完整界面与交互 |
 | 本地 Python HTTP 后端 | DONE | `backend_server.py` 提供静态资源、API、任务轮询 |
 | PyInstaller 打包配置 | DONE | `FruitTasteAnalyzer.spec`、`launcher.py`、`run_analyzer.bat` |
-| 样品创建与目录结构 | DONE | `/api/new-sample` 创建目录和 `metadata.json` |
+| 样品创建与目录结构 | DONE | 设备准备完成后，`/api/new-sample` 创建目录和 `metadata.json` |
 | 本次拍摄目录进入分析流程 | PARTIAL/MOCK | 会自动设为 `analysisDataDir`，但图片由离线函数生成 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 系统目录选择器选择其他样品目录，再由 `/api/sample-folder` 检查 |
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |

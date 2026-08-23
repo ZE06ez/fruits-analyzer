@@ -79,6 +79,13 @@ class SessionState:
         self.current_capture_dir: str = ""
         self.analysis_data_dir: str = ""
         self.capture_started: bool = False
+        self.device_prep: dict[str, bool] = {
+            "connect": False,
+            "motor": False,
+            "light": False,
+            "camera": False,
+            "calibration": False,
+        }
         self.fruit_type: str = ""
         self.variety: str = "generic"
         self.selected_ssc_model_id: str = ""
@@ -140,6 +147,16 @@ class SessionState:
             self.selected_ta_model_id = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or self.selected_ta_model_id or "")
             self.selected_ph_model_id = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or self.selected_ph_model_id or "")
 
+    def update_device_preparation(self, payload: dict) -> dict:
+        allowed = {"connect", "motor", "light", "camera", "calibration"}
+        with self._lock:
+            for key in allowed:
+                if key in payload:
+                    self.device_prep[key] = bool(payload.get(key))
+            prepared = all(self.device_prep.values())
+            device_prep = dict(self.device_prep)
+        return {"devicePrep": device_prep, "devicePrepared": prepared}
+
     def apply_sample_metadata(self, metadata: dict) -> None:
         with self._lock:
             fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
@@ -167,6 +184,7 @@ class SessionState:
             selected_ssc_model_id = self.selected_ssc_model_id
             selected_ta_model_id = self.selected_ta_model_id
             selected_ph_model_id = self.selected_ph_model_id
+            device_prep = dict(self.device_prep)
         current_path = Path(current).expanduser() if current else None
         current_valid = bool(current_path and current_path.exists() and current_path.is_dir())
         if current and not current_valid:
@@ -183,6 +201,8 @@ class SessionState:
             "currentCaptureValid": current_valid,
             "analysisDataDir": analysis,
             "captureStarted": capture_started,
+            "devicePrep": device_prep,
+            "devicePrepared": all(device_prep.values()),
             "fruitType": fruit_type,
             "variety": variety,
             "selectedSscModelId": selected_ssc_model_id,
@@ -311,6 +331,9 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
             if parsed.path == "/api/upload-dataset":
                 self.handle_upload_dataset()
                 return
+            if parsed.path == "/api/device-preparation":
+                self.handle_device_preparation()
+                return
             if parsed.path == "/api/new-sample":
                 self.handle_new_sample()
                 return
@@ -358,6 +381,21 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "code": "SAMPLE_REQUIRED", "error": "请先创建当前样品。"}, status=400)
                 return None
             return info
+
+        def require_device_preparation(self) -> dict | None:
+            info = session.snapshot()
+            if not info.get("devicePrepared"):
+                self.json_response({
+                    "ok": False,
+                    "code": "DEVICE_PREPARATION_REQUIRED",
+                    "error": "请先完成设备准备：连接检查、电机、光源、相机和标定检查。",
+                }, status=400)
+                return None
+            return info
+
+        def handle_device_preparation(self) -> None:
+            payload = self.read_json()
+            self.json_response({"ok": True, **session.update_device_preparation(payload)})
 
         def resolve_model_id(self, fruit_type: str, variety: str, target: str, selected_id: str = "") -> str:
             studio = self.require_model_studio()
@@ -590,6 +628,8 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
 
         def handle_new_sample(self) -> None:
+            if self.require_device_preparation() is None:
+                return
             payload = self.read_json()
             try:
                 save_root = resolve_user_path(str(payload.get("saveRootDir") or ""), app_dir)
@@ -883,6 +923,8 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": f"上传数据集失败: {exc}"}, status=500)
 
         def handle_complete_capture(self) -> None:
+            if self.require_device_preparation() is None:
+                return
             info = self.require_current_sample()
             if info is None:
                 return
@@ -907,8 +949,6 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": False, "error": f"保存本次拍摄数据失败: {exc}"}, status=500)
 
         def handle_analyze_shape(self) -> None:
-            if self.require_current_sample() is None:
-                return
             payload = self.read_json()
             dataset_dir = payload.get("datasetDir") or str(default_sample_dataset(app_dir))
             color_dir = payload.get("colorDir") or None
