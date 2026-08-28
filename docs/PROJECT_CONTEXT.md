@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-08-22
+更新时间：2026-08-27
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -72,7 +72,7 @@ UI
 关键文件：
 
 - `host_software/static_ui_prototype_bin/index.html`：主检测工作站 UI。
-- `host_software/static_ui_prototype_bin/app.js`：前端状态机、样品流程、模型选择、分析调用、结果渲染。
+- `host_software/static_ui_prototype_bin/app.js`：前端状态机、采集/分析布局切换、样品流程、模型选择、分析调用、结果渲染。
 - `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
@@ -94,15 +94,16 @@ UI
 7. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
 8. 用户点击采集步骤：当前只更新 UI 进度与日志。
 9. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`，向当前样品目录写入模拟 RGB、多光谱、暗场、白板图片，并把本次目录设为 `analysisDataDir`。
-10. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
-11. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
-12. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
-13. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
-14. 点击“开始糖度分析”：`POST /api/predict-ssc` 构建 `SampleSession`，调用 `predict_ssc()`。
-15. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
-16. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
-17. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
-18. 导出报告：前端生成本地 TXT 文本，说明硬件仍为预留。
+10. 进入 `shape/sugar/acid/taste` 分析模块时，主程序中央区切换为分析布局：隐藏 RGB/多光谱相机预览面板，并让分析内容占用中央空间；设备准备、采集和设置模块仍保留双相机预览。
+11. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
+12. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
+13. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
+14. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
+15. 点击“开始糖度分析”：`POST /api/predict-ssc` 构建 `SampleSession`，调用 `predict_ssc()`。
+16. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
+17. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
+18. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
+19. 导出报告：前端生成本地 TXT 文本，说明硬件仍为预留。
 
 ## 5. Model Studio 工作流
 
@@ -172,6 +173,7 @@ UI
 | 样品创建与目录结构 | DONE | 设备准备完成后，`/api/new-sample` 创建目录和 `metadata.json` |
 | 本次拍摄目录进入分析流程 | PARTIAL/MOCK | 会自动设为 `analysisDataDir`，但图片由离线函数生成 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 系统目录选择器选择其他样品目录，再由 `/api/sample-folder` 检查 |
+| 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
 | RGB + 多光谱目录检查 | DONE | `inspect_sample_folder()` 按启用波段检查 |
 | RGB 二维形态/表面分析 | DONE/PARTIAL | 可测面积、宽高、颜色、果粉；不是完整真实尺寸标定 |

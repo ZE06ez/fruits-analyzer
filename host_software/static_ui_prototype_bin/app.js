@@ -89,6 +89,23 @@ const titles = {
   "reserved-4": "通信设置",
 };
 
+const moduleLayoutModes = {
+  motor: "capture",
+  light: "capture",
+  camera: "capture",
+  capture: "capture",
+  "camera-settings": "capture",
+  "light-settings": "capture",
+  "reserved-1": "capture",
+  "reserved-2": "capture",
+  "reserved-3": "capture",
+  "reserved-4": "capture",
+  shape: "analysis",
+  sugar: "analysis",
+  acid: "analysis",
+  taste: "analysis",
+};
+
 const shapeStepMap = {
   check: "load-rgbd",
   preprocess: "preprocess",
@@ -792,7 +809,22 @@ function setCurrentStep(key) {
   });
 }
 
+function getModuleLayoutMode(view) {
+  return moduleLayoutModes[view] || "capture";
+}
+
+function applyModuleLayout(view) {
+  const mode = getModuleLayoutMode(view);
+  const stage = $(".stage");
+  document.body.classList.toggle("layout-capture", mode === "capture");
+  document.body.classList.toggle("layout-analysis", mode === "analysis");
+  stage?.classList.toggle("layout-capture", mode === "capture");
+  stage?.classList.toggle("layout-analysis", mode === "analysis");
+  stage?.setAttribute("data-layout-mode", mode);
+}
+
 function switchView(view, stepKey = null) {
+  applyModuleLayout(view);
   document.querySelectorAll(".view-page").forEach((page) => {
     page.classList.toggle("active", page.dataset.page === view);
   });
@@ -1874,6 +1906,7 @@ async function shutdownApp() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initPointcloudViewer();
+  applyModuleLayout(document.querySelector(".view-page.active")?.dataset.page || "motor");
 
   document.querySelectorAll(".task-step").forEach((button) => {
     button.dataset.status = button.dataset.status || "idle";

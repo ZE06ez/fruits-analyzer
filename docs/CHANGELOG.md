@@ -2,6 +2,19 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-08-27 主程序采集/分析中央布局切换
+
+- 修改内容：主程序中央工作区新增采集模式和分析模式布局；设备准备、采集、设置等模块保留 RGB/多光谱相机预览，形态、糖度、酸度和口感分析模块隐藏相机预览并让分析内容重排占用中央空间。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：区分“通过设备采集样品”和“分析已有/本次样品数据”两种使用场景，避免分析页面被两个大相机面板挤压。
+- 是否影响原有功能：不改后端 API、采集流程、形态分析、预测、训练或 Model Studio；只根据当前模块 key 切换前端布局 class，不清空设备、样品或模型状态。
+
 ## 2026-08-24 Model Studio 数据准备流程 UI 重组
 
 - 修改内容：将 Dataset 页面从按钮平铺改为 Dataset Preparation workflow，包含创建数据集、导入样品、标签录入、数据质量、创建版本五步；将 Dataset Summary、Readiness 和 Quality 状态移到右侧检查栏；将“样品与标签”页面重组为样品列表、选中样品 Ground Truth、批量 labels.csv 和 Sample Quality 区域；刷新/检查/选择文件夹改为辅助或 Ghost 操作。

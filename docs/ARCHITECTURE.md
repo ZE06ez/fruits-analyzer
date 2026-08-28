@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-08-22
+更新时间：2026-08-27
 
 ## 总体结构
 
@@ -43,7 +43,7 @@ launcher.py
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata | 写模拟图片和校准图 | PIL |
 | 主 UI | `index.html` | 页面结构 | 用户操作 | 显示工作站 | `app.js` |
-| 主 UI 状态机 | `app.js` | `state`, `api()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、报告 TXT | Browser APIs |
+| 主 UI 状态机 | `app.js` | `state`, `api()`, `getModuleLayoutMode()`, `applyModuleLayout()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、采集/分析布局切换、报告 TXT | Browser APIs |
 | 目录检查 | `pointcloud_service.py` | `inspect_sample_folder()`, `_inspect_sample_folder_by_enabled_bands()` | 样品目录、rgb/multispectral 子目录名 | 数据质量报告 | PIL, quality_algorithm |
 | 形态分析 | `pointcloud_service.py` | `analyze_rgbd_dataset()`, `analyze_rgb_multispectral_sample()` | 样品目录、输出目录、相机内参 | 形态/表面结果、预览图 | numpy, PIL |
 | 旧点云兼容 | `pointcloud_service.py`, `pipeline_v2.py` | `analyze_with_pipeline_v2()`, `reconstruct_sfm()` | RGB-D 目录或 PLY | PLY、点云指标 | OpenCV 可选 |
