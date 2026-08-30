@@ -15,6 +15,13 @@ const state = {
   analysisDataDir: "",
   captureStarted: false,
   calibrationStatus: "pending",
+  devicePrep: {
+    connect: false,
+    motor: false,
+    light: false,
+    camera: false,
+    calibration: false,
+  },
   dataSource: "other",
   captureCompleting: false,
   hasSample: false,
@@ -80,6 +87,23 @@ const titles = {
   "light-settings": "光源设置",
   "reserved-3": "算法参数",
   "reserved-4": "通信设置",
+};
+
+const moduleLayoutModes = {
+  motor: "capture",
+  light: "capture",
+  camera: "capture",
+  capture: "capture",
+  "camera-settings": "capture",
+  "light-settings": "capture",
+  "reserved-1": "capture",
+  "reserved-2": "capture",
+  "reserved-3": "capture",
+  "reserved-4": "capture",
+  shape: "analysis",
+  sugar: "analysis",
+  acid: "analysis",
+  taste: "analysis",
 };
 
 const shapeStepMap = {
@@ -194,6 +218,77 @@ function requireActiveSample(message = "请先创建当前样品。") {
   return false;
 }
 
+function isDevicePreparationReady() {
+  return Boolean(
+    state.devicePrep.connect
+    && state.devicePrep.motor
+    && state.devicePrep.light
+    && state.devicePrep.camera
+    && state.devicePrep.calibration
+  );
+}
+
+function requireDevicePreparation(message = "请先完成设备准备：连接检查、电机、光源、相机和标定检查。") {
+  if (isDevicePreparationReady()) return true;
+  addLog(message, "WARN");
+  setText("statusNote", message);
+  switchView("motor", "connect");
+  return false;
+}
+
+function updateDevicePreparationControls() {
+  const ready = isDevicePreparationReady();
+  const hint = ready ? "" : "请先完成设备准备：连接检查、电机、光源、相机和标定检查。";
+  $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
+  $("#startWorkflow") && ($("#startWorkflow").title = hint);
+  $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
+  $("#createSampleInline") && ($("#createSampleInline").title = hint);
+  $("#createNewSample") && ($("#createNewSample").disabled = !ready);
+  $("#createNewSample") && ($("#createNewSample").title = hint);
+  $("#enterAnalysisFromCapture") && ($("#enterAnalysisFromCapture").disabled = !ready || !state.analysisDataDir);
+  document.querySelectorAll("[data-step]").forEach((button) => {
+    button.disabled = !ready;
+    button.title = hint;
+  });
+  if (ready) setText("statusNote", "设备准备已完成，可以开始样品采集。");
+}
+
+function renderDevicePreparationStatus() {
+  if (state.devicePrep.connect) {
+    setPill("serialStatus", "串口: 离线连接检查通过", "ok");
+    setStepStatus("connect", "done");
+  }
+  if (state.devicePrep.motor) {
+    setPill("motorStatus", "电机: 离线自检通过", "ok");
+    setStepStatus("motor", "done");
+  }
+  if (state.devicePrep.light) {
+    setPill("lightStatus", "光源: 离线自检通过", "ok");
+    setStepStatus("light", "done");
+  }
+  if (state.devicePrep.camera) {
+    setPill("cameraStatus", "相机: 离线自检通过", "ok");
+    setStepStatus("camera", "done");
+  }
+  if (state.devicePrep.calibration) {
+    state.calibrationStatus = "passed";
+    renderCalibrationStatus();
+  }
+  updateDevicePreparationControls();
+}
+
+async function syncDevicePreparation() {
+  renderDevicePreparationStatus();
+  try {
+    await api("/api/device-preparation", {
+      method: "POST",
+      body: JSON.stringify(state.devicePrep),
+    });
+  } catch (error) {
+    addLog(error.message || "设备准备状态同步失败。", "WARN");
+  }
+}
+
 function renderCurrentSample() {
   setText("currentSampleName", state.sampleName || "未创建样品");
   setText("currentSampleId", state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请先创建当前样品");
@@ -211,10 +306,11 @@ function renderCurrentSample() {
   }
   const disabled = !hasActiveSample();
   if ($("#selectDataset")) $("#selectDataset").disabled = false;
-  if ($("#runShapeAnalysis")) $("#runShapeAnalysis").disabled = Boolean(state.shapeJobId);
+  updateShapeRunButtonState();
   if ($("#enterAnalysisFromCapture")) $("#enterAnalysisFromCapture").disabled = disabled || !state.analysisDataDir;
   if ($("#openCaptureFolder")) $("#openCaptureFolder").disabled = disabled || !state.currentCaptureDir;
   if ($("#chooseSaveRoot")) $("#chooseSaveRoot").disabled = state.captureStarted;
+  updateDevicePreparationControls();
   updateAnalysisButtonStates();
   updateShapeMode();
 }
@@ -289,6 +385,40 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload;
+}
+
+async function selectFolderPath({ purpose = "folder", initial = "" } = {}) {
+  const query = new URLSearchParams({ purpose, initial });
+  return api(`/api/select-folder?${query.toString()}`);
+}
+
+function setPathDisplay(selector, value = "") {
+  const node = $(selector);
+  if (!node) return;
+  node.value = value || "";
+  node.title = value || "";
+}
+
+function directoryNameForInput(value = "", fallback = "") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  if (!/[\\/]/.test(text)) return text;
+  const parts = text.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.at(-1) || fallback;
+}
+
+function updateShapeRunButtonState() {
+  const runButton = $("#runShapeAnalysis");
+  if (!runButton || state.shapeJobId) return;
+  const isPointcloud = ($("#shapeMode")?.value || state.shapeMode || "morphology2d") === "pointcloud3d";
+  const hasDataset = Boolean(state.analysisDataDir || $("#datasetDir")?.value);
+  runButton.textContent = isPointcloud ? "点云建模待接入" : "开始形态分析";
+  runButton.disabled = Boolean(isPointcloud || !hasDataset);
+  runButton.title = isPointcloud
+    ? "当前硬件未提供深度信息，三维建模入口暂未接入。"
+    : !hasDataset
+        ? "请先选择并检查样品文件夹。"
+        : "";
 }
 
 function initPointcloudViewer() {
@@ -679,7 +809,22 @@ function setCurrentStep(key) {
   });
 }
 
+function getModuleLayoutMode(view) {
+  return moduleLayoutModes[view] || "capture";
+}
+
+function applyModuleLayout(view) {
+  const mode = getModuleLayoutMode(view);
+  const stage = $(".stage");
+  document.body.classList.toggle("layout-capture", mode === "capture");
+  document.body.classList.toggle("layout-analysis", mode === "analysis");
+  stage?.classList.toggle("layout-capture", mode === "capture");
+  stage?.classList.toggle("layout-analysis", mode === "analysis");
+  stage?.setAttribute("data-layout-mode", mode);
+}
+
 function switchView(view, stepKey = null) {
+  applyModuleLayout(view);
   document.querySelectorAll(".view-page").forEach((page) => {
     page.classList.toggle("active", page.dataset.page === view);
   });
@@ -688,7 +833,7 @@ function switchView(view, stepKey = null) {
   addLog(`切换到 ${titles[view] || view}`);
 }
 
-function runDeviceTest(type) {
+async function runDeviceTest(type) {
   const map = {
     motor: {
       pill: "motorStatus",
@@ -713,8 +858,10 @@ function runDeviceTest(type) {
   if (!item) return;
   setPill(item.pill, item.text, "ok");
   setStepStatus(item.step, "done");
+  state.devicePrep[type] = true;
   setText("statusNote", "硬件通信尚未接入，当前自检结果来自离线模拟。");
   addLog(item.log);
+  await syncDevicePreparation();
 }
 
 function resetCaptureStepStatuses() {
@@ -737,13 +884,16 @@ function renderCalibrationStatus() {
   setStepStatus("calibration", passed ? "done" : "waiting");
 }
 
-function confirmCalibrationCheck() {
+async function confirmCalibrationCheck() {
   state.calibrationStatus = "passed";
+  state.devicePrep.calibration = true;
   renderCalibrationStatus();
   addLog("标定检查已人工确认通过。");
+  await syncDevicePreparation();
 }
 
 async function updateCaptureProgress(step) {
+  if (!requireDevicePreparation()) return;
   if (!requireActiveSample()) return;
   state.captureStarted = true;
   state.captureStep = Math.max(state.captureStep, step);
@@ -760,6 +910,7 @@ async function updateCaptureProgress(step) {
 }
 
 async function completeCurrentCapture() {
+  if (!requireDevicePreparation()) return;
   if (!requireActiveSample()) return;
   if (state.captureCompleting) return;
   state.captureCompleting = true;
@@ -799,6 +950,7 @@ async function completeCurrentCapture() {
 }
 
 async function enterAnalysisFromCapture() {
+  if (!requireDevicePreparation()) return;
   if (!requireActiveSample()) return;
   if (!state.currentCaptureValid || !state.currentCaptureDir) {
     await completeCurrentCapture();
@@ -1009,6 +1161,7 @@ async function loadNewSampleCatalog() {
 }
 
 async function createNewSample() {
+  if (!requireDevicePreparation()) return;
   const sampleName = $("#captureSampleName")?.value.trim() || $("#newSampleName")?.value.trim() || "";
   if (!sampleName) {
     setText("newSampleHint", "样品名称必须填写。");
@@ -1070,19 +1223,21 @@ async function chooseSaveRoot() {
     return;
   }
   try {
-    const payload = await api("/api/select-save-root");
-    if (payload.saveRootDir) {
-      state.saveRootDir = payload.saveRootDir;
-      if ($("#saveRootDir")) {
-        $("#saveRootDir").value = payload.saveRootDir;
-        $("#saveRootDir").title = payload.saveRootDir;
-      }
+    const payload = await selectFolderPath({ purpose: "save", initial: state.saveRootDir || $("#saveRootDir")?.value || "" });
+    const selected = payload.path || payload.saveRootDir || "";
+    if (selected) {
+      state.saveRootDir = selected;
+      setPathDisplay("#saveRootDir", selected);
       setText("sampleCreateStatus", "保存位置已选择");
-      addLog(`样品保存位置已选择: ${payload.saveRootDir}`);
+      addLog(`样品保存位置已选择: ${selected}`);
     }
   } catch (error) {
-    setText("sampleCreateStatus", "未选择保存位置");
-    addLog(error.message || "用户取消选择保存位置。", "WARN");
+    if (error.payload?.cancelled) {
+      addLog("用户取消选择保存位置，已保留原路径。", "WARN");
+      return;
+    }
+    setText("sampleCreateStatus", "保存位置无效");
+    addLog(error.message || "选择保存位置失败。", "WARN");
   }
 }
 
@@ -1263,18 +1418,18 @@ async function selectDataset() {
   try {
     setDataSource("other");
     setText("shapeStepLabel", "打开其他文件夹选择器");
-    const payload = await api("/api/select-dataset");
-    if (payload.datasetDir) {
-      await loadSampleFolder(payload.datasetDir, { source: "other" });
+    const payload = await selectFolderPath({ purpose: "sample", initial: state.analysisDataDir || state.currentCaptureDir || state.saveRootDir || "" });
+    if (payload.path) {
+      await loadSampleFolder(payload.path, { source: "other" });
     }
   } catch (error) {
-    addLog(error.message || "用户取消选择数据集。", "WARN");
-    if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) return;
-    const picker = $("#datasetPicker");
-    if (picker) {
-      picker.value = "";
-      picker.click();
+    if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) {
+      addLog("用户取消选择样品文件夹，已保留原路径。", "WARN");
+      return;
     }
+    setStepStatus("load-rgbd", "warning");
+    setText("shapeStepLabel", "样品文件夹选择失败");
+    addLog(error.message || "样品文件夹选择失败。", "WARN");
   }
 }
 
@@ -1371,7 +1526,7 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
   const target = datasetDir || "";
   state.analysisDataDir = target;
   setDataSource(source);
-  if ($("#datasetDir")) $("#datasetDir").value = target;
+  setPathDisplay("#datasetDir", target);
   $("#colorDir").value = $("#colorDir").value || "rgb";
   $("#depthDir").value = $("#depthDir").value || "multispectral";
 
@@ -1392,6 +1547,7 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
     };
     renderDataCheck(emptyReport);
     updateSampleSessionFromReport(emptyReport);
+    updateShapeRunButtonState();
     return;
   }
 
@@ -1409,8 +1565,8 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
     state.currentCaptureValid = false;
     updateCurrentCaptureControls();
   }
-  if (report.colorDir) $("#colorDir").value = report.colorDir;
-  if (report.depthDir) $("#depthDir").value = report.depthDir;
+  if (report.colorDir) $("#colorDir").value = directoryNameForInput(report.colorDir, $("#colorDir")?.value || "rgb");
+  if (report.depthDir) $("#depthDir").value = directoryNameForInput(report.depthDir, $("#depthDir")?.value || "multispectral");
   if (report.valid || Number(report.rgbCount || 0) > 0) {
     await loadDatasetImages(target);
     setStepStatus("load-rgbd", report.valid ? "done" : "warning");
@@ -1425,6 +1581,7 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
     setStepStatus("load-rgbd", "warning");
     setText("shapeStepLabel", report.message || "数据目录不可用");
   }
+  updateShapeRunButtonState();
 }
 
 function renderDataCheck(report = {}) {
@@ -1461,8 +1618,8 @@ async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datas
     const payload = await api(`/api/dataset-images?${query.toString()}`);
     state.imageBrowser.images = payload.images || [];
     state.imageBrowser.index = 0;
-    if (payload.colorDir) $("#colorDir").value = payload.colorDir;
-    if (payload.depthDir) $("#depthDir").value = payload.depthDir;
+    if (payload.colorDir) $("#colorDir").value = directoryNameForInput(payload.colorDir, $("#colorDir")?.value || "rgb");
+    if (payload.depthDir) $("#depthDir").value = directoryNameForInput(payload.depthDir, $("#depthDir")?.value || "multispectral");
     renderDatasetImage();
     updateSampleSessionFromImages();
     setStepStatus("image-review", state.imageBrowser.images.length ? "done" : "warning");
@@ -1507,7 +1664,6 @@ function stepDatasetImage(delta) {
 }
 
 async function runShapeAnalysis() {
-  if (!requireActiveSample()) return;
   if (!state.analysisDataDir && !$("#datasetDir")?.value) {
     setText("shapeStepLabel", "请先选择样品文件夹");
     setStepStatus("load-rgbd", "warning");
@@ -1677,11 +1833,7 @@ function updateShapeMode(mode = $("#shapeMode")?.value || "morphology2d") {
       ? "该入口用于后续多角度重建、深度相机或外部点云文件接入；当前硬件未提供深度信息，暂不直接生成三维模型。"
       : "使用彩色图像提取样品轮廓、面积、水平宽度、垂直高度、颜色均匀度、果粉与纹理特征。"
   );
-  const runButton = $("#runShapeAnalysis");
-  if (runButton && !state.shapeJobId) {
-    runButton.textContent = isPointcloud ? "点云建模待接入" : "开始形态分析";
-    runButton.disabled = isPointcloud || !hasActiveSample();
-  }
+  updateShapeRunButtonState();
   if (isPointcloud) {
     setText("shapeStepLabel", "三维建模入口已预留");
     setStepStatus("volume", "warning");
@@ -1705,7 +1857,7 @@ function finishShapeJob() {
   if (state.shapeTimer) window.clearInterval(state.shapeTimer);
   state.shapeTimer = null;
   state.shapeJobId = null;
-  if ($("#runShapeAnalysis")) $("#runShapeAnalysis").disabled = !hasActiveSample();
+  updateShapeRunButtonState();
   if ($("#cancelShapeAnalysis")) $("#cancelShapeAnalysis").disabled = true;
   updateShapeMode();
 }
@@ -1754,6 +1906,7 @@ async function shutdownApp() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initPointcloudViewer();
+  applyModuleLayout(document.querySelector(".view-page.active")?.dataset.page || "motor");
 
   document.querySelectorAll(".task-step").forEach((button) => {
     button.dataset.status = button.dataset.status || "idle";
@@ -1761,7 +1914,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.querySelectorAll("[data-test]").forEach((button) => {
-    button.addEventListener("click", () => runDeviceTest(button.dataset.test));
+    button.addEventListener("click", () => runDeviceTest(button.dataset.test).catch((error) => addLog(error.message, "WARN")));
   });
 
   document.querySelectorAll("[data-log]").forEach((button) => {
@@ -1831,12 +1984,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
 
   $("#refreshPorts")?.addEventListener("click", () => {
-    setPill("serialStatus", "串口: 待调试", "warn");
-    setStepStatus("connect", "warning");
-    addLog("已刷新串口列表：当前单片机未接入，保持离线调试。", "WARN");
+    state.devicePrep.connect = true;
+    setPill("serialStatus", "串口: 离线连接检查通过", "ok");
+    setStepStatus("connect", "done");
+    addLog("已完成连接检查：当前单片机未接入，按离线调试模式记录为准备完成。", "WARN");
+    syncDevicePreparation().catch((error) => addLog(error.message, "WARN"));
   });
 
   $("#startWorkflow")?.addEventListener("click", () => {
+    if (!requireDevicePreparation()) return;
     if (!requireActiveSample()) return;
     switchView("capture", "sample");
     setStepStatus("sample", "running");
@@ -1854,7 +2010,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#evaluateTaste")?.addEventListener("click", () => updateTaste(true));
   $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
   $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
-  $("#confirmCalibration")?.addEventListener("click", confirmCalibrationCheck);
+  $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
   $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));
   document.querySelectorAll('input[name="dataSource"]').forEach((input) => {
     input.addEventListener("change", (event) => handleDataSourceChange(event.target.value));
@@ -1866,7 +2022,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#enterAnalysisFromCapture")?.addEventListener("click", enterAnalysisFromCapture);
   $("#selectDataset")?.addEventListener("click", selectDataset);
-  $("#datasetPicker")?.addEventListener("change", uploadSelectedDataset);
   $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
   $("#nextImage")?.addEventListener("click", () => stepDatasetImage(1));
   $("#refreshImages")?.addEventListener("click", () => loadSampleFolder(state.analysisDataDir || $("#datasetDir")?.value || "", { source: state.dataSource }));
@@ -1894,9 +2049,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   applyCameraSettings();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
+  updateDevicePreparationControls();
   updateShapeMode();
   try {
     const status = await api("/api/status");
+    if (status.devicePrep) state.devicePrep = { ...state.devicePrep, ...status.devicePrep };
+    renderDevicePreparationStatus();
     applySampleSessionState(status);
     state.saveRootDir = status.saveRootDir || state.saveRootDir || "";
     state.captureStarted = Boolean(status.captureStarted);

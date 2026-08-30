@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from backend_server import JobStore, SessionState, create_handler
+from backend_server import JobStore, SessionState, create_handler, validate_file_path, validate_folder_path
 from model_studio.service import ModelStudioService
 
 
@@ -52,7 +52,17 @@ class BackendDataFlowTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def prepare_device(self) -> dict:
+        return self.post_json("/api/device-preparation", {
+            "connect": True,
+            "motor": True,
+            "light": True,
+            "camera": True,
+            "calibration": True,
+        })
+
     def create_sample(self, name: str = "Duke成熟组03") -> dict:
+        self.prepare_device()
         return self.post_json("/api/new-sample", {
             "sampleName": name,
             "fruitType": "blueberry",
@@ -70,6 +80,32 @@ class BackendDataFlowTests(unittest.TestCase):
         for band in (450, 560, 670):
             Image.new("L", (40, 40), 128).save(spectral / f"{name}_{band}.png")
         return dataset
+
+    def test_path_validation_helpers_cover_folder_and_labels_csv(self):
+        selected_dir = self.root / "含空格 标签目录"
+        selected_dir.mkdir()
+        folder_status = validate_folder_path(selected_dir, purpose="save", app_dir=self.app_dir)
+        self.assertEqual(folder_status["state"], "已选择")
+        self.assertTrue(folder_status["exists"])
+        self.assertTrue(folder_status["isDirectory"])
+        self.assertTrue(folder_status["writable"])
+
+        labels_csv = selected_dir / "labels.csv"
+        labels_csv.write_text("sample_id,ssc,ta,ph\nS001,11.2,0.41,3.5\n", encoding="utf-8")
+        file_status = validate_file_path(labels_csv, purpose="labels-csv", app_dir=self.app_dir)
+        self.assertEqual(file_status["state"], "已选择")
+        self.assertTrue(file_status["isFile"])
+        self.assertTrue(file_status["readable"])
+
+        wrong_file = selected_dir / "labels.txt"
+        wrong_file.write_text("not csv", encoding="utf-8")
+        wrong_status = validate_file_path(wrong_file, purpose="labels-csv", app_dir=self.app_dir)
+        self.assertEqual(wrong_status["state"], "无效")
+        self.assertIn(".csv", wrong_status["message"])
+
+        missing_status = validate_folder_path(selected_dir / "missing", purpose="sample", app_dir=self.app_dir)
+        self.assertEqual(missing_status["state"], "无效")
+        self.assertFalse(missing_status["exists"])
 
     def insert_model(
         self,
@@ -121,6 +157,9 @@ class BackendDataFlowTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
         with self.assertRaises(urllib.error.HTTPError):
+            self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
+        self.prepare_device()
+        with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry"})
         first = self.create_sample("蓝莓实验A-第5颗")
         first_dir = Path(first["currentCaptureDir"])
@@ -158,6 +197,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(catalog["defaults"]["ta"]["model_id"], "generic_ta")
         self.assertEqual(catalog["ph"], [])
 
+        self.prepare_device()
         sample = self.post_json("/api/new-sample", {
             "sampleName": "蓝莓Duke-01",
             "fruitType": "blueberry",
@@ -209,6 +249,7 @@ class BackendDataFlowTests(unittest.TestCase):
         status = self.get_json("/api/status")
         self.assertFalse(status["hasSample"])
         self.assertFalse(status["sampleId"])
+        self.assertFalse(status["devicePrepared"])
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/complete-capture", {"sampleId": "S001"})
         sample = self.create_sample()
@@ -252,6 +293,16 @@ class BackendDataFlowTests(unittest.TestCase):
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
         self.assertEqual(Path(job["result"]["datasetDir"]), capture_dir)
+
+    def test_manual_folder_shape_analysis_does_not_require_current_sample(self):
+        dataset = self.make_dataset("manual_shape_only")
+        shape = self.post_json(
+            "/api/analyze-shape",
+            {"datasetDir": str(dataset), "colorDir": "rgb", "depthDir": "multispectral"},
+        )
+        job = self.wait_job(shape["jobId"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(Path(job["result"]["datasetDir"]), dataset)
 
     def test_manual_folder_switches_session_to_latest_dataset(self):
         self.create_sample("苹果测试01")

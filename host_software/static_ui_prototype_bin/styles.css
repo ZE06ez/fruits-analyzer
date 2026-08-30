@@ -361,6 +361,22 @@ label {
   overflow: hidden;
 }
 
+.stage.layout-analysis {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.stage.layout-analysis .camera-grid {
+  display: none;
+}
+
+.stage.layout-analysis .view-panel {
+  min-height: 0;
+}
+
+.stage.layout-analysis .view-page.active {
+  min-height: 100%;
+}
+
 .stage-header {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
@@ -1246,6 +1262,25 @@ label {
   font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.layout-analysis .shape-layout,
+.layout-analysis .prediction-layout {
+  min-height: clamp(420px, calc(100vh - 330px), 720px);
+}
+
+.layout-analysis .shape-visuals,
+.layout-analysis .shape-tools {
+  min-height: 0;
+}
+
+.layout-analysis .image-browser,
+.layout-analysis .prediction-card {
+  min-height: 100%;
+}
+
+.layout-analysis .taste-hero {
+  min-height: clamp(300px, calc(100vh - 360px), 620px);
 }
 
 .taste-hero {

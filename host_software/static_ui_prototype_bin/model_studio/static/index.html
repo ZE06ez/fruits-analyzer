@@ -9,7 +9,9 @@
 <body>
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">MS</div>
+      <div class="brand-mark">
+        <img src="/model-studio/assets/model-training-icon.png" alt="模型训练平台" />
+      </div>
       <div>
         <h1>模型训练中心</h1>
         <p>Dataset · Training · Evaluation · Deployment</p>
@@ -63,55 +65,220 @@
     </section>
 
     <section class="page" data-page="datasets">
-      <div class="panel">
-        <div class="panel-head"><h3>新建 Dataset</h3><span class="badge">Metadata Only</span></div>
-        <div class="form-grid">
-          <label>名称<input id="datasetName" placeholder="Blueberry_2026_batch_A" /></label>
-          <label>果种<input id="fruitType" placeholder="蓝莓" /></label>
-          <label>品种<input id="variety" placeholder="品种A" /></label>
-          <label>样品根目录<input id="storagePath" placeholder="D:/FruitData/samples" /></label>
-          <label>追加样品目录<input id="sourceSamplePath" placeholder="可选：D:/FruitData/new_samples" /></label>
-          <label class="wide">描述<input id="datasetDescription" placeholder="实验批次、采集条件、备注" /></label>
-        </div>
-        <div class="actions">
-          <button id="createDataset">创建 Dataset</button>
-          <button id="importSamples">扫描/追加样品</button>
-          <button id="createDatasetVersion">创建数据集版本</button>
-          <button id="refreshDatasets">刷新</button>
-        </div>
+      <div class="prep-layout">
+        <aside class="workflow-rail">
+          <div class="rail-title">数据准备</div>
+          <button class="prep-step current" data-prep-step="create"><span></span><b>创建数据集</b><small>Dataset</small></button>
+          <button class="prep-step" data-prep-step="import"><span></span><b>导入样品</b><small>Sample Folder</small></button>
+          <button class="prep-step" data-prep-step="labels"><span></span><b>标签录入</b><small>Ground Truth</small></button>
+          <button class="prep-step" data-prep-step="quality"><span></span><b>数据质量</b><small>Inspection</small></button>
+          <button class="prep-step" data-prep-step="version"><span></span><b>创建版本</b><small>Snapshot</small></button>
+        </aside>
+
+        <article class="panel prep-main">
+          <div class="panel-head">
+            <h3 id="prepStepTitle">当前步骤：创建 Dataset</h3>
+            <button id="refreshDatasets" class="ghost-button" type="button" title="刷新 Dataset">刷新</button>
+          </div>
+
+          <section class="prep-pane active" data-prep-pane="create">
+            <div class="task-copy">
+              <h4>创建 Dataset</h4>
+              <p>先建立一个本地托管数据集，后续样品和标签都会归入这个 Dataset。</p>
+            </div>
+            <div class="form-grid">
+              <label>Dataset 名称 *<input id="datasetName" placeholder="Blueberry_2026_batch_A" /></label>
+              <label>水果类型 *<input id="fruitType" placeholder="blueberry" /></label>
+              <label>品种<input id="variety" placeholder="Duke 或 generic" /></label>
+              <label class="wide">描述<input id="datasetDescription" placeholder="实验批次、采集条件、备注" /></label>
+              <label class="wide">默认数据来源
+                <div class="path-picker">
+                  <input id="storagePath" placeholder="可选：选择样品来源根目录" readonly />
+                  <button id="selectDatasetSource" class="ghost-button" type="button">选择文件夹</button>
+                </div>
+              </label>
+            </div>
+            <div class="actions action-tier">
+              <button id="createDataset" class="primary-button">创建 Dataset</button>
+            </div>
+          </section>
+
+          <section class="prep-pane" data-prep-pane="import">
+            <div class="task-copy">
+              <h4>导入样品</h4>
+              <p>选择主检测程序保存的 Sample Folder。选择后系统会自动验证，验证结果通过后再导入。</p>
+            </div>
+            <dl class="summary-list compact-summary">
+              <dt>当前 Dataset</dt><dd id="prepCurrentDataset">--</dd>
+              <dt>水果 / 品种</dt><dd id="prepFruitVariety">--</dd>
+            </dl>
+            <label class="block-label">导入样品文件夹
+              <div class="path-picker">
+                <input id="sourceSamplePath" placeholder="请选择要导入的样品文件夹" readonly />
+                <button id="selectSampleFolder" class="secondary-button" type="button">选择样品文件夹</button>
+              </div>
+            </label>
+            <div class="inspection-card">
+              <div class="inspection-head">
+                <strong>Validation Result</strong>
+                <button id="validateSampleFolder" class="ghost-button" type="button">重新验证</button>
+              </div>
+              <pre id="sampleImportReport" class="report compact">等待选择样品文件夹</pre>
+            </div>
+            <div class="actions action-tier">
+              <button id="importSamples" class="primary-button">导入样品</button>
+            </div>
+          </section>
+
+          <section class="prep-pane" data-prep-pane="labels">
+            <div class="task-copy">
+              <h4>标签录入</h4>
+              <p>单样品 SSC / TA / pH 在“样品与标签”页面保存；批量标签可导入 labels.csv。</p>
+            </div>
+            <div class="empty-state">
+              <strong>下一步：进入样品与标签</strong>
+              <span>选择样品后录入 Ground Truth，或用 labels.csv 批量导入。</span>
+              <button id="goSamplesFromPrep" class="primary-button" type="button">进入样品与标签</button>
+            </div>
+          </section>
+
+          <section class="prep-pane" data-prep-pane="quality">
+            <div class="task-copy">
+              <h4>数据质量检查</h4>
+              <p>检查样品数量、标签完整度、波段和校准状态。检查结果显示在右侧 Quality 面板。</p>
+            </div>
+            <div class="actions action-tier">
+              <button id="qualityCheckFromPrep" class="secondary-button" type="button">重新检查</button>
+            </div>
+          </section>
+
+          <section class="prep-pane" data-prep-pane="version">
+            <div class="task-copy">
+              <h4>创建 Dataset Version</h4>
+              <p>Dataset Version 是训练快照。创建后，样品列表和标签值会被冻结用于后续训练。</p>
+            </div>
+            <div id="versionReadiness" class="readiness-card">等待 Dataset 状态</div>
+            <div class="actions action-tier">
+              <button id="createDatasetVersion" class="primary-button">创建 Dataset Version</button>
+              <button id="goTrainingWorkspace" class="secondary-button" type="button">进入训练工作区</button>
+            </div>
+          </section>
+        </article>
+
+        <aside class="panel inspection-panel">
+          <div class="panel-head"><h3>Dataset Summary</h3><span id="datasetState" class="badge">Empty</span></div>
+          <dl class="summary-list">
+            <dt>Dataset</dt><dd id="summaryDatasetName">--</dd>
+            <dt>Samples</dt><dd id="summarySampleCount">0</dd>
+            <dt>Labels</dt><dd id="summaryLabelCount">0</dd>
+            <dt>Latest Version</dt><dd id="summaryLatestVersion">--</dd>
+            <dt>Status</dt><dd id="summaryDatasetStatus">--</dd>
+          </dl>
+          <div class="quality-stack" id="datasetQualitySummary">
+            <div class="quality-row pending"><span>Dataset</span><b>Pending</b></div>
+            <div class="quality-row pending"><span>Samples</span><b>0</b></div>
+            <div class="quality-row pending"><span>Labels</span><b>0</b></div>
+            <div class="quality-row pending"><span>Version</span><b>--</b></div>
+          </div>
+        </aside>
       </div>
+
       <div class="panel">
-        <div class="panel-head"><h3>数据集列表</h3><span id="datasetState" class="badge">Empty</span></div>
+        <div class="panel-head"><h3>数据集列表</h3><span id="datasetListState" class="badge">Empty</span></div>
         <div class="table-wrap"><table><thead><tr><th>Dataset</th><th>果种</th><th>品种</th><th>样品</th><th>标签</th><th>版本</th><th>状态</th><th>路径</th></tr></thead><tbody id="datasetRows"></tbody></table></div>
       </div>
     </section>
 
     <section class="page" data-page="samples">
-      <div class="panel">
-        <div class="panel-head"><h3>样品与标签</h3><span id="sampleDatasetName" class="badge">未选择 Dataset</span></div>
-        <div class="form-grid">
-          <label>当前 Dataset<select id="datasetSelect"></select></label>
-          <label>labels.csv 路径<input id="labelsPath" placeholder="D:/FruitData/labels.csv" /></label>
-          <label>搜索 Sample<input id="sampleQuery" placeholder="sample_id" /></label>
-          <label>样品状态<select id="sampleIncludeStatus"><option>Included</option><option>Needs Review</option><option>Excluded</option></select></label>
-          <label>状态原因<input id="sampleStatusReason" placeholder="异常原因或备注" /></label>
-        </div>
-        <div class="actions">
-          <button id="loadSamples">加载样品</button>
-          <button id="importLabels">导入 labels.csv</button>
-          <button id="runQualityCheck">数据质量检查</button>
-          <button id="updateSampleStatus">更新选中样品状态</button>
-        </div>
-      </div>
-      <div class="two-col">
-        <article class="panel">
-          <div class="panel-head"><h3>样品表</h3><span class="badge">Paged</span></div>
-          <div class="table-wrap"><table><thead><tr><th>Sample ID</th><th>RGB</th><th>多光谱</th><th>Dark</th><th>White</th><th>SSC</th><th>TA</th><th>pH</th><th>使用状态</th><th>数据状态</th></tr></thead><tbody id="sampleRows"></tbody></table></div>
+      <div class="sample-layout">
+        <article class="panel sample-list-panel">
+          <div class="panel-head">
+            <div>
+              <h3>样品列表</h3>
+              <span id="sampleDatasetName" class="subtle-title">未选择 Dataset</span>
+            </div>
+            <button id="loadSamples" class="ghost-button" type="button">刷新样品</button>
+          </div>
+          <div class="sample-toolbar">
+            <label>当前 Dataset<select id="datasetSelect"></select></label>
+            <label>搜索 Sample<input id="sampleQuery" placeholder="sample_id" /></label>
+          </div>
+          <div id="sampleEmptyState" class="empty-state compact" hidden>
+            <strong>当前 Dataset 还没有样品</strong>
+            <span>请回到数据集页面，选择主检测程序保存的 Sample Folder 导入。</span>
+            <button id="backToImportFromSamples" class="secondary-button" type="button">返回导入样品</button>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Sample ID</th><th>RGB</th><th>多光谱</th><th>Dark</th><th>White</th><th>SSC</th><th>TA</th><th>pH</th><th>标签状态</th><th>使用状态</th><th>数据状态</th></tr></thead><tbody id="sampleRows"></tbody></table></div>
         </article>
-        <article class="panel">
-          <div class="panel-head"><h3>数据质量</h3><span class="badge warn">Validation</span></div>
+
+        <aside class="panel sample-detail-panel">
+          <div class="panel-head"><h3>Selected Sample</h3><span id="labelSaveState" class="badge warn">未选择样品</span></div>
+          <dl class="summary-list">
+            <dt>Sample</dt><dd id="detailSampleId">--</dd>
+            <dt>Local Path</dt><dd id="detailLocalPath">--</dd>
+            <dt>Source Path</dt><dd id="detailSourcePath">--</dd>
+          </dl>
+          <div class="sample-task-tabs">
+            <button class="sample-tab active" data-sample-tab="manual" type="button">单样品标签</button>
+            <button class="sample-tab" data-sample-tab="csv" type="button">批量 CSV</button>
+          </div>
+          <section class="sample-tab-pane active" data-sample-pane="manual">
+            <div class="task-copy small">
+              <h4>Ground Truth</h4>
+              <p>输入当前样品的实验室实测值，保存后会同步到 Dataset 本地 labels.csv。</p>
+            </div>
+            <div class="form-grid detail-form">
+              <label>SSC<input id="labelSsc" inputmode="decimal" placeholder="输入 SSC 实测值" /></label>
+              <label>TA<input id="labelTa" inputmode="decimal" placeholder="输入 TA 实测值" /></label>
+              <label>pH<input id="labelPh" inputmode="decimal" placeholder="输入 pH 实测值" /></label>
+            </div>
+            <div class="actions action-tier">
+              <button id="saveSampleLabel" class="primary-button">保存标签</button>
+            </div>
+          </section>
+          <section class="sample-tab-pane" data-sample-pane="csv">
+            <div class="task-copy small">
+              <h4>批量导入 labels.csv</h4>
+              <p>CSV 格式：sample_id, ssc, ta, ph。导入后会按 sample_id 更新本地标签。</p>
+            </div>
+            <label>labels.csv 路径
+              <div class="path-picker">
+                <input id="labelsPath" placeholder="请选择 labels.csv 文件" readonly />
+                <button id="selectLabelsCsv" class="ghost-button" type="button">选择文件</button>
+              </div>
+            </label>
+            <div class="actions action-tier">
+              <button id="importLabels" class="secondary-button">导入 labels.csv</button>
+            </div>
+          </section>
+
+          <div class="sample-status-box">
+            <h4>使用状态</h4>
+            <label>状态<select id="sampleIncludeStatus"><option>Included</option><option>Needs Review</option><option>Excluded</option></select></label>
+            <label>异常原因<input id="sampleStatusReason" placeholder="异常原因或备注" /></label>
+            <button id="updateSampleStatus" class="secondary-button" type="button">保存状态</button>
+          </div>
+
+          <div class="actions danger-zone">
+            <button class="danger ghost-danger" id="deleteSampleRecord">删除样品记录</button>
+            <button class="danger ghost-danger" id="deleteSampleLocalCopy">删除记录和本地副本</button>
+          </div>
+        </aside>
+
+        <aside class="panel sample-quality-panel">
+          <div class="panel-head">
+            <h3>Sample Quality</h3>
+            <button id="runQualityCheck" class="ghost-button" type="button">重新检查</button>
+          </div>
+          <div class="quality-stack" id="sampleQualitySummary">
+            <div class="quality-row pending"><span>RGB</span><b>--</b></div>
+            <div class="quality-row pending"><span>Bands</span><b>--</b></div>
+            <div class="quality-row pending"><span>Calibration</span><b>--</b></div>
+            <div class="quality-row pending"><span>Labels</span><b>--</b></div>
+            <div class="quality-row pending"><span>Use Status</span><b>--</b></div>
+          </div>
           <pre id="qualityReport" class="report">暂无数据质量报告</pre>
-        </article>
+        </aside>
       </div>
     </section>
 
