@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
 
 class JobStore:
@@ -222,10 +223,18 @@ def read_sample_metadata(dataset_dir: str | Path) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: JobStore, session: SessionState):
+def create_handler(
+    static_dir: Path,
+    outputs_dir: Path,
+    app_dir: Path,
+    store: JobStore,
+    session: SessionState,
+    device_manager: DeviceManager | None = None,
+):
     static_dir = static_dir.resolve()
     outputs_dir = outputs_dir.resolve()
     app_dir = app_dir.resolve()
+    device_manager = device_manager or DeviceManager()
     model_studio_static = app_dir / "model_studio" / "static"
     try:
         from model_studio.service import ModelStudioService
@@ -265,6 +274,42 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                     "defaultSaveRoot": default_save_root(app_dir),
                     **session_info,
                 })
+                return
+            if path == "/api/device/ports":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "ports": device_manager.list_ports(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if path == "/api/device/status":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "device": device_manager.status(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if path == "/api/capture/status":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "capture": device_manager.capture_status(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
                 return
             if path == "/api/sample-folder":
                 self.handle_sample_folder(parsed.query)
@@ -308,6 +353,106 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
 
         def do_POST(self):  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/api/device/connect":
+                payload = self.read_json()
+                port = str(payload.get("port") or "").strip()
+                if not port:
+                    self.json_response(
+                        {"ok": False, "error": "请选择串口"},
+                        status=400,
+                    )
+                    return
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "device": device_manager.connect(port),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if parsed.path == "/api/device/disconnect":
+                try:
+                    device_manager.disconnect()
+                    self.json_response({
+                        "ok": True,
+                        "device": device_manager.status(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=500,
+                    )
+                return
+            if parsed.path == "/api/device/self-test":
+                payload = self.read_json()
+                try:
+                    result = device_manager.self_test(
+                        include_motion=bool(payload.get("includeMotion", False))
+                    )
+                    self.json_response({"ok": True, "result": result})
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if parsed.path == "/api/device/emergency-stop":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "device": device_manager.emergency_stop(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if parsed.path == "/api/device/fault-clear":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "device": device_manager.fault_clear(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if parsed.path == "/api/capture/start":
+                payload = self.read_json()
+                try:
+                    capture = device_manager.start_capture(
+                        sample_id=str(payload.get("sampleId") or "")
+                    )
+                    self.json_response({"ok": True, "capture": capture})
+                except CameraIntegrationRequired as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=409,
+                    )
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
+            if parsed.path == "/api/capture/cancel":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "capture": device_manager.cancel_capture(),
+                    })
+                except Exception as exc:
+                    self.json_response(
+                        {"ok": False, "error": str(exc)},
+                        status=503,
+                    )
+                return
             if parsed.path == "/api/upload-dataset":
                 self.handle_upload_dataset()
                 return
@@ -340,6 +485,10 @@ def create_handler(static_dir: Path, outputs_dir: Path, app_dir: Path, store: Jo
                 self.json_response({"ok": store.cancel(job_id)})
                 return
             if parsed.path == "/api/shutdown":
+                try:
+                    device_manager.disconnect()
+                except Exception:
+                    pass
                 setattr(self.server, "should_exit", True)
                 self.json_response({"ok": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()

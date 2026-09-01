@@ -679,6 +679,155 @@ function setPill(id, text, className) {
   pill.className = className || "";
 }
 
+function renderDeviceStatus(device) {
+  const connected = Boolean(device?.connected);
+  const unavailable = "--";
+  const doorNames = {
+    unknown: "未知",
+    open: "已升起",
+    closed: "已关闭",
+    moving: "运动中",
+    error: "异常",
+  };
+
+  setPill(
+    "serialStatus",
+    connected ? `串口: ${device.port} / 已连接` : "串口: 未连接",
+    connected ? "ok" : "warn"
+  );
+  setText("fanState", `风扇：${connected ? (device.fanOn ? "开启" : "关闭") : unavailable}`);
+  setText("doorState", `升降门：${connected ? (doorNames[device.door] || "未知") : unavailable}`);
+  setText(
+    "wheelState",
+    !connected
+      ? `滤光轮：${unavailable}`
+      : device.wheelPosition === null || device.wheelPosition === undefined
+        ? "滤光轮：未寻零"
+        : `滤光轮：槽位 ${device.wheelPosition}`
+  );
+  setText(
+    "rgbLedState",
+    connected
+      ? `RGB LED：LED1 ${device.rgbLed1On ? "开" : "关"}，LED2 ${device.rgbLed2On ? "开" : "关"}`
+      : `RGB LED：${unavailable}`
+  );
+  setText(
+    "tungstenState",
+    connected
+      ? `钨灯：灯1 ${device.tungsten1On ? "开" : "关"}，灯2 ${device.tungsten2On ? "开" : "关"}`
+      : `钨灯：${unavailable}`
+  );
+
+  const errorCode = device?.errorCode;
+  const faultText = !connected
+    ? unavailable
+    : device?.emergencyStopped
+      ? "已急停"
+      : errorCode === 0
+        ? "无"
+        : errorCode === null || errorCode === undefined
+          ? "未读取"
+          : `0x${errorCode.toString(16).padStart(2, "0").toUpperCase()}`;
+  setText("faultState", `故障：${faultText}`);
+
+  setPill(
+    "motorStatus",
+    connected
+      ? device.wheelHomed ? "电机: 已寻零" : "电机: 未寻零"
+      : "电机: 未连接",
+    connected && device.wheelHomed ? "ok" : "warn"
+  );
+  setPill(
+    "lightStatus",
+    connected ? "光源: 状态已读取" : "光源: 未连接",
+    connected ? "ok" : "warn"
+  );
+  setText(
+    "connectionHint",
+    connected
+      ? `已连接 STM32F407：${device.port}`
+      : "请选择 STM32F407 对应的 COM 口。"
+  );
+}
+
+async function refreshSerialPorts() {
+  try {
+    const payload = await api("/api/device/ports");
+    const select = $("#serialPort");
+    if (!select) return;
+
+    const previous = select.value;
+    select.innerHTML = "";
+    if (!payload.ports?.length) {
+      select.innerHTML = '<option value="">无可用串口</option>';
+      setPill("serialStatus", "串口: 未发现设备", "warn");
+      addLog("未发现可用串口。", "WARN");
+      return;
+    }
+
+    payload.ports.forEach((port) => {
+      const option = document.createElement("option");
+      option.value = port.device;
+      option.textContent = `${port.device} - ${port.description || "串口设备"}`;
+      select.appendChild(option);
+    });
+    if ([...select.options].some((option) => option.value === previous)) {
+      select.value = previous;
+    }
+    addLog(`发现 ${payload.ports.length} 个串口。`);
+  } catch (error) {
+    setPill("serialStatus", "串口: 读取失败", "warn");
+    addLog(error.message, "ERROR");
+  }
+}
+
+async function connectDevice() {
+  const port = $("#serialPort")?.value;
+  if (!port) {
+    addLog("请先选择STM32F407对应的串口。", "WARN");
+    return;
+  }
+
+  try {
+    setPill("serialStatus", `串口: 正在连接 ${port}`, "warn");
+    const payload = await api("/api/device/connect", {
+      method: "POST",
+      body: JSON.stringify({ port }),
+    });
+    renderDeviceStatus(payload.device);
+    setStepStatus("connect", "done");
+    setText("statusNote", "STM32F407 已通过两字节协议连接。相机SDK仍未接入。");
+    addLog(`STM32F407 已连接：${port}`);
+  } catch (error) {
+    setStepStatus("connect", "warning");
+    setPill("serialStatus", "串口: 连接失败", "warn");
+    addLog(error.message, "ERROR");
+  }
+}
+
+async function disconnectDevice() {
+  try {
+    const payload = await api("/api/device/disconnect", {
+      method: "POST",
+      body: "{}",
+    });
+    renderDeviceStatus(payload.device);
+    setStepStatus("connect", "idle");
+    addLog("已执行安全停止并断开STM32F407串口。");
+  } catch (error) {
+    addLog(error.message, "ERROR");
+  }
+}
+
+async function refreshDeviceStatus() {
+  try {
+    const payload = await api("/api/device/status");
+    renderDeviceStatus(payload.device);
+  } catch (error) {
+    addLog(error.message, "ERROR");
+  }
+}
+
 function setStepStatus(key, status) {
   document.querySelectorAll(`[data-step-key="${key}"]`).forEach((button) => {
     button.dataset.status = status;
@@ -700,33 +849,79 @@ function switchView(view, stepKey = null) {
   addLog(`切换到 ${titles[view] || view}`);
 }
 
-function runDeviceTest(type) {
-  const map = {
-    motor: {
-      pill: "motorStatus",
-      text: "电机: 离线自检通过",
-      step: "motor",
-      log: "电机检测完成：旋转平台、升降机构为模拟通过状态。",
-    },
-    light: {
-      pill: "lightStatus",
-      text: "光源: 离线自检通过",
-      step: "light",
-      log: "光源检测完成：370-940nm 波段为模拟通过状态。",
-    },
-    camera: {
-      pill: "cameraStatus",
-      text: "相机: 离线自检通过",
-      step: "camera",
-      log: "相机检测完成：彩色相机与多光谱相机为模拟通过状态。",
-    },
-  };
-  const item = map[type];
-  if (!item) return;
-  setPill(item.pill, item.text, "ok");
-  setStepStatus(item.step, "done");
-  setText("statusNote", "硬件通信尚未接入，当前自检结果来自离线模拟。");
-  addLog(item.log);
+async function runDeviceTest(type) {
+  if (type === "camera") {
+    setPill("cameraStatus", "相机: SDK 尚未接入", "warn");
+    setStepStatus("camera", "warning");
+    addLog("RGB和黑白相机SDK尚未接入，未执行模拟自检。", "WARN");
+    return;
+  }
+
+  try {
+    const payload = await api("/api/device/self-test", {
+      method: "POST",
+      body: JSON.stringify({ includeMotion: false }),
+    });
+    renderDeviceStatus(payload.result.status);
+
+    if (type === "motor") {
+      setStepStatus("motor", "done");
+      setPill("motorStatus", "电机: 通信正常 / 未运动", "ok");
+      addLog("电机控制器通信与状态查询正常；安全起见未自动转动滤光轮。");
+    } else if (type === "light") {
+      setStepStatus("light", "done");
+      setPill("lightStatus", "光源: 控制器状态正常", "ok");
+      addLog("光源控制器状态查询正常；本次自检未自动切换全部灯组。");
+    }
+  } catch (error) {
+    setStepStatus(type, "warning");
+    addLog(error.message, "ERROR");
+  }
+}
+
+async function emergencyStopDevice() {
+  try {
+    const payload = await api("/api/device/emergency-stop", {
+      method: "POST",
+      body: "{}",
+    });
+    renderDeviceStatus(payload.device);
+    setPill("motorStatus", "电机: 已安全停止", "warn");
+    setPill("lightStatus", "光源: 已关闭", "warn");
+    addLog("已向STM32F407发送SAFE_STOP 3E 00。", "WARN");
+  } catch (error) {
+    addLog(`急停命令发送失败：${error.message}`, "ERROR");
+  }
+}
+
+async function clearDeviceFault() {
+  try {
+    const payload = await api("/api/device/fault-clear", {
+      method: "POST",
+      body: "{}",
+    });
+    renderDeviceStatus(payload.device);
+    addLog("STM32F407故障状态已清除。");
+  } catch (error) {
+    addLog(error.message, "ERROR");
+  }
+}
+
+async function startRealCapture() {
+  if (!requireActiveSample()) return;
+
+  try {
+    const payload = await api("/api/capture/start", {
+      method: "POST",
+      body: JSON.stringify({ sampleId: state.sampleId || $("#sampleId")?.value || "" }),
+    });
+    switchView("capture", "sample");
+    setStepStatus("sample", "running");
+    addLog(payload.capture?.message || "真实采集任务已启动。");
+  } catch (error) {
+    setText("captureProgressText", "真实相机服务尚未接入，无法开始采集");
+    addLog(error.message, "ERROR");
+  }
 }
 
 function resetCaptureStepStatuses() {
@@ -1844,24 +2039,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
 
-  $("#refreshPorts")?.addEventListener("click", () => {
-    setPill("serialStatus", "串口: 待调试", "warn");
-    setStepStatus("connect", "warning");
-    addLog("已刷新串口列表：当前单片机未接入，保持离线调试。", "WARN");
-  });
-
-  $("#startWorkflow")?.addEventListener("click", () => {
-    if (!requireActiveSample()) return;
-    switchView("capture", "sample");
-    setStepStatus("sample", "running");
-    addLog("检测流程已启动：按离线模式进入样品采集。");
-  });
-
-  $("#emergencyStop")?.addEventListener("click", () => {
-    setPill("motorStatus", "电机: 已停止", "warn");
-    setPill("lightStatus", "光源: 已关闭", "warn");
-    addLog("紧急停止已触发：模拟关闭电机与光源。", "WARN");
-  });
+  $("#refreshPorts")?.addEventListener("click", refreshSerialPorts);
+  $("#connectDevice")?.addEventListener("click", connectDevice);
+  $("#disconnectDevice")?.addEventListener("click", disconnectDevice);
+  $("#refreshDeviceStatus")?.addEventListener("click", refreshDeviceStatus);
+  $("#clearDeviceFault")?.addEventListener("click", clearDeviceFault);
+  $("#startWorkflow")?.addEventListener("click", startRealCapture);
+  $("#emergencyStop")?.addEventListener("click", emergencyStopDevice);
 
   $("#startSscAnalysis")?.addEventListener("click", runSscAnalysis);
   $("#startAcidAnalysis")?.addEventListener("click", runAcidAnalysis);
@@ -1908,6 +2092,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   resetCaptureStepStatuses();
   renderCalibrationStatus();
   updateShapeMode();
+  await refreshSerialPorts();
+  await refreshDeviceStatus();
   try {
     const status = await api("/api/status");
     applySampleSessionState(status);

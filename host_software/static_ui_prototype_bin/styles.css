@@ -1824,6 +1824,62 @@ pre {
   background: rgba(8, 13, 24, 0.64);
 }
 
+.device-control-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.device-control-buttons button {
+  min-width: 0;
+  padding-inline: 8px;
+  font-size: 12px;
+}
+
+.device-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.device-status-grid p {
+  min-width: 0;
+  margin: 0;
+  padding: 7px 8px;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.48);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+#faultState {
+  color: #fbbf24;
+}
+
+#clearDeviceFault {
+  width: 100%;
+  margin-top: 10px;
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fde68a;
+  background: rgba(120, 53, 15, 0.28);
+}
+
+#clearDeviceFault:hover {
+  border-color: rgba(251, 191, 36, 0.8);
+  background: rgba(146, 64, 14, 0.42);
+}
+
+@media (max-width: 520px) {
+  .device-control-buttons,
+  .device-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 1500px) {
   .workspace {
     grid-template-columns: 290px minmax(520px, 1fr) 300px;
