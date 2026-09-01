@@ -80,6 +80,9 @@ class SessionState:
         self.save_root_dir: str = ""
         self.current_capture_dir: str = ""
         self.analysis_data_dir: str = ""
+        self.rgb_dir_name: str = "rgb"
+        self.multispectral_dir_name: str = "multispectral"
+        self.other_image_dir_names: list[str] = []
         self.capture_started: bool = False
         self.device_prep: dict[str, bool] = {
             "connect": False,
@@ -103,6 +106,21 @@ class SessionState:
         with self._lock:
             self.analysis_data_dir = str(value)
 
+    def set_image_directories(
+        self,
+        *,
+        rgb_dir_name: str | None = None,
+        multispectral_dir_name: str | None = None,
+        other_dir_names: list[str] | None = None,
+    ) -> None:
+        with self._lock:
+            if rgb_dir_name:
+                self.rgb_dir_name = rgb_dir_name
+            if multispectral_dir_name:
+                self.multispectral_dir_name = multispectral_dir_name
+            if other_dir_names is not None:
+                self.other_image_dir_names = list(other_dir_names)
+
     def set_capture_rotation_plan(self, plan: dict) -> None:
         with self._lock:
             self.capture_rotation_plan = dict(plan)
@@ -124,6 +142,7 @@ class SessionState:
         selected_ssc = str(payload.get("selectedSscModelId") or payload.get("selected_ssc_model_id") or "")
         selected_ta = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or "")
         selected_ph = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or "")
+        image_dirs = image_directory_names_from_payload(payload)
         if model_resolver:
             selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc) if selected_ssc else ""
             selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta) if selected_ta else ""
@@ -145,6 +164,9 @@ class SessionState:
             self.capture_rotation_plan = rotation_plan
             self.current_capture_dir = capture_dir
             self.analysis_data_dir = ""
+            self.rgb_dir_name = image_dirs["rgb"]
+            self.multispectral_dir_name = image_dirs["multispectral"]
+            self.other_image_dir_names = []
             self.capture_started = False
         return self.snapshot()
 
@@ -178,6 +200,9 @@ class SessionState:
                 self.sample_name = str(metadata.get("sample_name") or metadata.get("sampleName") or "").strip()
             if not self.sample_id:
                 self.sample_id = str(metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
+            image_dirs = image_directory_names_from_metadata(metadata)
+            self.rgb_dir_name = image_dirs["rgb"]
+            self.multispectral_dir_name = image_dirs["multispectral"]
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -187,6 +212,9 @@ class SessionState:
             save_root_dir = self.save_root_dir
             current = self.current_capture_dir
             analysis = self.analysis_data_dir
+            rgb_dir_name = self.rgb_dir_name
+            multispectral_dir_name = self.multispectral_dir_name
+            other_image_dir_names = list(self.other_image_dir_names)
             capture_started = self.capture_started
             fruit_type = self.fruit_type
             variety = self.variety
@@ -210,6 +238,11 @@ class SessionState:
             "currentCaptureDir": current if current_valid else "",
             "currentCaptureValid": current_valid,
             "analysisDataDir": analysis,
+            "rgbDirName": rgb_dir_name,
+            "multispectralDirName": multispectral_dir_name,
+            "colorDir": rgb_dir_name,
+            "depthDir": multispectral_dir_name,
+            "otherImageDirs": other_image_dir_names,
             "captureStarted": capture_started,
             "devicePrep": device_prep,
             "devicePrepared": all(device_prep.values()),
@@ -251,6 +284,150 @@ def read_sample_metadata(dataset_dir: str | Path) -> dict:
     except Exception:
         return {}
     return metadata if isinstance(metadata, dict) else {}
+
+
+IMAGE_DIR_DEFAULTS = {"rgb": "rgb", "multispectral": "multispectral"}
+IMAGE_DIR_ILLEGAL_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def validate_image_dir_name(value: str, *, field: str = "目录名称") -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise ValueError(f"{field}不能为空")
+    if name in {".", ".."}:
+        raise ValueError(f"{field}不能是 . 或 ..")
+    if IMAGE_DIR_ILLEGAL_RE.search(name):
+        raise ValueError(f"{field}不能包含路径分隔符或 Windows 非法字符")
+    if any(sep in name for sep in (os.sep, os.altsep) if sep):
+        raise ValueError(f"{field}不能包含路径分隔符")
+    return name
+
+
+def image_directory_names_from_metadata(metadata: dict | None) -> dict[str, str]:
+    metadata = metadata or {}
+    dirs = metadata.get("image_directories")
+    if not isinstance(dirs, dict):
+        dirs = {}
+    rgb = (
+        dirs.get("rgb")
+        or metadata.get("rgbDirName")
+        or metadata.get("colorDir")
+        or IMAGE_DIR_DEFAULTS["rgb"]
+    )
+    multispectral = (
+        dirs.get("multispectral")
+        or metadata.get("multispectralDirName")
+        or metadata.get("depthDir")
+        or IMAGE_DIR_DEFAULTS["multispectral"]
+    )
+    result = {
+        "rgb": validate_image_dir_name(rgb, field="RGB 图像目录名称"),
+        "multispectral": validate_image_dir_name(multispectral, field="多光谱图像目录名称"),
+    }
+    if result["rgb"].lower() == result["multispectral"].lower():
+        raise ValueError("RGB 图像目录名称和多光谱图像目录名称不能相同")
+    return result
+
+
+def image_directory_names_from_payload(payload: dict | None, metadata: dict | None = None) -> dict[str, str]:
+    payload = payload or {}
+    defaults = image_directory_names_from_metadata(metadata or {})
+    rgb = defaults["rgb"]
+    for key in ("rgbDirName", "rgb_dir_name", "colorDir"):
+        if key in payload:
+            rgb = payload.get(key)
+            break
+    multispectral = defaults["multispectral"]
+    for key in ("multispectralDirName", "multispectral_dir_name", "depthDir"):
+        if key in payload:
+            multispectral = payload.get(key)
+            break
+    result = {
+        "rgb": validate_image_dir_name(rgb, field="RGB 图像目录名称"),
+        "multispectral": validate_image_dir_name(multispectral, field="多光谱图像目录名称"),
+    }
+    if result["rgb"].lower() == result["multispectral"].lower():
+        raise ValueError("RGB 图像目录名称和多光谱图像目录名称不能相同")
+    return result
+
+
+def validate_direct_child_dir(root: Path, name: str, *, field: str) -> Path:
+    clean_name = validate_image_dir_name(name, field=field)
+    root_resolved = Path(root).expanduser().resolve()
+    candidate = (root_resolved / clean_name).resolve()
+    if candidate.parent != root_resolved:
+        raise ValueError(f"{field}必须是父文件夹下的一级子目录")
+    if not candidate.exists():
+        raise ValueError(f"{field}不存在: {clean_name}")
+    if not candidate.is_dir():
+        raise ValueError(f"{field}不是文件夹: {clean_name}")
+    return candidate
+
+
+def normalize_other_dir_names(root: Path, values: object) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw_items = [item.strip() for item in values.split(",")]
+    elif isinstance(values, list):
+        raw_items = [str(item).strip() for item in values]
+    else:
+        raw_items = []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not item:
+            continue
+        validate_direct_child_dir(root, item, field="其他相关目录")
+        key = item.lower()
+        if key not in seen:
+            result.append(item)
+            seen.add(key)
+    return result
+
+
+def directory_name_from_report(path_value: object, fallback: str | None = None) -> str:
+    text = str(path_value or "").strip()
+    if text:
+        return Path(text).name
+    return str(fallback or "").strip()
+
+
+def suggested_image_role(name: str) -> str:
+    lowered = name.lower()
+    if lowered in {"rgb", "color", "colour", "color_images", "colour_images", "image", "images"} or any(token in name for token in ("彩色", "彩图")):
+        return "rgb"
+    if lowered in {"multispectral", "multi_spectral", "spectral", "spectral_images", "narrowband", "mono", "gray", "ms"} or "多光谱" in name:
+        return "multispectral"
+    return "other"
+
+
+def inspect_image_folders(parent_dir: str | Path, app_dir: Path) -> dict:
+    if not str(parent_dir or "").strip():
+        raise ValueError("请选择样品父文件夹")
+    parent = resolve_user_path(str(parent_dir), app_dir)
+    if not parent.exists():
+        raise ValueError(f"父文件夹不存在: {parent}")
+    if not parent.is_dir():
+        raise ValueError(f"路径不是文件夹: {parent}")
+    from pointcloud_service import list_images
+
+    directories = []
+    for child in sorted(parent.iterdir(), key=lambda item: item.name.lower()):
+        if not child.is_dir():
+            continue
+        directories.append({
+            "name": child.name,
+            "path": str(child),
+            "suggestedRole": suggested_image_role(child.name),
+            "imageCount": len(list_images(child)),
+        })
+    return {
+        "ok": True,
+        "valid": True,
+        "parentDir": str(parent),
+        "directories": directories,
+    }
 
 
 def create_handler(
@@ -355,6 +532,9 @@ def create_handler(
                 return
             if path == "/api/sample-folder":
                 self.handle_sample_folder(parsed.query)
+                return
+            if path == "/api/inspect-image-folders":
+                self.handle_inspect_image_folders(parsed.query)
                 return
             if path == "/api/select-folder":
                 self.handle_select_folder(parsed.query)
@@ -776,6 +956,7 @@ def create_handler(
                 return
             payload = self.read_json()
             try:
+                image_dirs = image_directory_names_from_payload(payload)
                 save_root = resolve_user_path(str(payload.get("saveRootDir") or ""), app_dir)
                 if not str(payload.get("saveRootDir") or "").strip():
                     raise ValueError("save_root_dir is required")
@@ -784,6 +965,8 @@ def create_handler(
                 capture_dir = create_unique_sample_folder(save_root, sample_name)
                 payload["saveRootDir"] = str(save_root)
                 payload["captureDir"] = str(capture_dir)
+                payload["rgbDirName"] = image_dirs["rgb"]
+                payload["multispectralDirName"] = image_dirs["multispectral"]
                 sample = session.create_sample(payload, self.resolve_model_id)
                 ensure_sample_capture_folder(capture_dir, sample)
                 self.json_response({"ok": True, "sample": sample})
@@ -895,8 +1078,10 @@ def create_handler(
         def handle_sample_folder(self, query: str) -> None:
             params = parse_qs(query)
             dataset_dir = params.get("datasetDir", [""])[0]
-            color_dir = params.get("colorDir", [""])[0] or None
-            depth_dir = params.get("depthDir", [""])[0] or None
+            color_dir = params.get("rgbDirName", [""])[0] or params.get("colorDir", [""])[0] or None
+            depth_dir = params.get("multispectralDirName", [""])[0] or params.get("depthDir", [""])[0] or None
+            other_dirs_raw = params.get("otherDirs", [""])[0] or params.get("otherImageDirs", [""])[0] or ""
+            strict_dirs = params.get("strictImageDirs", ["0"])[0] in {"1", "true", "True", "yes"}
             source = params.get("source", [""])[0]
             if source == "current":
                 current = session.snapshot().get("currentCaptureDir", "")
@@ -923,17 +1108,41 @@ def create_handler(
                 from pointcloud_service import inspect_sample_folder
 
                 resolved_dataset = resolve_user_path(dataset_dir, app_dir) if dataset_dir else ""
+                metadata = read_sample_metadata(resolved_dataset) if resolved_dataset else {}
+                if source == "current":
+                    session_dirs = session.snapshot()
+                    color_dir = color_dir or session_dirs.get("rgbDirName") or image_directory_names_from_metadata(metadata)["rgb"]
+                    depth_dir = depth_dir or session_dirs.get("multispectralDirName") or image_directory_names_from_metadata(metadata)["multispectral"]
+                elif metadata and not color_dir and not depth_dir:
+                    image_dirs = image_directory_names_from_metadata(metadata)
+                    color_dir = image_dirs["rgb"]
+                    depth_dir = image_dirs["multispectral"]
+                if strict_dirs:
+                    if not color_dir or not depth_dir:
+                        raise ValueError("RGB 和多光谱目录必须选择")
+                    validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
+                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
+                    if color_dir.lower() == depth_dir.lower():
+                        raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
+                other_dirs = normalize_other_dir_names(resolved_dataset, other_dirs_raw)
                 report = inspect_sample_folder(resolved_dataset, color_dir, depth_dir)
-                metadata = read_sample_metadata(report.get("datasetDir") or resolved_dataset) if report.get("datasetDir") or resolved_dataset else {}
                 if metadata:
                     report["sampleMetadata"] = metadata
                     if session.snapshot().get("hasSample"):
                         session.apply_sample_metadata(metadata)
                 if report.get("valid") and session.snapshot().get("hasSample"):
                     session.set_analysis_data_dir(report["datasetDir"])
+                    session.set_image_directories(
+                        rgb_dir_name=directory_name_from_report(report.get("colorDir"), color_dir),
+                        multispectral_dir_name=directory_name_from_report(report.get("depthDir"), depth_dir),
+                        other_dir_names=other_dirs,
+                    )
+                report["rgbDirName"] = directory_name_from_report(report.get("colorDir"), color_dir)
+                report["multispectralDirName"] = directory_name_from_report(report.get("depthDir"), depth_dir)
+                report["otherImageDirs"] = other_dirs
                 self.json_response(report)
             except Exception as exc:
-                self.json_response({
+                payload = {
                     "ok": True,
                     "valid": False,
                     "complete": False,
@@ -947,13 +1156,27 @@ def create_handler(
                     "missing": [str(exc)],
                     "badImages": [],
                     "message": str(exc),
-                })
+                }
+                if strict_dirs:
+                    payload["ok"] = False
+                    payload["error"] = str(exc)
+                    self.json_response(payload, status=400)
+                else:
+                    self.json_response(payload)
+
+        def handle_inspect_image_folders(self, query: str) -> None:
+            params = parse_qs(query)
+            parent_dir = params.get("parentDir", [""])[0] or params.get("datasetDir", [""])[0]
+            try:
+                self.json_response(inspect_image_folders(parent_dir, app_dir))
+            except Exception as exc:
+                self.json_response({"ok": False, "valid": False, "error": str(exc)}, status=400)
 
         def handle_dataset_images(self, query: str) -> None:
             params = parse_qs(query)
             dataset_dir = params.get("datasetDir", [""])[0] or str(default_sample_dataset(app_dir))
-            color_dir = params.get("colorDir", [""])[0] or None
-            depth_dir = params.get("depthDir", [""])[0] or None
+            color_dir = params.get("rgbDirName", [""])[0] or params.get("colorDir", [""])[0] or None
+            depth_dir = params.get("multispectralDirName", [""])[0] or params.get("depthDir", [""])[0] or None
             if not dataset_dir:
                 self.json_response({
                     "ok": True,
@@ -965,7 +1188,19 @@ def create_handler(
             try:
                 from pointcloud_service import AnalysisError, list_images, resolve_image_analysis_dirs
 
-                color_path, depth_path = resolve_image_analysis_dirs(resolve_user_path(dataset_dir, app_dir), color_dir, depth_dir)
+                resolved_dataset = resolve_user_path(dataset_dir, app_dir)
+                metadata = read_sample_metadata(resolved_dataset)
+                if metadata and not color_dir and not depth_dir:
+                    image_dirs = image_directory_names_from_metadata(metadata)
+                    color_dir = image_dirs["rgb"]
+                    depth_dir = image_dirs["multispectral"]
+                if color_dir:
+                    validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
+                if depth_dir:
+                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
+                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                    raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
+                color_path, depth_path = resolve_image_analysis_dirs(resolved_dataset, color_dir, depth_dir)
                 color_files = list_images(color_path)
                 spectral_files = list_images(depth_path) if depth_path else []
                 pair_count = min(max(len(color_files), len(spectral_files)), 60) if spectral_files else min(len(color_files), 60)
@@ -980,6 +1215,8 @@ def create_handler(
                     "ok": True,
                     "colorDir": str(color_path),
                     "depthDir": str(depth_path) if depth_path else "",
+                    "rgbDirName": color_path.name,
+                    "multispectralDirName": depth_path.name if depth_path else "",
                     "images": [
                         {
                             "index": index,
@@ -1080,10 +1317,17 @@ def create_handler(
             sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
                 metadata = dict(info)
+                image_dirs = image_directory_names_from_payload(payload, metadata)
+                metadata["rgbDirName"] = image_dirs["rgb"]
+                metadata["multispectralDirName"] = image_dirs["multispectral"]
                 if isinstance(payload.get("sampleRotation"), dict) or isinstance(payload.get("sample_rotation"), dict):
                     rotation_plan = build_capture_rotation_plan(payload)
                     metadata["captureRotationPlan"] = rotation_plan
                     session.set_capture_rotation_plan(rotation_plan)
+                session.set_image_directories(
+                    rgb_dir_name=image_dirs["rgb"],
+                    multispectral_dir_name=image_dirs["multispectral"],
+                )
                 session.set_capture_started(True)
                 capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=metadata)
                 metadata = read_sample_metadata(capture_dir)
@@ -1095,6 +1339,10 @@ def create_handler(
                     "ok": True,
                     "currentCaptureDir": str(capture_dir),
                     "analysisDataDir": str(capture_dir),
+                    "rgbDirName": image_dirs["rgb"],
+                    "multispectralDirName": image_dirs["multispectral"],
+                    "colorDir": image_dirs["rgb"],
+                    "depthDir": image_dirs["multispectral"],
                     "captureRotationPlan": metadata.get("sample_rotation") if isinstance(metadata.get("sample_rotation"), dict) else info.get("captureRotationPlan"),
                     "message": "本次拍摄数据已保存",
                 })
@@ -1103,13 +1351,27 @@ def create_handler(
 
         def handle_analyze_shape(self) -> None:
             payload = self.read_json()
+            session_info = session.snapshot()
             dataset_dir = payload.get("datasetDir") or str(default_sample_dataset(app_dir))
-            color_dir = payload.get("colorDir") or None
-            depth_dir = payload.get("depthDir") or None
+            color_dir = payload.get("rgbDirName") or payload.get("colorDir") or session_info.get("rgbDirName") or None
+            depth_dir = payload.get("multispectralDirName") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
             if not dataset_dir:
                 self.json_response({"ok": False, "error": "请先选择本次拍摄的样品文件夹。"}, status=400)
                 return
+            try:
+                resolved_for_validation = resolve_user_path(dataset_dir, app_dir)
+                if color_dir:
+                    validate_direct_child_dir(resolved_for_validation, color_dir, field="RGB 图像目录")
+                if depth_dir:
+                    validate_direct_child_dir(resolved_for_validation, depth_dir, field="多光谱图像目录")
+                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                    raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
             session.set_analysis_data_dir(dataset_dir)
+            if color_dir and depth_dir:
+                session.set_image_directories(rgb_dir_name=color_dir, multispectral_dir_name=depth_dir)
             density = _float(payload.get("densityGCm3"), 1.08)
             voxel = _float(payload.get("voxelSizeMm"), 2.0)
             max_pairs = int(_float(payload.get("maxPairs"), 10))
@@ -1218,11 +1480,21 @@ def create_handler(
             if not dataset_dir:
                 self.json_response({"ok": False, "error": "请先在形态分析页面加载当前样品数据。"}, status=400)
                 return None
-            color_dir = payload.get("colorDir") or None
-            depth_dir = payload.get("depthDir") or None
+            color_dir = payload.get("rgbDirName") or payload.get("colorDir") or session_info.get("rgbDirName") or None
+            depth_dir = payload.get("multispectralDirName") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
             try:
                 resolved_dataset = resolve_user_path(dataset_dir, app_dir)
                 metadata = read_sample_metadata(resolved_dataset)
+                if metadata and (not color_dir or not depth_dir):
+                    image_dirs = image_directory_names_from_metadata(metadata)
+                    color_dir = color_dir or image_dirs["rgb"]
+                    depth_dir = depth_dir or image_dirs["multispectral"]
+                if color_dir:
+                    validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
+                if depth_dir:
+                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
+                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                    raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
                 sample_id = str(session_info.get("sampleId") or payload.get("sampleId") or metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
                 fruit_type = session_info.get("fruitType") or payload.get("fruitType") or metadata.get("fruit_type") or metadata.get("fruitType") or ""
                 variety = session_info.get("variety") or payload.get("variety") or metadata.get("variety") or "generic"
@@ -1602,8 +1874,9 @@ def create_unique_sample_folder(save_root: Path, sample_name: str) -> Path:
 
 
 def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = None) -> None:
-    (capture_root / "rgb").mkdir(parents=True, exist_ok=True)
-    (capture_root / "multispectral").mkdir(parents=True, exist_ok=True)
+    image_dirs = image_directory_names_from_payload(metadata or {})
+    (capture_root / image_dirs["rgb"]).mkdir(parents=True, exist_ok=True)
+    (capture_root / image_dirs["multispectral"]).mkdir(parents=True, exist_ok=True)
     (capture_root / "calibration" / "dark").mkdir(parents=True, exist_ok=True)
     (capture_root / "calibration" / "white").mkdir(parents=True, exist_ok=True)
     if metadata is not None:
@@ -1618,6 +1891,10 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
             "save_root_dir": metadata.get("saveRootDir") or "",
             "created_at": metadata.get("createdAt") or "",
             "captured_at": metadata.get("capturedAt") or metadata.get("captured_at") or "",
+            "image_directories": {
+                "rgb": image_dirs["rgb"],
+                "multispectral": image_dirs["multispectral"],
+            },
             "sample_rotation": metadata.get("captureRotationPlan") or metadata.get("sample_rotation") or build_capture_rotation_plan({}),
             "filter_wheel_rotation": {
                 "independent_from_sample_rotation": True,
@@ -1645,8 +1922,9 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_d
         default_root.mkdir(parents=True, exist_ok=True)
         capture_root = create_unique_sample_folder(default_root, sample_id)
     ensure_sample_capture_folder(capture_root, metadata)
-    rgb_dir = capture_root / "rgb"
-    spectral_dir = capture_root / "multispectral"
+    image_dirs = image_directory_names_from_payload(metadata or {})
+    rgb_dir = capture_root / image_dirs["rgb"]
+    spectral_dir = capture_root / image_dirs["multispectral"]
     dark_dir = capture_root / "calibration" / "dark"
     white_dir = capture_root / "calibration" / "white"
     rotation_plan = build_capture_rotation_plan(metadata or {})

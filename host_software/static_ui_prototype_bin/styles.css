@@ -777,6 +777,8 @@ label {
   place-items: center;
   padding: 22px;
   background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .modal-backdrop[hidden] {
@@ -789,6 +791,10 @@ label {
   border-radius: 8px;
   background: var(--panel-strong);
   box-shadow: var(--shadow);
+}
+
+.modal-wide {
+  width: min(920px, 100%);
 }
 
 .modal header,
@@ -812,6 +818,55 @@ label {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   padding: 16px;
+}
+
+.modal-grid.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.folder-select-body {
+  padding: 16px;
+}
+
+.folder-select-body .modal-grid {
+  padding: 0;
+}
+
+.folder-check-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.56);
+}
+
+.folder-check-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 6px;
+  background: rgba(9, 15, 27, 0.44);
+  font-weight: 700;
+}
+
+.folder-check-list input {
+  width: auto;
+  height: auto;
+}
+
+.folder-check-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-note {

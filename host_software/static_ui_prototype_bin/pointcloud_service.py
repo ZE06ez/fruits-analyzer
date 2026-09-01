@@ -69,15 +69,11 @@ def resolve_image_analysis_dirs(
 
     if rgb_dir:
         rgb_path = resolve_child_path(dataset_dir, rgb_dir)
-        if not rgb_path.exists():
-            rgb_path = _find_child_dir(dataset_dir, ("rgb", "color", "image", "images", "彩色图", "彩图"))
     else:
         rgb_path = _find_child_dir(dataset_dir, ("rgb", "color", "image", "images", "彩色图", "彩图"))
 
     if spectral_dir:
         spectral_path = resolve_child_path(dataset_dir, spectral_dir)
-        if not spectral_path.exists():
-            spectral_path = _find_child_dir(dataset_dir, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
     else:
         spectral_path = _find_child_dir(dataset_dir, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms", "多光谱", "窄带"))
 
@@ -290,15 +286,11 @@ def _inspect_sample_folder_by_enabled_bands(
         return report
 
     rgb_path = resolve_child_path(root, rgb_dir) if rgb_dir else _find_child_dir(root, ("rgb", "color", "image", "images"))
-    if rgb_path and not rgb_path.exists():
-        rgb_path = _find_child_dir(root, ("rgb", "color", "image", "images"))
     spectral_path = (
         resolve_child_path(root, spectral_dir)
         if spectral_dir
         else _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms"))
     )
-    if spectral_path and not spectral_path.exists():
-        spectral_path = _find_child_dir(root, ("multispectral", "spectral", "narrowband", "mono", "gray", "ms"))
 
     rgb_name = rgb_path.name if rgb_path else (rgb_dir or "rgb")
     spectral_name = spectral_path.name if spectral_path else (spectral_dir or "multispectral")
