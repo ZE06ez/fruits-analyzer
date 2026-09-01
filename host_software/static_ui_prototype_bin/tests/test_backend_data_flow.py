@@ -70,10 +70,10 @@ class BackendDataFlowTests(unittest.TestCase):
             "saveRootDir": str(self.root / "FruitData"),
         })["sample"]
 
-    def make_dataset(self, name: str) -> Path:
+    def make_dataset(self, name: str, rgb_dir_name: str = "rgb", spectral_dir_name: str = "multispectral") -> Path:
         dataset = self.root / name
-        rgb = dataset / "rgb"
-        spectral = dataset / "multispectral"
+        rgb = dataset / rgb_dir_name
+        spectral = dataset / spectral_dir_name
         rgb.mkdir(parents=True)
         spectral.mkdir()
         Image.new("RGB", (40, 40), (80, 120, 70)).save(rgb / f"{name}_rgb.png")
@@ -172,6 +172,9 @@ class BackendDataFlowTests(unittest.TestCase):
         metadata = json.loads((first_dir / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["fruit_type"], "blueberry")
         self.assertEqual(metadata["variety"], "Duke")
+        self.assertEqual(metadata["image_directories"], {"rgb": "rgb", "multispectral": "multispectral"})
+        self.assertEqual(first["rgbDirName"], "rgb")
+        self.assertEqual(first["multispectralDirName"], "multispectral")
         self.post_json("/api/complete-capture", {})
         status_after_capture = self.get_json("/api/status")
         self.assertTrue(status_after_capture["currentCaptureDir"])
@@ -183,6 +186,63 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertNotEqual(Path(second["currentCaptureDir"]), first_dir)
         self.assertTrue(Path(second["currentCaptureDir"]).exists())
         self.assertFalse(second["analysisDataDir"])
+
+    def test_custom_capture_image_directory_names_are_saved_and_read(self):
+        self.prepare_device()
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "自定义目录01",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+            "rgbDirName": "color_images",
+            "multispectralDirName": "spectral_images",
+        })["sample"]
+        capture_root = Path(sample["currentCaptureDir"])
+
+        self.assertTrue((capture_root / "color_images").is_dir())
+        self.assertTrue((capture_root / "spectral_images").is_dir())
+        self.assertFalse((capture_root / "rgb").exists())
+        self.assertFalse((capture_root / "multispectral").exists())
+
+        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"]})
+        capture_dir = Path(capture["currentCaptureDir"])
+        self.assertEqual(capture["rgbDirName"], "color_images")
+        self.assertEqual(capture["multispectralDirName"], "spectral_images")
+        self.assertTrue((capture_dir / "color_images" / "rgb_001.png").is_file())
+        self.assertTrue((capture_dir / "spectral_images" / "450.png").is_file())
+
+        metadata = json.loads((capture_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["image_directories"], {"rgb": "color_images", "multispectral": "spectral_images"})
+
+        report = self.get_json("/api/sample-folder", {"datasetDir": str(capture_dir), "source": "current"})
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["rgbDirName"], "color_images")
+        self.assertEqual(report["multispectralDirName"], "spectral_images")
+        self.assertEqual(report["sampleMetadata"]["image_directories"]["rgb"], "color_images")
+
+        images = self.get_json("/api/dataset-images", {"datasetDir": str(capture_dir)})
+        self.assertEqual(images["rgbDirName"], "color_images")
+        self.assertEqual(images["multispectralDirName"], "spectral_images")
+        self.assertTrue(images["images"])
+
+    def test_image_directory_name_validation_rejects_empty_duplicate_and_illegal_values(self):
+        self.prepare_device()
+        base = {
+            "sampleName": "非法目录名",
+            "fruitType": "blueberry",
+            "saveRootDir": str(self.root / "FruitData"),
+        }
+        invalid_payloads = [
+            {**base, "rgbDirName": "", "multispectralDirName": "spectral_images"},
+            {**base, "rgbDirName": "same", "multispectralDirName": "same"},
+            {**base, "rgbDirName": "color/images", "multispectralDirName": "spectral_images"},
+            {**base, "rgbDirName": "color_images", "multispectralDirName": "bad:name"},
+            {**base, "rgbDirName": ".", "multispectralDirName": "spectral_images"},
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.post_json("/api/new-sample", payload)
 
     def test_quality_models_catalog_and_analysis_model_selection_scope(self):
         self.insert_model("duke_ssc", target="ssc", fruit_type="blueberry", variety="Duke", status="Default", is_default=1)
@@ -293,6 +353,87 @@ class BackendDataFlowTests(unittest.TestCase):
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
         self.assertEqual(Path(job["result"]["datasetDir"]), capture_dir)
+
+    def test_inspect_image_folders_lists_direct_children_and_suggests_roles(self):
+        dataset = self.make_dataset("folder_scan", "color_images", "spectral_images")
+        (dataset / "calibration").mkdir()
+        (dataset / "mask").mkdir()
+        nested = dataset / "nested"
+        (nested / "rgb").mkdir(parents=True)
+
+        result = self.get_json("/api/inspect-image-folders", {"parentDir": str(dataset)})
+        names = [item["name"] for item in result["directories"]]
+        roles = {item["name"]: item["suggestedRole"] for item in result["directories"]}
+
+        self.assertIn("color_images", names)
+        self.assertIn("spectral_images", names)
+        self.assertIn("calibration", names)
+        self.assertIn("mask", names)
+        self.assertIn("nested", names)
+        self.assertNotIn("rgb", names)
+        self.assertEqual(roles["color_images"], "rgb")
+        self.assertEqual(roles["spectral_images"], "multispectral")
+        self.assertEqual(roles["calibration"], "other")
+
+    def test_manual_parent_selection_can_store_custom_and_other_directories(self):
+        self.create_sample("手动目录选择01")
+        dataset = self.make_dataset("manual_custom", "color_images", "spectral_images")
+        (dataset / "calibration").mkdir()
+        (dataset / "mask").mkdir()
+
+        report = self.get_json(
+            "/api/sample-folder",
+            {
+                "datasetDir": str(dataset),
+                "source": "other",
+                "colorDir": "color_images",
+                "depthDir": "spectral_images",
+                "otherDirs": "calibration,mask",
+                "strictImageDirs": "1",
+            },
+        )
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["rgbDirName"], "color_images")
+        self.assertEqual(report["multispectralDirName"], "spectral_images")
+        self.assertEqual(report["otherImageDirs"], ["calibration", "mask"])
+
+        status = self.get_json("/api/status")
+        self.assertEqual(Path(status["analysisDataDir"]), dataset)
+        self.assertEqual(status["rgbDirName"], "color_images")
+        self.assertEqual(status["multispectralDirName"], "spectral_images")
+        self.assertEqual(status["otherImageDirs"], ["calibration", "mask"])
+
+        ssc = self.post_json("/api/predict-ssc")
+        self.assertEqual(Path(ssc["sample"]["analysis_data_dir"]), dataset)
+        self.assertEqual(ssc["result"]["status"], "model_missing")
+
+    def test_manual_directory_validation_rejects_same_missing_and_parent_escape(self):
+        self.create_sample("手动目录非法01")
+        dataset = self.make_dataset("manual_invalid", "color_images", "spectral_images")
+        invalid_params = [
+            {"colorDir": "", "depthDir": "spectral_images"},
+            {"colorDir": "color_images", "depthDir": "color_images"},
+            {"colorDir": "missing", "depthDir": "spectral_images"},
+            {"colorDir": "..", "depthDir": "spectral_images"},
+            {"colorDir": "../outside", "depthDir": "spectral_images"},
+        ]
+        for params in invalid_params:
+            with self.subTest(params=params):
+                with self.assertRaises(urllib.error.HTTPError):
+                    query = {
+                        "datasetDir": str(dataset),
+                        "source": "other",
+                        "strictImageDirs": "1",
+                        **params,
+                    }
+                    self.get_json("/api/sample-folder", query)
+
+    def test_legacy_rgb_multispectral_dataset_still_reads_without_explicit_directories(self):
+        dataset = self.make_dataset("legacy_dataset")
+        report = self.get_json("/api/sample-folder", {"datasetDir": str(dataset), "source": "other"})
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["rgbDirName"], "rgb")
+        self.assertEqual(report["multispectralDirName"], "multispectral")
 
     def test_manual_folder_shape_analysis_does_not_require_current_sample(self):
         dataset = self.make_dataset("manual_shape_only")

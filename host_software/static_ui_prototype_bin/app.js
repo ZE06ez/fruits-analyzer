@@ -13,6 +13,9 @@ const state = {
   currentCaptureDir: "",
   currentCaptureValid: false,
   analysisDataDir: "",
+  rgbDirName: "rgb",
+  multispectralDirName: "multispectral",
+  otherImageDirs: [],
   captureStarted: false,
   calibrationStatus: "pending",
   devicePrep: {
@@ -782,6 +785,157 @@ function directoryNameForInput(value = "", fallback = "") {
   return parts.at(-1) || fallback;
 }
 
+function validateImageDirName(name, label) {
+  const value = String(name || "").trim();
+  if (!value) return `${label}不能为空。`;
+  if (value === "." || value === "..") return `${label}不能是 . 或 ..。`;
+  if (/[\\/:*?"<>|]/.test(value)) return `${label}不能包含路径分隔符或 Windows 非法字符。`;
+  return "";
+}
+
+function applyImageDirNames({ rgbDirName = "rgb", multispectralDirName = "multispectral", otherImageDirs = state.otherImageDirs } = {}) {
+  state.rgbDirName = rgbDirName || "rgb";
+  state.multispectralDirName = multispectralDirName || "multispectral";
+  state.otherImageDirs = Array.isArray(otherImageDirs) ? otherImageDirs : [];
+  if ($("#colorDir")) $("#colorDir").value = state.rgbDirName;
+  if ($("#depthDir")) $("#depthDir").value = state.multispectralDirName;
+}
+
+function imageDirSettingsDefaults() {
+  return {
+    rgbDirName: state.rgbDirName || $("#colorDir")?.value || "rgb",
+    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+  };
+}
+
+let imageDirSettingsResolver = null;
+function closeImageDirSettingsModal(result = null) {
+  const modal = $("#imageDirSettingsModal");
+  if (modal) modal.hidden = true;
+  const resolver = imageDirSettingsResolver;
+  imageDirSettingsResolver = null;
+  if (resolver) resolver(result);
+}
+
+function openImageDirSettingsModal(defaults = imageDirSettingsDefaults()) {
+  const modal = $("#imageDirSettingsModal");
+  if (!modal) return Promise.resolve(defaults);
+  $("#captureRgbDirName").value = defaults.rgbDirName || "rgb";
+  $("#captureMultispectralDirName").value = defaults.multispectralDirName || "multispectral";
+  setText("imageDirSettingsHint", "目录名称只保存文件夹名，不能包含路径分隔符或 Windows 非法字符。");
+  modal.hidden = false;
+  $("#captureRgbDirName")?.focus();
+  return new Promise((resolve) => {
+    imageDirSettingsResolver = resolve;
+  });
+}
+
+function confirmImageDirSettingsModal() {
+  const rgbDirName = $("#captureRgbDirName")?.value.trim() || "";
+  const multispectralDirName = $("#captureMultispectralDirName")?.value.trim() || "";
+  const error = validateImageDirName(rgbDirName, "RGB 图像文件夹名称")
+    || validateImageDirName(multispectralDirName, "多光谱图像文件夹名称")
+    || (rgbDirName.toLowerCase() === multispectralDirName.toLowerCase() ? "RGB 和多光谱目录名称不能相同。" : "");
+  if (error) {
+    setText("imageDirSettingsHint", error);
+    return;
+  }
+  closeImageDirSettingsModal({ rgbDirName, multispectralDirName });
+}
+
+function selectSuggestedDir(directories, role) {
+  return (directories || []).find((item) => item.suggestedRole === role)?.name || "";
+}
+
+function fillFolderSelect(selector, directories, selected = "") {
+  const select = $(selector);
+  if (!select) return;
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "请选择目录";
+  select.appendChild(placeholder);
+  (directories || []).forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = `${item.name} · ${Number(item.imageCount || 0)} 张`;
+    select.appendChild(option);
+  });
+  select.value = selected || "";
+}
+
+function renderOtherFolderOptions(directories, selected = []) {
+  const container = $("#folderSelectOtherDirs");
+  if (!container) return;
+  container.innerHTML = "";
+  const selectedSet = new Set(selected);
+  (directories || []).forEach((item) => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    const text = document.createElement("span");
+    input.type = "checkbox";
+    input.value = item.name;
+    input.checked = selectedSet.has(item.name);
+    text.textContent = item.name;
+    text.title = item.name;
+    label.appendChild(input);
+    label.appendChild(text);
+    container.appendChild(label);
+  });
+}
+
+let imageFolderSelectResolver = null;
+function closeImageFolderSelectModal(result = null) {
+  const modal = $("#imageFolderSelectModal");
+  if (modal) modal.hidden = true;
+  const resolver = imageFolderSelectResolver;
+  imageFolderSelectResolver = null;
+  if (resolver) resolver(result);
+}
+
+function openImageFolderSelectModal(inspectResult = {}) {
+  const modal = $("#imageFolderSelectModal");
+  if (!modal) return Promise.resolve(null);
+  const directories = inspectResult.directories || [];
+  const suggestedRgb = selectSuggestedDir(directories, "rgb");
+  const suggestedSpectral = selectSuggestedDir(directories, "multispectral");
+  const otherDefaults = directories
+    .filter((item) => item.suggestedRole === "other")
+    .map((item) => item.name);
+  setPathDisplay("#folderSelectParentDir", inspectResult.parentDir || "");
+  fillFolderSelect("#folderSelectRgbDir", directories, suggestedRgb);
+  fillFolderSelect("#folderSelectMultispectralDir", directories, suggestedSpectral);
+  renderOtherFolderOptions(directories, otherDefaults);
+  setText("imageFolderSelectHint", suggestedRgb && suggestedSpectral ? "已根据目录名给出默认建议，确认前可手动调整。" : "未完整匹配到 RGB 或多光谱目录，请手动选择。");
+  modal.hidden = false;
+  $("#folderSelectRgbDir")?.focus();
+  return new Promise((resolve) => {
+    imageFolderSelectResolver = resolve;
+  });
+}
+
+function confirmImageFolderSelectModal() {
+  const rgbDirName = $("#folderSelectRgbDir")?.value || "";
+  const multispectralDirName = $("#folderSelectMultispectralDir")?.value || "";
+  if (!rgbDirName || !multispectralDirName) {
+    setText("imageFolderSelectHint", "RGB 图像目录和多光谱图像目录都必须选择。");
+    return;
+  }
+  if (rgbDirName === multispectralDirName) {
+    setText("imageFolderSelectHint", "RGB 图像目录和多光谱图像目录不能相同。");
+    return;
+  }
+  const otherImageDirs = Array.from(document.querySelectorAll("#folderSelectOtherDirs input:checked"))
+    .map((input) => input.value)
+    .filter((name) => name && name !== rgbDirName && name !== multispectralDirName);
+  closeImageFolderSelectModal({ rgbDirName, multispectralDirName, otherImageDirs });
+}
+
+async function inspectImageFolders(parentDir) {
+  const query = new URLSearchParams({ parentDir });
+  return api(`/api/inspect-image-folders?${query.toString()}`);
+}
+
 function updateShapeRunButtonState() {
   const runButton = $("#runShapeAnalysis");
   if (!runButton || state.shapeJobId) return;
@@ -1306,11 +1460,21 @@ async function completeCurrentCapture() {
     }
     const payload = await api("/api/complete-capture", {
       method: "POST",
-      body: JSON.stringify({ sampleId: $("#sampleId")?.value || "", sampleRotation: rotationSettings }),
+      body: JSON.stringify({
+        sampleId: $("#sampleId")?.value || "",
+        sampleRotation: rotationSettings,
+        rgbDirName: state.rgbDirName || "rgb",
+        multispectralDirName: state.multispectralDirName || "multispectral",
+      }),
     });
     state.currentCaptureDir = payload.currentCaptureDir || "";
     state.currentCaptureValid = Boolean(state.currentCaptureDir);
     state.analysisDataDir = payload.analysisDataDir || state.currentCaptureDir;
+    applyImageDirNames({
+      rgbDirName: payload.rgbDirName || payload.colorDir || state.rgbDirName,
+      multispectralDirName: payload.multispectralDirName || payload.depthDir || state.multispectralDirName,
+      otherImageDirs: [],
+    });
     state.captureRotationPlan = payload.captureRotationPlan || state.captureRotationPlan;
     renderRotationPlan(state.captureRotationPlan);
     setText("captureSaveStatus", state.currentCaptureValid ? `本次拍摄已保存: ${state.currentCaptureDir}` : "本次拍摄数据未生成");
@@ -1354,8 +1518,10 @@ async function enterAnalysisFromCapture() {
 function qualityPayload() {
   return {
     datasetDir: state.analysisDataDir,
-    colorDir: $("#colorDir")?.value || "rgb",
-    depthDir: $("#depthDir")?.value || "multispectral",
+    colorDir: state.rgbDirName || $("#colorDir")?.value || "rgb",
+    depthDir: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+    rgbDirName: state.rgbDirName || $("#colorDir")?.value || "rgb",
+    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
     sampleId: $("#sampleId")?.value || "",
     fruitType: state.fruitType || "",
     variety: state.variety || "generic",
@@ -1383,6 +1549,14 @@ function applyLoadedSampleMetadata(metadata = {}) {
   const variety = metadata.variety || "";
   const sampleName = metadata.sample_name || metadata.sampleName || "";
   const sampleId = metadata.sample_id || metadata.sampleId || "";
+  const imageDirs = metadata.image_directories || {};
+  if (imageDirs.rgb || imageDirs.multispectral) {
+    applyImageDirNames({
+      rgbDirName: imageDirs.rgb || state.rgbDirName || "rgb",
+      multispectralDirName: imageDirs.multispectral || state.multispectralDirName || "multispectral",
+      otherImageDirs: state.otherImageDirs,
+    });
+  }
   if (fruitType) state.fruitType = fruitType;
   if (variety) state.variety = variety;
   if (state.hasSample && !state.sampleName && sampleName) state.sampleName = sampleName;
@@ -1576,6 +1750,8 @@ async function createNewSample() {
     fruitType: $("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "",
     variety: $("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic",
     sampleRotation: rotationSettings,
+    rgbDirName: state.rgbDirName || "rgb",
+    multispectralDirName: state.multispectralDirName || "multispectral",
   };
   const response = await api("/api/new-sample", { method: "POST", body: JSON.stringify(payload) });
   applySampleSessionState(response.sample || {});
@@ -1597,6 +1773,11 @@ function applySampleSessionState(sample = {}) {
   state.currentCaptureDir = sample.currentCaptureDir || "";
   state.currentCaptureValid = Boolean(sample.currentCaptureValid && state.currentCaptureDir);
   state.analysisDataDir = sample.analysisDataDir || "";
+  applyImageDirNames({
+    rgbDirName: sample.rgbDirName || sample.colorDir || state.rgbDirName || "rgb",
+    multispectralDirName: sample.multispectralDirName || sample.depthDir || state.multispectralDirName || "multispectral",
+    otherImageDirs: sample.otherImageDirs || state.otherImageDirs || [],
+  });
   state.captureStarted = Boolean(sample.captureStarted);
   state.fruitType = sample.fruitType || "";
   state.variety = sample.variety || "generic";
@@ -1623,10 +1804,16 @@ async function chooseSaveRoot() {
     const payload = await selectFolderPath({ purpose: "save", initial: state.saveRootDir || $("#saveRootDir")?.value || "" });
     const selected = payload.path || payload.saveRootDir || "";
     if (selected) {
+      const dirs = await openImageDirSettingsModal(imageDirSettingsDefaults());
+      if (!dirs) {
+        addLog("用户取消图像目录名称设置，已保留原保存位置。", "WARN");
+        return;
+      }
+      applyImageDirNames(dirs);
       state.saveRootDir = selected;
       setPathDisplay("#saveRootDir", selected);
-      setText("sampleCreateStatus", "保存位置已选择");
-      addLog(`样品保存位置已选择: ${selected}`);
+      setText("sampleCreateStatus", "保存位置和图像目录已选择");
+      addLog(`样品保存位置已选择: ${selected}；RGB=${state.rgbDirName}，多光谱=${state.multispectralDirName}`);
     }
   } catch (error) {
     if (error.payload?.cancelled) {
@@ -1817,7 +2004,19 @@ async function selectDataset() {
     setText("shapeStepLabel", "打开其他文件夹选择器");
     const payload = await selectFolderPath({ purpose: "sample", initial: state.analysisDataDir || state.currentCaptureDir || state.saveRootDir || "" });
     if (payload.path) {
-      await loadSampleFolder(payload.path, { source: "other" });
+      const inspected = await inspectImageFolders(payload.path);
+      const selection = await openImageFolderSelectModal(inspected);
+      if (!selection) {
+        addLog("用户取消图像子目录选择，已保留原数据来源。", "WARN");
+        return;
+      }
+      await loadSampleFolder(payload.path, {
+        source: "other",
+        colorDir: selection.rgbDirName,
+        depthDir: selection.multispectralDirName,
+        otherDirs: selection.otherImageDirs,
+        strictImageDirs: true,
+      });
     }
   } catch (error) {
     if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) {
@@ -1919,13 +2118,22 @@ async function handleDataSourceChange(source) {
   }
 }
 
-async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) {
+async function loadSampleFolder(datasetDir, {
+  source = state.dataSource,
+  colorDir = state.rgbDirName || $("#colorDir")?.value || "rgb",
+  depthDir = state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+  otherDirs = state.otherImageDirs || [],
+  strictImageDirs = false,
+} = {}) {
   const target = datasetDir || "";
   state.analysisDataDir = target;
   setDataSource(source);
   setPathDisplay("#datasetDir", target);
-  $("#colorDir").value = $("#colorDir").value || "rgb";
-  $("#depthDir").value = $("#depthDir").value || "multispectral";
+  applyImageDirNames({
+    rgbDirName: colorDir || state.rgbDirName || "rgb",
+    multispectralDirName: depthDir || state.multispectralDirName || "multispectral",
+    otherImageDirs: otherDirs,
+  });
 
   if (!target) {
     state.imageBrowser.images = [];
@@ -1950,8 +2158,12 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
 
   const query = new URLSearchParams({
     datasetDir: target,
-    colorDir: $("#colorDir")?.value || "",
-    depthDir: $("#depthDir")?.value || "",
+    colorDir: colorDir || "",
+    depthDir: depthDir || "",
+    rgbDirName: colorDir || "",
+    multispectralDirName: depthDir || "",
+    otherDirs: Array.isArray(otherDirs) ? otherDirs.join(",") : "",
+    strictImageDirs: strictImageDirs ? "1" : "0",
     source,
   });
   const report = await api(`/api/sample-folder?${query.toString()}`);
@@ -1962,8 +2174,11 @@ async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) 
     state.currentCaptureValid = false;
     updateCurrentCaptureControls();
   }
-  if (report.colorDir) $("#colorDir").value = directoryNameForInput(report.colorDir, $("#colorDir")?.value || "rgb");
-  if (report.depthDir) $("#depthDir").value = directoryNameForInput(report.depthDir, $("#depthDir")?.value || "multispectral");
+  applyImageDirNames({
+    rgbDirName: report.rgbDirName || directoryNameForInput(report.colorDir, colorDir || "rgb"),
+    multispectralDirName: report.multispectralDirName || directoryNameForInput(report.depthDir, depthDir || "multispectral"),
+    otherImageDirs: report.otherImageDirs || otherDirs,
+  });
   if (report.valid || Number(report.rgbCount || 0) > 0) {
     await loadDatasetImages(target);
     setStepStatus("load-rgbd", report.valid ? "done" : "warning");
@@ -2008,15 +2223,20 @@ async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datas
   }
   const query = new URLSearchParams({
     datasetDir,
-    colorDir: $("#colorDir")?.value || "",
-    depthDir: $("#depthDir")?.value || "",
+    colorDir: state.rgbDirName || $("#colorDir")?.value || "",
+    depthDir: state.multispectralDirName || $("#depthDir")?.value || "",
+    rgbDirName: state.rgbDirName || $("#colorDir")?.value || "",
+    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "",
   });
   try {
     const payload = await api(`/api/dataset-images?${query.toString()}`);
     state.imageBrowser.images = payload.images || [];
     state.imageBrowser.index = 0;
-    if (payload.colorDir) $("#colorDir").value = directoryNameForInput(payload.colorDir, $("#colorDir")?.value || "rgb");
-    if (payload.depthDir) $("#depthDir").value = directoryNameForInput(payload.depthDir, $("#depthDir")?.value || "multispectral");
+    applyImageDirNames({
+      rgbDirName: payload.rgbDirName || directoryNameForInput(payload.colorDir, state.rgbDirName || "rgb"),
+      multispectralDirName: payload.multispectralDirName || directoryNameForInput(payload.depthDir, state.multispectralDirName || "multispectral"),
+      otherImageDirs: state.otherImageDirs,
+    });
     renderDatasetImage();
     updateSampleSessionFromImages();
     setStepStatus("image-review", state.imageBrowser.images.length ? "done" : "warning");
@@ -2095,8 +2315,10 @@ async function runShapeAnalysis() {
       method: "POST",
       body: JSON.stringify({
         datasetDir: state.analysisDataDir || $("#datasetDir")?.value || "",
-        colorDir: $("#colorDir")?.value || "",
-        depthDir: $("#depthDir")?.value || "",
+        colorDir: state.rgbDirName || $("#colorDir")?.value || "",
+        depthDir: state.multispectralDirName || $("#depthDir")?.value || "",
+        rgbDirName: state.rgbDirName || $("#colorDir")?.value || "",
+        multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "",
         fx: camera.fx,
         fy: camera.fy,
         cx: camera.cx,
@@ -2377,6 +2599,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#closeSampleModal")?.addEventListener("click", closeSampleModal);
   $("#cancelNewSample")?.addEventListener("click", closeSampleModal);
   $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
+  $("#closeImageDirSettingsModal")?.addEventListener("click", () => closeImageDirSettingsModal(null));
+  $("#cancelImageDirSettings")?.addEventListener("click", () => closeImageDirSettingsModal(null));
+  $("#confirmImageDirSettings")?.addEventListener("click", confirmImageDirSettingsModal);
+  $("#closeImageFolderSelectModal")?.addEventListener("click", () => closeImageFolderSelectModal(null));
+  $("#cancelImageFolderSelect")?.addEventListener("click", () => closeImageFolderSelectModal(null));
+  $("#confirmImageFolderSelect")?.addEventListener("click", confirmImageFolderSelectModal);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!$("#imageFolderSelectModal")?.hidden) closeImageFolderSelectModal(null);
+    else if (!$("#imageDirSettingsModal")?.hidden) closeImageDirSettingsModal(null);
+    else if (!$("#sampleModal")?.hidden) closeSampleModal();
+  });
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   [
@@ -2424,11 +2658,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll('input[name="dataSource"]').forEach((input) => {
     input.addEventListener("change", (event) => handleDataSourceChange(event.target.value));
   });
-  ["#colorDir", "#depthDir"].forEach((selector) => {
-    $(selector)?.addEventListener("change", () => {
-      if (state.analysisDataDir) loadSampleFolder(state.analysisDataDir, { source: state.dataSource });
-    });
-  });
   $("#enterAnalysisFromCapture")?.addEventListener("click", enterAnalysisFromCapture);
   $("#selectDataset")?.addEventListener("click", selectDataset);
   $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
@@ -2475,6 +2704,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.currentCaptureDir = status.currentCaptureDir || "";
     state.currentCaptureValid = Boolean(status.currentCaptureValid && state.currentCaptureDir);
     state.analysisDataDir = status.analysisDataDir || status.sampleDataset || "";
+    applyImageDirNames({
+      rgbDirName: status.rgbDirName || status.colorDir || "rgb",
+      multispectralDirName: status.multispectralDirName || status.depthDir || "multispectral",
+      otherImageDirs: status.otherImageDirs || [],
+    });
     await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
     if ($("#qualityFruitType") && state.fruitType) $("#qualityFruitType").value = state.fruitType;
     if ($("#qualityVariety") && state.variety) $("#qualityVariety").value = state.variety;

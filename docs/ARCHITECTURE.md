@@ -52,7 +52,8 @@ launcher.py
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
 | 主 UI | `index.html` | 页面结构 | 用户操作 | 显示工作站 | `app.js` |
 | 主 UI 状态机 | `app.js` | `state`, `api()`, `getModuleLayoutMode()`, `applyModuleLayout()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、采集/分析布局切换、报告 TXT | Browser APIs |
-| 目录检查 | `pointcloud_service.py` | `inspect_sample_folder()`, `_inspect_sample_folder_by_enabled_bands()` | 样品目录、rgb/multispectral 子目录名 | 数据质量报告 | PIL, quality_algorithm |
+| 图像子目录扫描 | `backend_server.py` | `inspect_image_folders()`, `validate_image_dir_name()`, `validate_direct_child_dir()` | 样品父目录、用户选择的一级子目录名 | 子目录列表、建议角色、目录名校验 | pathlib, pointcloud_service |
+| 目录检查 | `pointcloud_service.py` | `inspect_sample_folder()`, `_inspect_sample_folder_by_enabled_bands()` | 样品目录、RGB/多光谱子目录名 | 数据质量报告 | PIL, quality_algorithm |
 | 形态分析 | `pointcloud_service.py` | `analyze_rgbd_dataset()`, `analyze_rgb_multispectral_sample()` | 样品目录、输出目录、相机内参 | 形态/表面结果、预览图 | numpy, PIL |
 | 旧点云兼容 | `pointcloud_service.py`, `pipeline_v2.py` | `analyze_with_pipeline_v2()`, `reconstruct_sfm()` | RGB-D 目录或 PLY | PLY、点云指标 | OpenCV 可选 |
 | 光谱配置 | `quality_algorithm/filters.py` | `FilterBand`, `load_filter_config()`, `enabled_bands()` | JSON 配置 | 启用波段列表 | json |
@@ -122,15 +123,15 @@ app.js createNewSample()
 
 ```text
 <save_root>/<YYYYMMDD_HHMMSS>_<sample_name>/
-  rgb/
-  multispectral/
+  <rgbDirName>/              # 默认 rgb，可在保存前设置
+  <multispectralDirName>/    # 默认 multispectral，可在保存前设置
   calibration/dark/
   calibration/white/
   metadata.json
   views.json
 ```
 
-`metadata.json` 中 `sample_rotation` 是样品台多视角计划；`filter_wheel_rotation` 是滤光片转轮波段切换说明。两者控制域独立，不能混用。
+`metadata.json.image_directories` 保存本次实际使用的 RGB 与多光谱子目录名。`sample_rotation` 是样品台多视角计划；`filter_wheel_rotation` 是滤光片转轮波段切换说明。两者控制域独立，不能混用。
 
 ### 路径选择
 
@@ -140,6 +141,12 @@ Main UI / Model Studio readonly path display
   -> select_directory_dialog()
   -> validate_folder_path()
   -> {path, pathStatus}
+
+Manual sample folder selection
+  -> GET /api/select-folder?purpose=sample
+  -> GET /api/inspect-image-folders?parentDir=<selected>
+  -> user selects RGB + multispectral direct children
+  -> GET /api/sample-folder?datasetDir=<parent>&colorDir=<rgbDirName>&depthDir=<multispectralDirName>&strictImageDirs=1
 
 Model Studio labels.csv
   -> GET /api/select-file?purpose=labels-csv
@@ -166,8 +173,8 @@ app.js completeCurrentCapture()
 当前写入模拟文件：
 
 ```text
-rgb/rgb_001.png ... rgb_003.png
-multispectral/450.png, 560.png, 670.png
+<rgbDirName>/rgb_001.png ... rgb_003.png
+<multispectralDirName>/450.png, 560.png, 670.png
 calibration/dark/dark_001.png ...
 calibration/white/white_001.png ...
 metadata.json
@@ -176,11 +183,11 @@ metadata.json
 启用样品多角度旋转拍摄时，为兼容当前非递归图片读取，仍保持单层目录：
 
 ```text
-rgb/rgb_view_000.png
-rgb/rgb_view_045.png
-multispectral/view000_450.png
-multispectral/view000_560.png
-multispectral/view045_450.png
+<rgbDirName>/rgb_view_000.png
+<rgbDirName>/rgb_view_045.png
+<multispectralDirName>/view000_450.png
+<multispectralDirName>/view000_560.png
+<multispectralDirName>/view045_450.png
 ...
 views.json
 metadata.json

@@ -2,6 +2,23 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-01 图像保存与读取目录名可配置
+
+- 修改内容：主程序保存父目录选择后新增“图像目录名称设置”模态框，允许设置 RGB 与多光谱子目录名；本次拍摄目录继续自动导入并优先使用 session/metadata 中的实际目录名；手动选择其他样品时新增父目录一级子目录扫描和子目录选择模态框，确认后再检查和分析。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/pointcloud_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：避免把 RGB/多光谱目录名称固定为 `rgb` 和 `multispectral`，同时保留旧数据默认兼容，并让用户通过选择器而不是手动路径输入指定图像目录。
+- 是否影响原有功能：默认目录名仍为 `rgb`/`multispectral`；原有旧数据仍可读取；本次拍摄自动导入保留；手动选择其他目录时需要确认一级子目录。
+
 ## 2026-09-01 STM32 硬件层与样品多角度拍摄合并
 
 - 修改内容：在同一整合分支中同时保留 zdyzzddy 的 STM32 两字节串口硬件层和本地样品多角度旋转拍摄计划；主 UI 可刷新串口、连接/断开 STM32、执行硬件通信自检、滤光轮寻零自检、急停和清故障，同时采集页保留样品台多视角角度计划。

@@ -62,7 +62,7 @@
 UI
   -> backend_server.py / SessionState / JobStore
   -> 样品目录 Data/<timestamp>_<sample_name> 或用户选择目录
-  -> rgb/ + multispectral/ + calibration/dark + calibration/white + metadata.json
+  -> RGB 子目录 + 多光谱子目录 + calibration/dark + calibration/white + metadata.json
   -> pointcloud_service.py 形态/表面分析
   -> quality_algorithm.spectral_features 提取多光谱特征
   -> quality_prediction.predict_ssc/predict_ta/predict_ph
@@ -96,13 +96,13 @@ UI
 4. 用户进行设备准备页面的连接检查、电机自检、光源自检、相机自检和标定检查：串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；相机自检、光源波段按钮和样品台控制仍主要是离线流程记录。
 5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
 6. 可在“样品采集”页设置样品台多角度旋转拍摄：启用/关闭、期望角度间隔、起始角度、CW/CCW、是否补拍闭合角度。该设置属于 `sample_rotation`，不等同于滤光片转轮角度。
-7. 完成设备准备后点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json`，并创建 `rgb/`、`multispectral/`、`calibration/dark/`、`calibration/white/`。
+7. 完成设备准备并选择保存父目录后，前端弹出“图像目录名称设置”；用户确认 RGB 图像目录名和多光谱图像目录名后，点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json.image_directories`，并创建实际 RGB 子目录、实际多光谱子目录、`calibration/dark/`、`calibration/white/`。默认仍为 `rgb/` 和 `multispectral/`。
 8. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
 9. 用户点击采集步骤：当前只更新 UI 进度与日志；采集开始后旋转计划锁定。
-10. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`。未启用多角度时保持旧离线单层文件；启用多角度时写 `rgb/rgb_view_000.png`、`multispectral/view000_450.png` 等兼容命名文件，并写 `views.json` 和 metadata 中的 `capture_views`。
+10. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`，按当前 session/metadata 中的实际目录名写入图片。未启用多角度时保持旧离线单层文件命名；启用多角度时写 `<rgbDirName>/rgb_view_000.png`、`<multispectralDirName>/view000_450.png` 等兼容命名文件，并写 `views.json` 和 metadata 中的 `capture_views`。
 11. 采集完成后样品旋转计划标记 `returned_home=true`、`home_status=HOME_OK`；当前只是模拟回 Home，不代表真实电机已接入。
 12. 进入 `shape/sugar/acid/taste` 分析模块时，主程序中央区切换为分析布局：隐藏 RGB/多光谱相机预览面板，并让分析内容占用中央空间；设备准备、采集和设置模块仍保留双相机预览。
-13. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
+13. 形态分析页可选择“本次拍摄”或“其他文件夹”。本次拍摄会自动使用当前 session/metadata 中的实际图像目录名，不再弹出选择框；其他文件夹通过系统目录选择器先选择父目录，再由 `/api/inspect-image-folders` 扫描一级子目录并弹出子目录选择框，确认 RGB/多光谱/其他目录后才调用 `GET /api/sample-folder` 检查。本地已有样品目录可以直接分析，不强制先创建当前样品。
 14. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
 15. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
 16. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
@@ -180,7 +180,7 @@ UI
 | 样品创建与目录结构 | DONE | 设备准备完成后，`/api/new-sample` 创建目录和 `metadata.json` |
 | 本次拍摄目录进入分析流程 | PARTIAL/MOCK | 会自动设为 `analysisDataDir`，但图片由离线函数生成 |
 | 样品多角度旋转拍摄计划 | DONE/MOCK | `rotation_plan.py` 计算视角、实际间隔、闭合 View 和 Home 状态；当前无真实样品台电机 |
-| 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 系统目录选择器选择其他样品目录，再由 `/api/sample-folder` 检查 |
+| 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 选择父目录，再用 `/api/inspect-image-folders` 扫描一级子目录；用户确认 RGB/多光谱目录后由 `/api/sample-folder` 检查 |
 | 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
 | RGB + 多光谱目录检查 | DONE | `inspect_sample_folder()` 按启用波段检查 |

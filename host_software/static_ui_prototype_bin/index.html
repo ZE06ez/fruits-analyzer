@@ -366,9 +366,9 @@
                 <label for="datasetDir">样品文件夹</label>
                 <input id="datasetDir" value="" placeholder="请选择本次拍摄的样品文件夹" readonly />
                 <label for="colorDir">RGB 图像目录名</label>
-                <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" />
+                <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" readonly />
                 <label for="depthDir">多光谱图像目录名</label>
-                <input id="depthDir" value="multispectral" placeholder="例如 multispectral、spectral" />
+                <input id="depthDir" value="multispectral" placeholder="例如 multispectral、spectral" readonly />
                 <div class="data-check-card" id="dataCheckCard" data-status="empty">
                   <strong id="dataCheckTitle">暂无数据目录</strong>
                   <span id="dataCheckSummary">请选择本次拍摄或其他文件夹。</span>
@@ -631,6 +631,63 @@
         <footer>
           <button id="cancelNewSample" type="button">取消</button>
           <button class="primary-action" id="createNewSample" type="button">创建样品</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="imageDirSettingsModal" hidden>
+      <section class="modal">
+        <header>
+          <div>
+            <p class="eyebrow">Capture Storage</p>
+            <h3>图像目录名称设置</h3>
+          </div>
+          <button id="closeImageDirSettingsModal" type="button">关闭</button>
+        </header>
+        <div class="modal-grid two-col">
+          <label>RGB 图像文件夹名称 *
+            <input id="captureRgbDirName" value="rgb" placeholder="rgb" />
+          </label>
+          <label>多光谱图像文件夹名称 *
+            <input id="captureMultispectralDirName" value="multispectral" placeholder="multispectral" />
+          </label>
+        </div>
+        <p class="modal-note" id="imageDirSettingsHint">目录名称只保存文件夹名，不能包含路径分隔符或 Windows 非法字符。</p>
+        <footer>
+          <button id="cancelImageDirSettings" type="button">取消</button>
+          <button class="primary-action" id="confirmImageDirSettings" type="button">确认</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="imageFolderSelectModal" hidden>
+      <section class="modal modal-wide">
+        <header>
+          <div>
+            <p class="eyebrow">Image Folders</p>
+            <h3>选择图像子目录</h3>
+          </div>
+          <button id="closeImageFolderSelectModal" type="button">关闭</button>
+        </header>
+        <div class="folder-select-body">
+          <label>父文件夹
+            <input id="folderSelectParentDir" readonly />
+          </label>
+          <div class="modal-grid two-col">
+            <label>RGB 图像目录 *
+              <select id="folderSelectRgbDir"></select>
+            </label>
+            <label>多光谱图像目录 *
+              <select id="folderSelectMultispectralDir"></select>
+            </label>
+          </div>
+          <label>其他相关目录</label>
+          <div class="folder-check-list" id="folderSelectOtherDirs"></div>
+        </div>
+        <p class="modal-note" id="imageFolderSelectHint">系统会根据目录名给出默认建议，确认前可手动调整。</p>
+        <footer>
+          <button id="cancelImageFolderSelect" type="button">取消</button>
+          <button class="primary-action" id="confirmImageFolderSelect" type="button">确认读取</button>
         </footer>
       </section>
     </div>
