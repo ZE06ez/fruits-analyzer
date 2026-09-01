@@ -1,1939 +1,1933 @@
-const state = {
-  ssc: null,
-  ta: null,
-  ph: null,
-  ratio: null,
-  grade: null,
-  captureStep: 0,
-  shapeJobId: null,
-  shapeTimer: null,
-  shapeStartedAt: null,
-  shapeMode: "morphology2d",
-  saveRootDir: "",
-  currentCaptureDir: "",
-  currentCaptureValid: false,
-  analysisDataDir: "",
-  captureStarted: false,
-  calibrationStatus: "pending",
-  dataSource: "other",
-  captureCompleting: false,
-  hasSample: false,
-  sampleName: "",
-  sampleId: "",
-  sampleCreatedAt: "",
-  fruitType: "",
-  variety: "generic",
-  selectedSscModelId: "",
-  selectedTaModelId: "",
-  selectedPhModelId: "",
-  sampleSession: {
-    sampleId: "",
-    sampleName: "",
-    analysisDataDir: "",
-    rgbFiles: [],
-    multispectralFiles: [],
-    captureTime: "",
-    fruitType: "",
-    variety: "generic",
-    selectedSscModelId: "",
-    selectedTaModelId: "",
-    selectedPhModelId: "",
-    sscResult: null,
-    taResult: null,
-    phResult: null,
-  },
-  dataCheck: {
-    status: "empty",
-    rgbCount: 0,
-    spectralCount: 0,
-    pairCount: 0,
-  },
-  viewer: null,
-  imageBrowser: {
-    images: [],
-    index: 0,
-  },
-};
-
-const CAMERA_SETTINGS_KEY = "fruitAnalyzer.cameraSettings";
-const DEFAULT_CAMERA_SETTINGS = {
-  resolution: "1280 x 720",
-  exposure: "自动",
-  fx: 652.77,
-  fy: 652.77,
-  cx: 631.75,
-  cy: 364.95,
-};
-
-const titles = {
-  motor: "设备准备",
-  light: "光源自检",
-  camera: "相机自检",
-  "reserved-1": "预留功能",
-  "reserved-2": "预留功能",
-  capture: "样品采集",
-  shape: "形态分析",
-  sugar: "糖度预测",
-  acid: "酸度与 pH 分析",
-  taste: "口感评级",
-  "camera-settings": "相机设置",
-  "light-settings": "光源设置",
-  "reserved-3": "算法参数",
-  "reserved-4": "通信设置",
-};
-
-const shapeStepMap = {
-  check: "load-rgbd",
-  preprocess: "preprocess",
-  images: "image-review",
-  filter: "filter",
-  texture: "surface-texture",
-  measure: "measure",
-  preview: "volume",
-  done: "confirm",
-};
-
-function $(selector) {
-  return document.querySelector(selector);
+:root {
+  --bg-0: #0f172a;
+  --bg-1: #172033;
+  --bg-2: #1e293b;
+  --panel: rgba(30, 41, 59, 0.94);
+  --panel-strong: rgba(15, 23, 42, 0.96);
+  --line: rgba(148, 163, 184, 0.24);
+  --line-strong: rgba(203, 213, 225, 0.34);
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --soft: #cbd5e1;
+  --purple: #a78bfa;
+  --fuchsia: #e879f9;
+  --green: #86efac;
+  --amber: #fde047;
+  --red: #f87171;
+  --blue: #67e8f9;
+  --shadow: 0 20px 44px rgba(0, 0, 0, 0.28);
 }
 
-function setText(id, value) {
-  const node = document.getElementById(id);
-  if (node) node.textContent = value;
+* {
+  box-sizing: border-box;
 }
 
-function setPreviewImage(imageSelector, emptySelector, src = "") {
-  const image = $(imageSelector);
-  const empty = $(emptySelector);
-  if (!image) return;
-  if (src) {
-    image.src = src;
-    image.hidden = false;
-    if (empty) empty.hidden = true;
-  } else {
-    image.removeAttribute("src");
-    image.hidden = true;
-    if (empty) empty.hidden = false;
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: linear-gradient(145deg, var(--bg-0) 0%, var(--bg-2) 48%, #334155 100%);
+  font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  font-size: 14px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+button:hover {
+  border-color: rgba(167, 139, 250, 0.72);
+  background: rgba(167, 139, 250, 0.16);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(15, 23, 42, 0.72);
+  outline: none;
+}
+
+input,
+select {
+  height: 34px;
+  padding: 0 10px;
+}
+
+textarea {
+  min-height: 78px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+label {
+  display: block;
+  margin: 10px 0 6px;
+  color: var(--soft);
+  font-weight: 700;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 76px minmax(0, 1fr) 136px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0.96), rgba(88, 28, 135, 0.72), rgba(15, 23, 42, 0.96));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand-icon {
+  width: 48px;
+  height: 48px;
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  box-shadow: 0 12px 26px rgba(168, 85, 247, 0.28);
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.brand p {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.system-pills {
+  display: flex;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.system-pills span,
+.mode-badge,
+.panel-title span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.system-pills span.ok {
+  color: var(--green);
+  border-color: rgba(134, 239, 172, 0.42);
+}
+
+.system-pills span.warn {
+  color: var(--amber);
+  border-color: rgba(253, 224, 71, 0.42);
+}
+
+.top-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.top-actions button {
+  min-width: 72px;
+  height: 38px;
+}
+
+.top-actions .studio-action {
+  min-width: 92px;
+  border-color: rgba(103, 232, 249, 0.54);
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.24), rgba(124, 58, 237, 0.34));
+  font-weight: 900;
+}
+
+.top-actions .danger,
+.stop-action {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(239, 68, 68, 0.24);
+}
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 310px minmax(560px, 1fr) 330px;
+  gap: 12px;
+  padding: 12px;
+}
+
+.sidebar,
+.stage,
+.results-panel {
+  min-height: 0;
+}
+
+.sidebar,
+.results-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+}
+
+.side-card,
+.result-card,
+.stage-header,
+.view-panel,
+.log-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(160deg, var(--panel), var(--panel-strong));
+  box-shadow: var(--shadow);
+}
+
+.side-card,
+.result-card {
+  padding: 14px;
+}
+
+.side-card h2,
+.result-card h2 {
+  margin: 0 0 10px;
+  color: #f8fafc;
+  font-size: 16px;
+}
+
+.hint,
+.status-note,
+.mode-explain {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 12px;
+}
+
+.mode-explain {
+  margin-top: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(103, 232, 249, 0.24);
+  border-radius: 6px;
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.inline-field {
+  display: grid;
+  grid-template-columns: 1fr 64px;
+  gap: 8px;
+}
+
+.task-tree {
+  display: grid;
+  gap: 12px;
+}
+
+.task-tree details {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.task-tree summary {
+  margin: 0 0 9px;
+  color: var(--soft);
+  font-size: 14px;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.task-step {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 10px;
+  text-align: left;
+  color: var(--soft);
+  font-weight: 800;
+}
+
+.task-step span {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.task-step.active {
+  color: #fff;
+  border-color: rgba(232, 121, 249, 0.64);
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.48), rgba(217, 70, 239, 0.28));
+}
+
+.task-step[data-status="waiting"] span {
+  border-color: rgba(148, 163, 184, 0.62);
+}
+
+.task-step[data-status="running"] span {
+  border-color: rgba(103, 232, 249, 0.9);
+  background: var(--blue);
+  animation: pulse 1.2s infinite;
+}
+
+.task-step[data-status="done"] span {
+  border-color: rgba(134, 239, 172, 0.9);
+  background: var(--green);
+}
+
+.task-step[data-status="warning"] span {
+  border-color: rgba(253, 224, 71, 0.9);
+  background: var(--amber);
+}
+
+.task-step[data-status="failed"] span {
+  border-color: rgba(248, 113, 113, 0.9);
+  background: var(--red);
+}
+
+@keyframes pulse {
+  70% {
+    box-shadow: 0 0 0 8px rgba(103, 232, 249, 0);
   }
 }
 
-function escapeHtml(value = "") {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+.primary-action,
+.stop-action {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 8px;
+  font-weight: 900;
 }
 
-function parseNumberSetting(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+.primary-action {
+  border-color: rgba(167, 139, 250, 0.62);
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.72), rgba(14, 165, 233, 0.34));
 }
 
-function readCameraSettings() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(CAMERA_SETTINGS_KEY) || "{}");
-    return {
-      resolution: String(saved.resolution || DEFAULT_CAMERA_SETTINGS.resolution),
-      exposure: String(saved.exposure || DEFAULT_CAMERA_SETTINGS.exposure),
-      fx: parseNumberSetting(saved.fx, DEFAULT_CAMERA_SETTINGS.fx),
-      fy: parseNumberSetting(saved.fy, DEFAULT_CAMERA_SETTINGS.fy),
-      cx: parseNumberSetting(saved.cx, DEFAULT_CAMERA_SETTINGS.cx),
-      cy: parseNumberSetting(saved.cy, DEFAULT_CAMERA_SETTINGS.cy),
-    };
-  } catch {
-    return { ...DEFAULT_CAMERA_SETTINGS };
+.stage {
+  display: grid;
+  grid-template-rows: auto minmax(260px, 46vh) minmax(260px, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.stage-header {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.stage-header h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.sample-meta {
+  min-width: 0;
+}
+
+.sample-meta span,
+.sample-meta small {
+  display: block;
+  color: var(--muted);
+}
+
+.sample-meta strong {
+  display: block;
+  margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sample-actions button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sample-create-panel {
+  max-width: 100%;
+  overflow: hidden;
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(12, 19, 32, 0.58);
+}
+
+.sample-create-head,
+.sample-create-actions,
+.path-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sample-create-head {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sample-create-head span,
+.sample-create-head small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sample-create-head strong {
+  display: block;
+  margin: 2px 0;
+  color: #f8fafc;
+  font-size: 17px;
+}
+
+.sample-create-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr);
+  gap: 10px;
+}
+
+.sample-create-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.sample-create-grid label {
+  min-width: 0;
+}
+
+.sample-create-grid input,
+.sample-create-grid select,
+.path-picker input {
+  width: 100%;
+}
+
+.path-picker button,
+.sample-create-actions button {
+  flex: 0 0 auto;
+}
+
+.sample-create-actions {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.sample-create-actions .primary-action {
+  width: auto;
+  flex: 1 1 260px;
+}
+
+.sample-create-actions button:not(.primary-action) {
+  flex: 0 1 120px;
+}
+
+.status-chip {
+  min-height: 26px;
+  padding: 5px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.46);
+  color: #a7b4c8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-chip.ready {
+  border-color: rgba(34, 197, 94, 0.34);
+  background: rgba(22, 101, 52, 0.22);
+  color: #86efac;
+}
+
+.calibration-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(12, 19, 32, 0.58);
+}
+
+.calibration-confirm strong {
+  display: block;
+  color: #eef4fb;
+  font-size: 14px;
+}
+
+.calibration-confirm span {
+  display: block;
+  margin-top: 4px;
+  color: #9eacc0;
+  font-size: 12px;
+}
+
+#confirmCalibration.passed {
+  border-color: rgba(34, 197, 94, 0.44);
+  background: rgba(22, 101, 52, 0.34);
+  color: #bbf7d0;
+}
+
+.model-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.sample-readonly-meta div {
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(9, 15, 27, 0.42);
+}
+
+.sample-readonly-meta span,
+.model-meta label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sample-readonly-meta strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-meta input,
+.model-meta select {
+  height: 30px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal {
+  width: min(760px, 100%);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+}
+
+.modal header,
+.modal footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.modal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+
+.modal-note {
+  margin: 0 16px 14px;
+  color: var(--muted);
+}
+
+.mode-badge {
+  color: var(--amber);
+  border-color: rgba(253, 224, 71, 0.38);
+}
+
+.camera-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+.camera-panel {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.camera-panel header {
+  padding: 9px 12px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.86);
+  font-weight: 900;
+}
+
+.camera-view {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--soft);
+  min-height: 220px;
+}
+
+.camera-view p {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 900;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.52);
+}
+
+.color-view {
+  background:
+    linear-gradient(90deg, transparent 49%, rgba(255, 255, 255, 0.06) 50%, transparent 51%),
+    linear-gradient(180deg, transparent 49%, rgba(255, 255, 255, 0.05) 50%, transparent 51%),
+    radial-gradient(circle at 50% 55%, rgba(232, 121, 249, 0.2), transparent 24%),
+    #0a1020;
+  background-size: 36px 36px, 36px 36px, 100% 100%, 100% 100%;
+}
+
+.spectral-view {
+  background:
+    linear-gradient(90deg, rgba(103, 232, 249, 0.18), transparent 2px),
+    radial-gradient(circle at 64% 40%, rgba(103, 232, 249, 0.16), transparent 28%),
+    #070b14;
+  background-size: 58px 100%, 100% 100%, 100% 100%;
+}
+
+.view-panel {
+  position: relative;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+.view-page {
+  display: none;
+}
+
+.view-page.active {
+  display: block;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-title h3 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 18px;
+}
+
+.control-grid,
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.test-button,
+.process-steps button,
+.button-row button,
+.result-card button {
+  min-height: 42px;
+  padding: 0 12px;
+  font-weight: 900;
+}
+
+.test-button {
+  border-color: rgba(167, 139, 250, 0.56);
+  background: rgba(124, 58, 237, 0.24);
+}
+
+.test-button.secondary {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.status-strip span {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 800;
+}
+
+.lamp-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lamp {
+  min-height: 58px;
+  color: var(--muted);
+}
+
+.lamp.active {
+  color: var(--amber);
+  border-color: rgba(253, 224, 71, 0.46);
+  background: rgba(253, 224, 71, 0.12);
+}
+
+.process-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.capture-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.capture-actions span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.capture-actions button {
+  min-height: 38px;
+  font-weight: 900;
+}
+
+.progress-track {
+  height: 14px;
+  margin: 16px 0 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.progress-track div {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--purple), var(--fuchsia));
+}
+
+#captureProgressText {
+  margin: 0;
+  color: var(--muted);
+  text-align: center;
+  font-weight: 800;
+}
+
+.shape-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.92fr) minmax(340px, 1fr);
+  gap: 16px;
+}
+
+.shape-visuals {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.subpanel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.subpanel-title strong {
+  color: #f8fafc;
+}
+
+.subpanel-title span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.image-browser,
+.texture-panel,
+.pointcloud-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.44);
+}
+
+.data-source-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.source-option {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.58);
+  font-weight: 900;
+}
+
+.source-option input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--blue);
+}
+
+.source-option small {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-option:has(input:checked) {
+  border-color: rgba(103, 232, 249, 0.48);
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.source-option.disabled {
+  opacity: 0.58;
+}
+
+.data-check-card {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.data-check-card strong {
+  color: var(--muted);
+}
+
+.data-check-card span,
+.data-check-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+.data-check-card[data-status="complete"] {
+  border-color: rgba(134, 239, 172, 0.42);
+  background: rgba(22, 101, 52, 0.14);
+}
+
+.data-check-card[data-status="complete"] strong {
+  color: var(--green);
+}
+
+.data-check-card[data-status="incomplete"],
+.data-check-card[data-status="invalid"],
+.data-check-card[data-status="missing"] {
+  border-color: rgba(253, 224, 71, 0.36);
+  background: rgba(120, 53, 15, 0.14);
+}
+
+.data-check-card[data-status="incomplete"] strong,
+.data-check-card[data-status="invalid"] strong,
+.data-check-card[data-status="missing"] strong {
+  color: var(--amber);
+}
+
+.pointcloud-section.is-hidden {
+  display: none;
+}
+
+.image-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.image-pair figure {
+  min-width: 0;
+  margin: 0;
+}
+
+.preview-frame,
+.texture-preview-frame {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.58);
+}
+
+.preview-frame img,
+.texture-preview-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.empty-preview {
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.image-pair figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.browser-actions button {
+  min-height: 32px;
+  font-weight: 800;
+}
+
+.pointcloud-box {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 320px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  background: #020617;
+}
+
+.pointcloud-box canvas {
+  display: none;
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pointcloud-box canvas:active {
+  cursor: grabbing;
+}
+
+.pointcloud-empty {
+  color: #64748b;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.pointcloud-box.viewer-ready canvas {
+  display: block;
+}
+
+.pointcloud-box.viewer-ready .pointcloud-empty {
+  display: none;
+}
+
+.pointcloud-hud {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.86);
+  color: var(--soft);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.pointcloud-hud button {
+  width: auto;
+  min-height: 28px;
+  padding: 4px 10px;
+  pointer-events: auto;
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.analysis-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.analysis-status strong {
+  color: var(--green);
+}
+
+.shape-progress {
+  margin-top: 10px;
+}
+
+.texture-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.texture-metrics div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.texture-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.texture-metrics strong {
+  color: var(--green);
+  font-size: 18px;
+}
+
+.prediction-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.prediction-card {
+  min-height: 230px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.prediction-main,
+.acid-results {
+  display: grid;
+  align-content: center;
+  gap: 14px;
+}
+
+.prediction-main > span,
+.acid-results span,
+.prediction-info-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prediction-main strong,
+.acid-results strong {
+  color: #f8fafc;
+  font-size: 42px;
+  line-height: 1;
+}
+
+.prediction-model-picker {
+  width: 100%;
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prediction-model-picker select {
+  width: 100%;
+  height: 38px;
+  margin-top: 6px;
+}
+
+.prediction-main small,
+.acid-results small {
+  color: var(--soft);
+  font-size: 16px;
+}
+
+.prediction-main p,
+.acid-results p {
+  margin: 0;
+  color: var(--soft);
+  font-weight: 800;
+}
+
+.prediction-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.prediction-card-title h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.prediction-card-title span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.feature-placeholder {
+  display: grid;
+  min-height: 172px;
+  place-items: center;
+  border: 1px dashed rgba(148, 163, 184, 0.36);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(2, 6, 23, 0.28);
+  font-weight: 900;
+}
+
+.prediction-info-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prediction-info-grid div {
+  min-height: 70px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.prediction-info-grid strong {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taste-hero {
+  display: grid;
+  place-items: center;
+  min-height: 190px;
+  border: 1px solid rgba(232, 121, 249, 0.42);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.26), rgba(232, 121, 249, 0.12));
+}
+
+.taste-hero span,
+.taste-hero p {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.taste-hero strong {
+  font-size: 64px;
+  line-height: 1;
+  background: linear-gradient(90deg, var(--fuchsia), #fdf4ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.settings-grid label {
+  margin: 0;
+}
+
+.reserved-page {
+  display: none;
+  min-height: 220px;
+  place-content: center;
+  text-align: center;
+  color: var(--muted);
+}
+
+.reserved-page.active {
+  display: grid;
+}
+
+.hero-result {
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  text-align: center;
+  border-color: rgba(232, 121, 249, 0.38);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.32), rgba(15, 23, 42, 0.96));
+}
+
+.hero-result span {
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.hero-result strong {
+  margin: 8px 0;
+  font-size: 58px;
+  line-height: 1;
+  background: linear-gradient(90deg, var(--purple), var(--fuchsia), #f8fafc);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-result p {
+  margin: 0;
+  color: var(--soft);
+}
+
+dl {
+  margin: 0;
+}
+
+dt {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+dd {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.56);
+  font-weight: 900;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.metric-row:last-child {
+  border-bottom: 0;
+}
+
+.metric-row span {
+  color: var(--muted);
+}
+
+.metric-row strong {
+  color: var(--green);
+}
+
+.result-card button {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.log-panel {
+  min-height: 0;
+  margin: 0 12px 12px;
+  padding: 10px 12px;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.log-toolbar strong {
+  margin-right: auto;
+}
+
+.log-toolbar button {
+  height: 28px;
+  padding: 0 14px;
+}
+
+pre {
+  height: 84px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  color: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.72);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Incremental commercial UI refinement layer. Keeps the existing layout and flow. */
+:root {
+  --panel-soft: rgba(17, 25, 40, 0.78);
+  --surface: rgba(15, 23, 42, 0.68);
+  --surface-raised: rgba(24, 34, 52, 0.9);
+  --line-subtle: rgba(148, 163, 184, 0.16);
+  --focus: rgba(103, 232, 249, 0.48);
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.22);
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(19, 30, 48, 0.98) 54%, rgba(13, 22, 37, 1) 100%);
+  line-height: 1.45;
+}
+
+button,
+input,
+select,
+textarea {
+  letter-spacing: 0;
+}
+
+button {
+  border-color: rgba(148, 163, 184, 0.26);
+  background: rgba(30, 41, 59, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+button:hover {
+  border-color: rgba(103, 232, 249, 0.48);
+  background: rgba(37, 50, 73, 0.88);
+}
+
+button:focus-visible,
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px rgba(103, 232, 249, 0.1);
+}
+
+input,
+select,
+textarea {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(9, 15, 27, 0.72);
+}
+
+label {
+  color: #b8c4d6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.topbar {
+  grid-template-columns: minmax(360px, 1fr) auto auto;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, rgba(12, 18, 32, 0.98), rgba(45, 28, 82, 0.82), rgba(12, 18, 32, 0.98));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+}
+
+.brand-icon {
+  width: 44px;
+  height: 44px;
+  border-color: rgba(203, 213, 225, 0.16);
+  border-radius: 8px;
+  box-shadow: 0 10px 22px rgba(124, 58, 237, 0.22);
+}
+
+.brand h1 {
+  font-size: 21px;
+  line-height: 1.15;
+}
+
+.brand p {
+  color: #aab8cb;
+  font-size: 12px;
+}
+
+.system-pills {
+  gap: 6px;
+}
+
+.system-pills span {
+  min-height: 26px;
+  padding: 0 9px 0 8px;
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.48);
+  color: #a9b6c8;
+  font-weight: 700;
+}
+
+.system-pills span::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #64748b;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.12);
+}
+
+.system-pills span.ok::before {
+  background: var(--green);
+  box-shadow: 0 0 0 2px rgba(134, 239, 172, 0.12);
+}
+
+.system-pills span.warn::before {
+  background: var(--amber);
+  box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.12);
+}
+
+#currentTime::before {
+  display: none;
+}
+
+.top-actions button {
+  height: 34px;
+  min-width: 66px;
+  color: #d8e2ef;
+  font-size: 13px;
+}
+
+.top-actions .studio-action,
+.primary-action {
+  border-color: rgba(103, 232, 249, 0.34);
+  background: linear-gradient(135deg, rgba(91, 67, 186, 0.66), rgba(15, 95, 133, 0.54));
+}
+
+.top-actions .danger,
+.stop-action {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(127, 29, 29, 0.34);
+}
+
+.side-card,
+.result-card,
+.stage-header,
+.view-panel,
+.log-panel {
+  border-color: var(--line-subtle);
+  background: linear-gradient(180deg, rgba(25, 36, 55, 0.9), rgba(14, 22, 36, 0.92));
+  box-shadow: var(--shadow-soft);
+}
+
+.side-card,
+.result-card {
+  padding: 13px;
+}
+
+.side-card h2,
+.result-card h2 {
+  color: #eef4fb;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.task-tree {
+  gap: 8px;
+}
+
+.task-tree details {
+  padding: 8px 8px 9px;
+  border-color: rgba(148, 163, 184, 0.12);
+  background: rgba(12, 19, 32, 0.32);
+}
+
+.task-tree summary {
+  margin: 0 0 6px;
+  color: #d2dbea;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.task-step {
+  min-height: 32px;
+  margin-top: 3px;
+  border-color: transparent;
+  background: transparent;
+  color: #99a8bc;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.task-step:hover {
+  border-color: rgba(148, 163, 184, 0.14);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.task-step.active {
+  border-color: rgba(103, 232, 249, 0.34);
+  background: linear-gradient(90deg, rgba(91, 67, 186, 0.38), rgba(14, 165, 233, 0.12));
+  color: #f8fafc;
+}
+
+.task-step span {
+  width: 8px;
+  height: 8px;
+  border-color: rgba(148, 163, 184, 0.34);
+}
+
+.stage {
+  gap: 10px;
+}
+
+.stage-header {
+  gap: 14px;
+  padding: 13px 15px;
+}
+
+.eyebrow {
+  color: #b695ff;
+  font-size: 11px;
+}
+
+.stage-header h2 {
+  font-size: 23px;
+  line-height: 1.15;
+}
+
+.sample-meta strong {
+  color: #f7fbff;
+  font-size: 15px;
+}
+
+.sample-meta small {
+  color: #91a1b5;
+  font-size: 11px;
+}
+
+.sample-actions button {
+  min-height: 30px;
+}
+
+.model-meta label {
+  color: #9eacc0;
+}
+
+.model-meta select {
+  height: 32px;
+}
+
+.mode-badge,
+.panel-title span {
+  min-height: 26px;
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.camera-panel {
+  border-color: var(--line-subtle);
+  background: rgba(10, 17, 29, 0.64);
+}
+
+.camera-panel header {
+  height: 36px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.11);
+  background: rgba(9, 15, 27, 0.82);
+  color: #dce7f5;
+}
+
+.view-panel {
+  padding: 15px;
+}
+
+.panel-title {
+  margin-bottom: 13px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.panel-title h3 {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.test-button,
+.process-steps button,
+.button-row button,
+.result-card button,
+.capture-actions button {
+  min-height: 38px;
+}
+
+.test-button {
+  border-color: rgba(103, 232, 249, 0.28);
+  background: rgba(31, 61, 88, 0.54);
+}
+
+.test-button:not(.secondary):hover,
+.primary-action:hover {
+  border-color: rgba(103, 232, 249, 0.58);
+}
+
+.test-button.secondary,
+.browser-actions button,
+.button-row button:first-child {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(30, 41, 59, 0.5);
+}
+
+#runShapeAnalysis,
+#startSscAnalysis,
+#startAcidAnalysis,
+#enterAnalysisFromCapture,
+#saveCameraSettings {
+  border-color: rgba(103, 232, 249, 0.36);
+  background: linear-gradient(135deg, rgba(91, 67, 186, 0.62), rgba(14, 95, 133, 0.5));
+  color: #f8fbff;
+}
+
+#cancelShapeAnalysis,
+#exitButton {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(127, 29, 29, 0.34);
+}
+
+.process-steps button {
+  color: #dbe7f5;
+  background: rgba(30, 41, 59, 0.56);
+}
+
+.status-strip span,
+.prediction-info-grid div,
+.texture-metrics div,
+dd {
+  border-color: rgba(148, 163, 184, 0.14);
+  background: rgba(9, 15, 27, 0.42);
+}
+
+.progress-track {
+  height: 10px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.progress-track div {
+  background: linear-gradient(90deg, #7c5cff, #22d3ee);
+}
+
+.image-browser,
+.texture-panel,
+.pointcloud-section,
+.prediction-card,
+.data-check-card {
+  border-color: rgba(148, 163, 184, 0.14);
+  background: rgba(9, 15, 27, 0.42);
+}
+
+.preview-frame,
+.texture-preview-frame,
+.feature-placeholder {
+  border-color: rgba(148, 163, 184, 0.14);
+  background: rgba(2, 6, 23, 0.42);
+}
+
+.feature-placeholder,
+.empty-preview,
+.pointcloud-empty {
+  color: #7e8da3;
+}
+
+.source-option {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: rgba(9, 15, 27, 0.48);
+}
+
+.source-option:has(input:checked) {
+  border-color: rgba(103, 232, 249, 0.36);
+  background: rgba(14, 165, 233, 0.1);
+}
+
+.prediction-main strong,
+.acid-results strong {
+  font-size: 40px;
+}
+
+.prediction-card {
+  min-height: 214px;
+}
+
+.prediction-info-grid {
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.prediction-info-grid div {
+  min-height: 64px;
+}
+
+.hero-result {
+  border-color: rgba(103, 232, 249, 0.18);
+  background: linear-gradient(160deg, rgba(31, 41, 74, 0.82), rgba(9, 15, 27, 0.94));
+}
+
+.hero-result strong {
+  font-size: 54px;
+  background: linear-gradient(90deg, #a78bfa, #67e8f9);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.metric-row {
+  border-bottom-color: rgba(148, 163, 184, 0.12);
+}
+
+.metric-row strong {
+  color: #9be7c0;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: #101827;
+}
+
+.modal header,
+.modal footer {
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+pre {
+  border-color: rgba(148, 163, 184, 0.14);
+  background: rgba(8, 13, 24, 0.64);
+}
+
+.device-control-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.device-control-buttons button {
+  min-width: 0;
+  padding-inline: 8px;
+  font-size: 12px;
+}
+
+.device-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.device-status-grid p {
+  min-width: 0;
+  margin: 0;
+  padding: 7px 8px;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.48);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+#faultState {
+  color: #fbbf24;
+}
+
+#clearDeviceFault {
+  width: 100%;
+  margin-top: 10px;
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fde68a;
+  background: rgba(120, 53, 15, 0.28);
+}
+
+#clearDeviceFault:hover {
+  border-color: rgba(251, 191, 36, 0.8);
+  background: rgba(146, 64, 14, 0.42);
+}
+
+@media (max-width: 520px) {
+  .device-control-buttons,
+  .device-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 1500px) {
+  .workspace {
+    grid-template-columns: 290px minmax(520px, 1fr) 300px;
+  }
+
+  .mode-badge {
+    justify-self: end;
+  }
+
+  .prediction-info-grid {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
   }
 }
 
-function collectCameraSettingsFromForm() {
-  return {
-    resolution: $("#cameraResolution")?.value.trim() || DEFAULT_CAMERA_SETTINGS.resolution,
-    exposure: $("#cameraExposure")?.value.trim() || DEFAULT_CAMERA_SETTINGS.exposure,
-    fx: parseNumberSetting($("#cameraFx")?.value, DEFAULT_CAMERA_SETTINGS.fx),
-    fy: parseNumberSetting($("#cameraFy")?.value, DEFAULT_CAMERA_SETTINGS.fy),
-    cx: parseNumberSetting($("#cameraCx")?.value, DEFAULT_CAMERA_SETTINGS.cx),
-    cy: parseNumberSetting($("#cameraCy")?.value, DEFAULT_CAMERA_SETTINGS.cy),
-  };
-}
-
-function applyCameraSettings(settings = readCameraSettings()) {
-  if ($("#cameraResolution")) $("#cameraResolution").value = settings.resolution;
-  if ($("#cameraExposure")) $("#cameraExposure").value = settings.exposure;
-  if ($("#cameraFx")) $("#cameraFx").value = settings.fx;
-  if ($("#cameraFy")) $("#cameraFy").value = settings.fy;
-  if ($("#cameraCx")) $("#cameraCx").value = settings.cx;
-  if ($("#cameraCy")) $("#cameraCy").value = settings.cy;
-  setText("cameraSettingsStatus", "当前参数");
-}
-
-function saveCameraSettings() {
-  const settings = collectCameraSettingsFromForm();
-  localStorage.setItem(CAMERA_SETTINGS_KEY, JSON.stringify(settings));
-  applyCameraSettings(settings);
-  setText("cameraSettingsStatus", "已保存");
-  addLog(`相机参数已保存：fx/fy=${settings.fx}/${settings.fy}，cx/cy=${settings.cx}/${settings.cy}`);
-}
-
-function resetCameraSettings() {
-  localStorage.removeItem(CAMERA_SETTINGS_KEY);
-  applyCameraSettings({ ...DEFAULT_CAMERA_SETTINGS });
-  setText("cameraSettingsStatus", "已恢复默认");
-  addLog("相机参数已恢复为默认值。", "WARN");
-}
-
-function hasActiveSample() {
-  return Boolean(state.hasSample && state.sampleId);
-}
-
-function requireActiveSample(message = "请先创建当前样品。") {
-  if (hasActiveSample()) return true;
-  addLog(message, "WARN");
-  setText("statusNote", message);
-  switchView("capture", "sample");
-  return false;
-}
-
-function renderCurrentSample() {
-  setText("currentSampleName", state.sampleName || "未创建样品");
-  setText("currentSampleId", state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请先创建当前样品");
-  setText("resultSampleName", state.sampleName || "--");
-  setText("sampleCreateStatus", hasActiveSample() ? "已创建" : "等待创建");
-  $("#sampleCreateStatus")?.classList.toggle("ready", hasActiveSample());
-  if ($("#sampleId")) $("#sampleId").value = state.sampleId || "";
-  if ($("#saveRootDir")) {
-    $("#saveRootDir").value = state.saveRootDir || "";
-    $("#saveRootDir").title = state.saveRootDir || "";
-  }
-  if ($("#sampleFolderPath")) {
-    $("#sampleFolderPath").value = state.currentCaptureDir || "";
-    $("#sampleFolderPath").title = state.currentCaptureDir || "";
-  }
-  const disabled = !hasActiveSample();
-  if ($("#selectDataset")) $("#selectDataset").disabled = false;
-  if ($("#runShapeAnalysis")) $("#runShapeAnalysis").disabled = Boolean(state.shapeJobId);
-  if ($("#enterAnalysisFromCapture")) $("#enterAnalysisFromCapture").disabled = disabled || !state.analysisDataDir;
-  if ($("#openCaptureFolder")) $("#openCaptureFolder").disabled = disabled || !state.currentCaptureDir;
-  if ($("#chooseSaveRoot")) $("#chooseSaveRoot").disabled = state.captureStarted;
-  updateAnalysisButtonStates();
-  updateShapeMode();
-}
-
-function updateAnalysisButtonStates() {
-  const sscAvailable = hasActiveSample() && Boolean(state.selectedSscModelId);
-  const taAvailable = hasActiveSample() && Boolean(state.selectedTaModelId || state.selectedPhModelId);
-  const sscButton = $("#startSscAnalysis");
-  const acidButton = $("#startAcidAnalysis");
-  if (sscButton) sscButton.disabled = !sscAvailable;
-  if (acidButton) acidButton.disabled = !taAvailable;
-  if (hasActiveSample() && !state.selectedSscModelId) setText("sscModelStatus", "无兼容模型");
-  if (hasActiveSample() && !state.selectedTaModelId && !state.selectedPhModelId) setText("acidModelStatus", "无兼容模型");
-}
-
-function clearSampleDependentState() {
-  state.ssc = null;
-  state.ta = null;
-  state.ph = null;
-  state.ratio = null;
-  state.grade = null;
-  state.captureStep = 0;
-  state.captureStarted = false;
-  state.shapeJobId = null;
-  state.shapeStartedAt = null;
-  state.currentCaptureDir = "";
-  state.currentCaptureValid = false;
-  state.analysisDataDir = "";
-  state.saveRootDir = "";
-  state.imageBrowser.images = [];
-  state.imageBrowser.index = 0;
-  state.dataCheck = { status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0 };
-  state.sampleSession.rgbFiles = [];
-  state.sampleSession.multispectralFiles = [];
-  state.sampleSession.analysisDataDir = "";
-  state.sampleSession.sscResult = null;
-  state.sampleSession.taResult = null;
-  state.sampleSession.phResult = null;
-  setText("resultSsc", "--");
-  setText("resultTa", "--");
-  setText("resultPh", "--");
-  setText("tasteRatio", "--");
-  setText("tasteGrade", "--");
-  setText("tasteExplain", "等待糖度与酸度数据。");
-  renderSscResult({});
-  renderAcidResult({}, {});
-  renderDatasetImage();
-  renderDataCheck({ status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0, message: "请先创建当前样品。" });
-  resetShapeStatus();
-  updateCurrentCaptureControls();
-  resetCaptureStepStatuses();
-  renderCalibrationStatus();
-}
-
-function addLog(message, level = "INFO") {
-  const log = $("#runLog");
-  if (!log) return;
-  const stamp = new Date().toTimeString().slice(0, 8);
-  log.textContent += `\n[${stamp}] [${level}] ${message}`;
-  log.scrollTop = log.scrollHeight;
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) {
-    const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
-    error.payload = payload;
-    throw error;
-  }
-  return payload;
-}
-
-function initPointcloudViewer() {
-  const canvas = $("#pointcloudCanvas");
-  if (!canvas) return;
-  const gl = canvas.getContext("webgl", { antialias: true, preserveDrawingBuffer: true });
-  if (!gl) {
-    setText("pointcloudHint", "当前浏览器不支持 WebGL，显示静态预览图");
-    return;
+@media (max-width: 1240px) {
+  .topbar {
+    grid-template-columns: 1fr;
   }
 
-  const vertexSource = `
-    attribute vec3 aPosition;
-    attribute vec3 aColor;
-    uniform mat4 uMvp;
-    varying vec3 vColor;
-    void main() {
-      gl_Position = uMvp * vec4(aPosition, 1.0);
-      gl_PointSize = 3.0;
-      vColor = aColor;
-    }
-  `;
-  const fragmentSource = `
-    precision mediump float;
-    varying vec3 vColor;
-    void main() {
-      vec2 p = gl_PointCoord - vec2(0.5);
-      if (dot(p, p) > 0.25) discard;
-      gl_FragColor = vec4(vColor, 1.0);
-    }
-  `;
-  const program = createPointcloudProgram(gl, vertexSource, fragmentSource);
-  if (!program) return;
-
-  state.viewer = {
-    canvas,
-    gl,
-    program,
-    positionBuffer: gl.createBuffer(),
-    colorBuffer: gl.createBuffer(),
-    count: 0,
-    rotationX: -0.62,
-    rotationY: 0.78,
-    zoom: 3.2,
-    dragging: false,
-    lastX: 0,
-    lastY: 0,
-    frame: 0,
-  };
-
-  gl.enable(gl.DEPTH_TEST);
-  gl.clearColor(1, 1, 1, 1);
-
-  canvas.addEventListener("pointerdown", (event) => {
-    if (!state.viewer?.count) return;
-    state.viewer.dragging = true;
-    state.viewer.lastX = event.clientX;
-    state.viewer.lastY = event.clientY;
-    canvas.setPointerCapture(event.pointerId);
-  });
-  canvas.addEventListener("pointermove", (event) => {
-    const viewer = state.viewer;
-    if (!viewer?.dragging) return;
-    const dx = event.clientX - viewer.lastX;
-    const dy = event.clientY - viewer.lastY;
-    viewer.rotationY += dx * 0.008;
-    viewer.rotationX += dy * 0.008;
-    viewer.rotationX = Math.max(-1.45, Math.min(1.45, viewer.rotationX));
-    viewer.lastX = event.clientX;
-    viewer.lastY = event.clientY;
-    schedulePointcloudDraw();
-  });
-  canvas.addEventListener("pointerup", (event) => {
-    if (!state.viewer) return;
-    state.viewer.dragging = false;
-    try {
-      canvas.releasePointerCapture(event.pointerId);
-    } catch (_) {
-      // Pointer capture can already be released by the browser.
-    }
-  });
-  canvas.addEventListener("wheel", (event) => {
-    const viewer = state.viewer;
-    if (!viewer?.count) return;
-    event.preventDefault();
-    viewer.zoom = Math.max(1.6, Math.min(7.5, viewer.zoom + event.deltaY * 0.004));
-    schedulePointcloudDraw();
-  }, { passive: false });
-
-  $("#resetPointcloudView")?.addEventListener("click", () => resetPointcloudView(true));
-  window.addEventListener("resize", resizePointcloudCanvas);
-  if (window.ResizeObserver) {
-    new ResizeObserver(resizePointcloudCanvas).observe(canvas);
+  .workspace {
+    grid-template-columns: 290px 1fr;
   }
-  resizePointcloudCanvas();
-}
 
-function createPointcloudProgram(gl, vertexSource, fragmentSource) {
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-  if (!vertex || !fragment) return null;
-  const program = gl.createProgram();
-  gl.attachShader(program, vertex);
-  gl.attachShader(program, fragment);
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    addLog(`WebGL 程序链接失败: ${gl.getProgramInfoLog(program)}`, "ERROR");
-    return null;
-  }
-  return program;
-}
-
-function compileShader(gl, type, source) {
-  const shader = gl.createShader(type);
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    addLog(`WebGL 着色器编译失败: ${gl.getShaderInfoLog(shader)}`, "ERROR");
-    return null;
-  }
-  return shader;
-}
-
-async function loadPointcloudViewer(plyUrl) {
-  const viewer = state.viewer;
-  if (!viewer || !plyUrl) return false;
-  try {
-    setText("pointcloudHint", "正在加载标准散点点云...");
-    const response = await fetch(`${plyUrl}?t=${Date.now()}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const cloud = parseAsciiPly(await response.text());
-    if (!cloud.count) throw new Error("PLY 中没有有效顶点");
-    uploadPointcloud(cloud);
-    $(".pointcloud-box")?.classList.add("viewer-ready");
-    setText("pointcloudHint", `点云 ${cloud.count} 点，拖拽旋转，滚轮缩放，当前为标准观察比例`);
-    addLog("标准散点点云已加载。");
-    return true;
-  } catch (error) {
-    $(".pointcloud-box")?.classList.remove("viewer-ready");
-    setText("pointcloudHint", "点云模型读取失败");
-    addLog(`点云模型读取失败: ${error.message}`, "WARN");
-    return false;
+  .results-panel {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-function parseAsciiPly(text) {
-  const lines = text.split(/\r?\n/);
-  let headerEnd = -1;
-  let vertexCount = 0;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (line.startsWith("element vertex")) {
-      vertexCount = Number(line.split(/\s+/)[2] || 0);
-    }
-    if (line === "end_header") {
-      headerEnd = index;
-      break;
-    }
-  }
-  if (headerEnd < 0 || !vertexCount) return { count: 0 };
-
-  const rawPositions = [];
-  const rawColors = [];
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let index = headerEnd + 1; index < lines.length && rawPositions.length / 3 < vertexCount; index += 1) {
-    const parts = lines[index].trim().split(/\s+/).map(Number);
-    if (parts.length < 3 || parts.slice(0, 3).some((item) => !Number.isFinite(item))) continue;
-    const x = parts[0];
-    const y = parts[1];
-    const z = parts[2];
-    rawPositions.push(x, y, z);
-    min[0] = Math.min(min[0], x);
-    min[1] = Math.min(min[1], y);
-    min[2] = Math.min(min[2], z);
-    max[0] = Math.max(max[0], x);
-    max[1] = Math.max(max[1], y);
-    max[2] = Math.max(max[2], z);
-    rawColors.push(0, 0, 0);
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-rows: auto auto auto;
   }
 
-  const count = rawPositions.length / 3;
-  if (!count) return { count: 0 };
-  const center = [
-    (min[0] + max[0]) / 2,
-    (min[1] + max[1]) / 2,
-    (min[2] + max[2]) / 2,
-  ];
-  const ranges = [
-    Math.max(max[0] - min[0], 1),
-    Math.max(max[1] - min[1], 1),
-    Math.max(max[2] - min[2], 1),
-  ];
-  const scales = ranges.map((value) => value / 2);
-  const zLow = min[2];
-  const zHigh = max[2];
-  const zRange = Math.max(zHigh - zLow, 1);
-  const positions = new Float32Array(rawPositions.length);
-  const colors = new Float32Array(rawColors.length);
-  for (let index = 0; index < count; index += 1) {
-    const z = rawPositions[index * 3 + 2];
-    const depthMix = Math.max(0, Math.min(1, (z - zLow) / zRange));
-    positions[index * 3] = (rawPositions[index * 3] - center[0]) / scales[0];
-    positions[index * 3 + 1] = -(rawPositions[index * 3 + 1] - center[1]) / scales[1];
-    positions[index * 3 + 2] = (z - center[2]) / scales[2] * 0.9;
-    colors[index * 3] = 0.04 + depthMix * 0.18;
-    colors[index * 3 + 1] = 0.18 + depthMix * 0.78;
-    colors[index * 3 + 2] = 0.08 + depthMix * 0.12;
-  }
-  return { count, positions, colors };
-}
-
-function clampColor(value) {
-  if (!Number.isFinite(value)) return 255;
-  return Math.max(0, Math.min(255, value));
-}
-
-function uploadPointcloud(cloud) {
-  const viewer = state.viewer;
-  if (!viewer) return;
-  const { gl } = viewer;
-  viewer.count = cloud.count;
-  resetPointcloudView(false);
-  gl.bindBuffer(gl.ARRAY_BUFFER, viewer.positionBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, cloud.positions, gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, viewer.colorBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, cloud.colors, gl.STATIC_DRAW);
-  resizePointcloudCanvas();
-  schedulePointcloudDraw();
-}
-
-function clearPointcloudViewer() {
-  const viewer = state.viewer;
-  $(".pointcloud-box")?.classList.remove("viewer-ready");
-  setText("pointcloudStatus", "后续建模结果展示区");
-  setText("pointcloudHint", "生成模型后可拖拽旋转，滚轮缩放");
-  if (!viewer) return;
-  viewer.count = 0;
-  viewer.gl.clear(viewer.gl.COLOR_BUFFER_BIT | viewer.gl.DEPTH_BUFFER_BIT);
-}
-
-function resetPointcloudView(draw = true) {
-  const viewer = state.viewer;
-  if (!viewer) return;
-  viewer.rotationX = -0.62;
-  viewer.rotationY = 0.78;
-  viewer.zoom = 3.2;
-  if (draw) schedulePointcloudDraw();
-}
-
-function resizePointcloudCanvas() {
-  const viewer = state.viewer;
-  if (!viewer) return;
-  const rect = viewer.canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.max(1, Math.floor(rect.width * dpr));
-  const height = Math.max(1, Math.floor(rect.height * dpr));
-  if (viewer.canvas.width !== width || viewer.canvas.height !== height) {
-    viewer.canvas.width = width;
-    viewer.canvas.height = height;
-    viewer.gl.viewport(0, 0, width, height);
-  }
-  schedulePointcloudDraw();
-}
-
-function schedulePointcloudDraw() {
-  const viewer = state.viewer;
-  if (!viewer || viewer.frame) return;
-  viewer.frame = window.requestAnimationFrame(() => {
-    viewer.frame = 0;
-    drawPointcloud();
-  });
-}
-
-function drawPointcloud() {
-  const viewer = state.viewer;
-  if (!viewer) return;
-  const { gl, program, canvas } = viewer;
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  if (!viewer.count) return;
-
-  gl.useProgram(program);
-  const aspect = canvas.width / Math.max(canvas.height, 1);
-  const projection = mat4Perspective(Math.PI / 4, aspect, 0.1, 100);
-  let modelView = mat4Identity();
-  modelView = mat4Translate(modelView, [0, 0, -viewer.zoom]);
-  modelView = mat4RotateX(modelView, viewer.rotationX);
-  modelView = mat4RotateY(modelView, viewer.rotationY);
-  const mvp = mat4Multiply(projection, modelView);
-
-  const positionLoc = gl.getAttribLocation(program, "aPosition");
-  gl.bindBuffer(gl.ARRAY_BUFFER, viewer.positionBuffer);
-  gl.enableVertexAttribArray(positionLoc);
-  gl.vertexAttribPointer(positionLoc, 3, gl.FLOAT, false, 0, 0);
-
-  const colorLoc = gl.getAttribLocation(program, "aColor");
-  gl.bindBuffer(gl.ARRAY_BUFFER, viewer.colorBuffer);
-  gl.enableVertexAttribArray(colorLoc);
-  gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
-
-  gl.uniformMatrix4fv(gl.getUniformLocation(program, "uMvp"), false, mvp);
-  gl.drawArrays(gl.POINTS, 0, viewer.count);
-}
-
-function mat4Identity() {
-  return new Float32Array([
-    1, 0, 0, 0,
-    0, 1, 0, 0,
-    0, 0, 1, 0,
-    0, 0, 0, 1,
-  ]);
-}
-
-function mat4Perspective(fovy, aspect, near, far) {
-  const f = 1 / Math.tan(fovy / 2);
-  const nf = 1 / (near - far);
-  return new Float32Array([
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) * nf, -1,
-    0, 0, 2 * far * near * nf, 0,
-  ]);
-}
-
-function mat4Multiply(a, b) {
-  const out = new Float32Array(16);
-  for (let col = 0; col < 4; col += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      out[col * 4 + row] =
-        a[0 * 4 + row] * b[col * 4 + 0] +
-        a[1 * 4 + row] * b[col * 4 + 1] +
-        a[2 * 4 + row] * b[col * 4 + 2] +
-        a[3 * 4 + row] * b[col * 4 + 3];
-    }
-  }
-  return out;
-}
-
-function mat4Translate(matrix, vector) {
-  const out = new Float32Array(matrix);
-  out[12] = matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2] + matrix[12];
-  out[13] = matrix[1] * vector[0] + matrix[5] * vector[1] + matrix[9] * vector[2] + matrix[13];
-  out[14] = matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2] + matrix[14];
-  out[15] = matrix[3] * vector[0] + matrix[7] * vector[1] + matrix[11] * vector[2] + matrix[15];
-  return out;
-}
-
-function mat4RotateX(matrix, rad) {
-  const s = Math.sin(rad);
-  const c = Math.cos(rad);
-  const rotation = new Float32Array([
-    1, 0, 0, 0,
-    0, c, s, 0,
-    0, -s, c, 0,
-    0, 0, 0, 1,
-  ]);
-  return mat4Multiply(matrix, rotation);
-}
-
-function mat4RotateY(matrix, rad) {
-  const s = Math.sin(rad);
-  const c = Math.cos(rad);
-  const rotation = new Float32Array([
-    c, 0, -s, 0,
-    0, 1, 0, 0,
-    s, 0, c, 0,
-    0, 0, 0, 1,
-  ]);
-  return mat4Multiply(matrix, rotation);
-}
-
-function setPill(id, text, className) {
-  const pill = document.getElementById(id);
-  if (!pill) return;
-  pill.textContent = text;
-  pill.className = className || "";
-}
-
-function setStepStatus(key, status) {
-  document.querySelectorAll(`[data-step-key="${key}"]`).forEach((button) => {
-    button.dataset.status = status;
-  });
-}
-
-function setCurrentStep(key) {
-  document.querySelectorAll(".task-step").forEach((button) => {
-    button.classList.toggle("active", button.dataset.stepKey === key);
-  });
-}
-
-function switchView(view, stepKey = null) {
-  document.querySelectorAll(".view-page").forEach((page) => {
-    page.classList.toggle("active", page.dataset.page === view);
-  });
-  setText("viewTitle", titles[view] || "功能模块");
-  if (stepKey) setCurrentStep(stepKey);
-  addLog(`切换到 ${titles[view] || view}`);
-}
-
-function runDeviceTest(type) {
-  const map = {
-    motor: {
-      pill: "motorStatus",
-      text: "电机: 离线自检通过",
-      step: "motor",
-      log: "电机检测完成：旋转平台、升降机构为模拟通过状态。",
-    },
-    light: {
-      pill: "lightStatus",
-      text: "光源: 离线自检通过",
-      step: "light",
-      log: "光源检测完成：370-940nm 波段为模拟通过状态。",
-    },
-    camera: {
-      pill: "cameraStatus",
-      text: "相机: 离线自检通过",
-      step: "camera",
-      log: "相机检测完成：彩色相机与多光谱相机为模拟通过状态。",
-    },
-  };
-  const item = map[type];
-  if (!item) return;
-  setPill(item.pill, item.text, "ok");
-  setStepStatus(item.step, "done");
-  setText("statusNote", "硬件通信尚未接入，当前自检结果来自离线模拟。");
-  addLog(item.log);
-}
-
-function resetCaptureStepStatuses() {
-  ["sample", "dark", "white", "rgb", "spectral", "integrity"].forEach((key) => setStepStatus(key, "waiting"));
-  if ($("#captureProgress")) $("#captureProgress").style.width = "0%";
-  setText("captureProgressText", "采集进度: 0 / 4");
-  setText("captureSaveStatus", "等待采集完成");
-}
-
-function renderCalibrationStatus() {
-  const passed = state.calibrationStatus === "passed";
-  const button = $("#confirmCalibration");
-  if (button) {
-    button.textContent = passed ? "✓ 检查通过" : "确认检查通过";
-    button.classList.toggle("passed", passed);
-  }
-  setText("calibrationConfirmText", passed
-    ? "已由操作员人工确认标定检查通过。"
-    : "未确认。本按钮仅记录人工检查结果，不代表已连接真实标定设备。");
-  setStepStatus("calibration", passed ? "done" : "waiting");
-}
-
-function confirmCalibrationCheck() {
-  state.calibrationStatus = "passed";
-  renderCalibrationStatus();
-  addLog("标定检查已人工确认通过。");
-}
-
-async function updateCaptureProgress(step) {
-  if (!requireActiveSample()) return;
-  state.captureStarted = true;
-  state.captureStep = Math.max(state.captureStep, step);
-  const percent = Math.min(100, state.captureStep * 25);
-  const progress = $("#captureProgress");
-  if (progress) progress.style.width = `${percent}%`;
-  setText("captureProgressText", `采集进度: ${Math.min(4, state.captureStep)} / 4`);
-  ["sample", "dark", "white", "rgb", "spectral", "integrity"].slice(0, state.captureStep + 1).forEach((key) => setStepStatus(key, "done"));
-  renderCurrentSample();
-  addLog(`样品采集步骤 ${step} 已完成（离线模拟）。`);
-  if (step >= 4) {
-    await completeCurrentCapture();
-  }
-}
-
-async function completeCurrentCapture() {
-  if (!requireActiveSample()) return;
-  if (state.captureCompleting) return;
-  state.captureCompleting = true;
-  state.captureStarted = true;
-  const button = $("#enterAnalysisFromCapture");
-  try {
-    setText("captureSaveStatus", "正在保存本次拍摄数据...");
-    const payload = await api("/api/complete-capture", {
-      method: "POST",
-      body: JSON.stringify({ sampleId: $("#sampleId")?.value || "" }),
-    });
-    state.currentCaptureDir = payload.currentCaptureDir || "";
-    state.currentCaptureValid = Boolean(state.currentCaptureDir);
-    state.analysisDataDir = payload.analysisDataDir || state.currentCaptureDir;
-    setText("captureSaveStatus", state.currentCaptureValid ? `本次拍摄已保存: ${state.currentCaptureDir}` : "本次拍摄数据未生成");
-    if (button) button.disabled = !state.analysisDataDir;
-    renderCurrentSample();
-    updateCurrentCaptureControls();
-    addLog(`本次拍摄目录已写入: ${state.currentCaptureDir}`);
-    if (state.currentCaptureValid) {
-      try {
-        await loadSampleFolder(state.currentCaptureDir, { source: "current" });
-      } catch (loadError) {
-        setText("captureSaveStatus", `本次拍摄已保存，但自动加载失败: ${state.currentCaptureDir}`);
-        addLog(loadError.message || "本次拍摄目录自动加载失败。", "ERROR");
-      }
-    }
-  } catch (error) {
-    state.currentCaptureValid = false;
-    setText("captureSaveStatus", "本次拍摄保存失败");
-    if (button) button.disabled = true;
-    updateCurrentCaptureControls();
-    addLog(error.message || "本次拍摄保存失败。", "ERROR");
-  } finally {
-    state.captureCompleting = false;
-  }
-}
-
-async function enterAnalysisFromCapture() {
-  if (!requireActiveSample()) return;
-  if (!state.currentCaptureValid || !state.currentCaptureDir) {
-    await completeCurrentCapture();
-  }
-  if (!state.currentCaptureValid || !state.currentCaptureDir) {
-    addLog("没有可进入分析的本次拍摄数据。", "WARN");
-    return;
-  }
-  switchView("shape", "load-rgbd");
-  await loadSampleFolder(state.currentCaptureDir, { source: "current" });
-}
-
-function qualityPayload() {
-  return {
-    datasetDir: state.analysisDataDir,
-    colorDir: $("#colorDir")?.value || "rgb",
-    depthDir: $("#depthDir")?.value || "multispectral",
-    sampleId: $("#sampleId")?.value || "",
-    fruitType: state.fruitType || "",
-    variety: state.variety || "generic",
-    selectedSscModelId: $("#sscModelSelect")?.value || state.selectedSscModelId || "",
-    selectedTaModelId: $("#taModelSelect")?.value || state.selectedTaModelId || "",
-    selectedPhModelId: $("#phModelSelect")?.value || state.selectedPhModelId || "",
-  };
-}
-
-function updateSampleSessionFromReport(report = {}) {
-  applyLoadedSampleMetadata(report.sampleMetadata || report.metadata || {});
-  state.dataCheck = {
-    status: report.status || "empty",
-    rgbCount: Number(report.rgbCount || 0),
-    spectralCount: Number(report.spectralCount || 0),
-    pairCount: Number(report.pairCount || 0),
-  };
-  state.sampleSession.sampleId = $("#sampleId")?.value || "--";
-  state.sampleSession.analysisDataDir = state.analysisDataDir || report.datasetDir || "";
-  renderQualitySampleSummary();
-}
-
-function applyLoadedSampleMetadata(metadata = {}) {
-  const fruitType = metadata.fruit_type || metadata.fruitType || "";
-  const variety = metadata.variety || "";
-  const sampleName = metadata.sample_name || metadata.sampleName || "";
-  const sampleId = metadata.sample_id || metadata.sampleId || "";
-  if (fruitType) state.fruitType = fruitType;
-  if (variety) state.variety = variety;
-  if (state.hasSample && !state.sampleName && sampleName) state.sampleName = sampleName;
-  if (state.hasSample && !state.sampleId && sampleId) state.sampleId = sampleId;
-  state.sampleSession.fruitType = state.fruitType;
-  state.sampleSession.variety = state.variety;
-  if ($("#qualityFruitType") && fruitType) $("#qualityFruitType").value = fruitType;
-  if ($("#qualityVariety") && variety) $("#qualityVariety").value = variety;
-  if (fruitType || variety) {
-    renderCurrentSample();
-    loadQualityModels().catch((error) => addLog(error.message, "WARN"));
-  }
-}
-
-function updateSampleSessionFromImages() {
-  state.sampleSession.rgbFiles = state.imageBrowser.images
-    .map((item) => item.color?.name)
-    .filter(Boolean);
-  state.sampleSession.multispectralFiles = state.imageBrowser.images
-    .map((item) => item.depth?.name)
-    .filter(Boolean);
-  renderQualitySampleSummary();
-}
-
-function applyBackendSampleSession(sample = {}) {
-  state.sampleSession = {
-    ...state.sampleSession,
-    sampleId: sample.sample_id || state.sampleSession.sampleId || $("#sampleId")?.value || "--",
-    sampleName: sample.sample_name || state.sampleName || state.sampleSession.sampleName || "--",
-    analysisDataDir: sample.analysis_data_dir || state.analysisDataDir || "",
-    rgbFiles: Array.isArray(sample.rgb_files) ? sample.rgb_files : state.sampleSession.rgbFiles,
-    multispectralFiles: Array.isArray(sample.multispectral_files) ? sample.multispectral_files : state.sampleSession.multispectralFiles,
-    captureTime: sample.capture_time || state.sampleSession.captureTime || "",
-    fruitType: sample.fruit_type || state.fruitType || "",
-    variety: sample.variety || state.variety || "generic",
-    selectedSscModelId: sample.selected_ssc_model_id || state.selectedSscModelId || "",
-    selectedTaModelId: sample.selected_ta_model_id || state.selectedTaModelId || "",
-    selectedPhModelId: sample.selected_ph_model_id || state.selectedPhModelId || "",
-    sscResult: sample.ssc_result || state.sampleSession.sscResult,
-    taResult: sample.ta_result || state.sampleSession.taResult,
-    phResult: sample.ph_result || state.sampleSession.phResult,
-  };
-  renderQualitySampleSummary();
-}
-
-function renderQualitySampleSummary() {
-  const sampleId = state.sampleSession.sampleId || $("#sampleId")?.value || "--";
-  const dir = state.sampleSession.analysisDataDir || state.analysisDataDir || "未加载样品数据";
-  const rgbCount = state.dataCheck.rgbCount || state.sampleSession.rgbFiles.length || 0;
-  const spectralCount = state.dataCheck.spectralCount || state.sampleSession.multispectralFiles.length || 0;
-  const pairCount = state.dataCheck.pairCount || Math.min(rgbCount, spectralCount);
-  const dataStatus = state.dataCheck.status === "complete"
-    ? "完整"
-    : state.dataCheck.status === "incomplete"
-      ? "不完整"
-      : state.analysisDataDir
-        ? "待检查"
-        : "未加载";
-
-  ["ssc", "acid"].forEach((prefix) => {
-    setText(`${prefix}SampleId`, sampleId);
-    setText(`${prefix}SamplePath`, dir);
-    setText(`${prefix}RgbCount`, rgbCount);
-    setText(`${prefix}SpectralCount`, spectralCount);
-    setText(`${prefix}DataStatus`, pairCount ? dataStatus : "未加载");
-    setText(`${prefix}SampleCount`, pairCount);
-  });
-}
-
-function modelOption(model) {
-  const name = model.display_name || model.model_name || model.model_id;
-  const meta = `${model.model_type || ""} ${model.preprocessing || ""} ${model.version || ""}`.trim();
-  const mark = model.status === "Default" || model.is_default ? "默认" : "已发布";
-  return `<option value="${escapeHtml(model.model_id)}">${escapeHtml(name)} · ${escapeHtml(meta)} · ${mark}</option>`;
-}
-
-function fillPlainSelect(selector, values, selectedValue, fallback = "") {
-  const select = $(selector);
-  if (!select) return "";
-  const options = (values || []).filter(Boolean);
-  if (!options.length && fallback) options.push(fallback);
-  select.innerHTML = options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
-  const target = selectedValue && options.includes(selectedValue) ? selectedValue : options[0] || "";
-  select.value = target;
-  return target;
-}
-
-function fillModelSelect(selector, models, selectedId, defaultModel = null) {
-  const select = $(selector);
-  if (!select) return;
-  if (!models || !models.length) {
-    select.innerHTML = `<option value="">无兼容模型</option>`;
-    select.value = "";
-    return;
-  }
-  select.innerHTML = `${(models || []).map(modelOption).join("")}`;
-  const target = selectedId || defaultModel?.model_id || "";
-  if (target && [...select.options].some((option) => option.value === target)) select.value = target;
-}
-
-async function loadSampleTypeCatalog() {
-  const selectedFruit = $("#qualityFruitType")?.value.trim() || state.fruitType || "";
-  const selectedVariety = $("#qualityVariety")?.value.trim() || state.variety || "generic";
-  const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
-  const fruitType = fillPlainSelect("#qualityFruitType", payload.fruitTypes || [], selectedFruit);
-  const varietyPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(selectedVariety)}`);
-  fillPlainSelect("#qualityVariety", varietyPayload.varieties || ["generic"], selectedVariety, "generic");
-  return varietyPayload;
-}
-
-async function loadQualityModels() {
-  let fruitType = state.fruitType || "";
-  let variety = state.variety || "generic";
-  if (!fruitType) {
-    const catalog = await api("/api/quality-models");
-    fruitType = catalog.fruitTypes?.[0] || $("#qualityFruitType")?.value.trim() || "";
-    variety = catalog.varieties?.[0] || "generic";
-  }
-  const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(variety)}`);
-  if (!hasActiveSample()) {
-    fillPlainSelect("#qualityFruitType", payload.fruitTypes || [], fruitType);
-    fillPlainSelect("#qualityVariety", payload.varieties || ["generic"], variety, "generic");
-  }
-  fillModelSelect("#sscModelSelect", payload.ssc, state.selectedSscModelId, payload.defaults?.ssc);
-  fillModelSelect("#taModelSelect", payload.ta, state.selectedTaModelId, payload.defaults?.ta);
-  fillModelSelect("#phModelSelect", payload.ph, state.selectedPhModelId, payload.defaults?.ph);
-  state.selectedSscModelId = $("#sscModelSelect")?.value || "";
-  state.selectedTaModelId = $("#taModelSelect")?.value || "";
-  state.selectedPhModelId = $("#phModelSelect")?.value || "";
-  updateAnalysisButtonStates();
-  return payload;
-}
-
-async function saveModelSelection() {
-  const payload = qualityPayload();
-  state.fruitType = payload.fruitType;
-  state.variety = payload.variety;
-  state.selectedSscModelId = payload.selectedSscModelId;
-  state.selectedTaModelId = payload.selectedTaModelId;
-  state.selectedPhModelId = payload.selectedPhModelId;
-  await api("/api/model-selection", { method: "POST", body: JSON.stringify(payload) });
-}
-
-function openSampleModal() {
-  const modal = $("#sampleModal");
-  if (!modal) return;
-  modal.hidden = false;
-  loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message));
-}
-
-function closeSampleModal() {
-  const modal = $("#sampleModal");
-  if (modal) modal.hidden = true;
-}
-
-async function loadNewSampleCatalog() {
-  const selectedFruit = $("#newSampleFruitType")?.value || state.fruitType || "";
-  const selectedVariety = $("#newSampleVariety")?.value || state.variety || "generic";
-  const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
-  const fruitType = fillPlainSelect("#newSampleFruitType", payload.fruitTypes || [], selectedFruit);
-  const varietyPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(selectedVariety)}`);
-  fillPlainSelect("#newSampleVariety", varietyPayload.varieties || ["generic"], selectedVariety, "generic");
-  setText("newSampleHint", varietyPayload.fruitTypes?.length ? "样品种类和品种将保存到本次样品 metadata.json。" : "暂无 Published / Default 模型，请先在 Model Studio 发布模型。");
-}
-
-async function createNewSample() {
-  const sampleName = $("#captureSampleName")?.value.trim() || $("#newSampleName")?.value.trim() || "";
-  if (!sampleName) {
-    setText("newSampleHint", "样品名称必须填写。");
-    setText("sampleCreateStatus", "请填写样品名称");
-    return;
-  }
-  const saveRootDir = $("#saveRootDir")?.value.trim() || state.saveRootDir || "";
-  if (!saveRootDir) {
-    setText("newSampleHint", "请选择样品保存位置。");
-    setText("sampleCreateStatus", "请选择保存位置");
-    return;
-  }
-  setText("sampleCreateStatus", "正在创建样品");
-  await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
-  const payload = {
-    sampleName,
-    saveRootDir,
-    fruitType: $("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "",
-    variety: $("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic",
-  };
-  const response = await api("/api/new-sample", { method: "POST", body: JSON.stringify(payload) });
-  applySampleSessionState(response.sample || {});
-  clearSampleDependentState();
-  applySampleSessionState(response.sample || {});
-  setStepStatus("sample", "done");
-  await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
-  renderCurrentSample();
-  closeSampleModal();
-  addLog(`已创建当前样品：${state.sampleName}`);
-}
-
-function applySampleSessionState(sample = {}) {
-  state.hasSample = Boolean(sample.hasSample);
-  state.sampleId = sample.sampleId || "";
-  state.sampleName = sample.sampleName || "";
-  state.sampleCreatedAt = sample.createdAt || "";
-  state.saveRootDir = sample.saveRootDir || "";
-  state.currentCaptureDir = sample.currentCaptureDir || "";
-  state.currentCaptureValid = Boolean(sample.currentCaptureValid && state.currentCaptureDir);
-  state.analysisDataDir = sample.analysisDataDir || "";
-  state.captureStarted = Boolean(sample.captureStarted);
-  state.fruitType = sample.fruitType || "";
-  state.variety = sample.variety || "generic";
-  state.selectedSscModelId = sample.selectedSscModelId || "";
-  state.selectedTaModelId = sample.selectedTaModelId || "";
-  state.selectedPhModelId = sample.selectedPhModelId || "";
-  state.sampleSession.sampleId = state.sampleId;
-  state.sampleSession.sampleName = state.sampleName;
-  state.sampleSession.fruitType = state.fruitType;
-  state.sampleSession.variety = state.variety;
-  if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
-  if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
-}
-
-async function chooseSaveRoot() {
-  if (state.captureStarted) {
-    setText("sampleCreateStatus", "采集已开始，保存位置已锁定");
-    addLog("采集开始后不能修改保存位置。", "WARN");
-    return;
-  }
-  try {
-    const payload = await api("/api/select-save-root");
-    if (payload.saveRootDir) {
-      state.saveRootDir = payload.saveRootDir;
-      if ($("#saveRootDir")) {
-        $("#saveRootDir").value = payload.saveRootDir;
-        $("#saveRootDir").title = payload.saveRootDir;
-      }
-      setText("sampleCreateStatus", "保存位置已选择");
-      addLog(`样品保存位置已选择: ${payload.saveRootDir}`);
-    }
-  } catch (error) {
-    setText("sampleCreateStatus", "未选择保存位置");
-    addLog(error.message || "用户取消选择保存位置。", "WARN");
-  }
-}
-
-async function openCaptureFolder() {
-  if (!requireActiveSample()) return;
-  if (!state.currentCaptureDir) {
-    addLog("当前样品目录尚未生成。", "WARN");
-    return;
-  }
-  try {
-    await api("/api/open-folder", {
-      method: "POST",
-      body: JSON.stringify({ path: state.currentCaptureDir }),
-    });
-  } catch (error) {
-    addLog(error.message || "打开样品文件夹失败。", "ERROR");
-  }
-}
-
-function renderSscResult(result = {}) {
-  const hasValue = Number.isFinite(result.value);
-  state.ssc = hasValue ? Number(result.value) : null;
-  setText("sscValue", hasValue ? Number(result.value).toFixed(2) : "--");
-  setText("resultSsc", hasValue ? `${Number(result.value).toFixed(2)} °Brix` : "--");
-  setText("sscConfidence", Number.isFinite(result.confidence) ? `${Math.round(result.confidence * 100)}%` : "--");
-  setText("sscElapsed", Number.isFinite(result.elapsed_time) ? `${result.elapsed_time}s` : "--");
-  setText("sscModelName", result.model_name || "SSC 预测模型");
-  setText("sscModelVersion", [result.model_version, result.model_type, result.preprocessing].filter(Boolean).join(" · ") || "未接入");
-  setText("sscModelStatus", ["ok", "success"].includes(result.status) ? "预测完成" : "模型预测待接入");
-  setText("sscMessage", result.error_message || (hasValue ? "预测完成" : "暂无预测结果"));
-}
-
-function renderAcidResult(taResult = {}, phResult = {}) {
-  const hasTa = Number.isFinite(taResult.value);
-  const hasPh = Number.isFinite(phResult.value);
-  state.ta = hasTa ? Number(taResult.value) : null;
-  state.ph = hasPh ? Number(phResult.value) : null;
-  setText("taValue", hasTa ? Number(taResult.value).toFixed(2) : "--");
-  setText("phValue", hasPh ? Number(phResult.value).toFixed(2) : "--");
-  setText("resultTa", hasTa ? `${Number(taResult.value).toFixed(2)} %` : "--");
-  setText("resultPh", hasPh ? Number(phResult.value).toFixed(2) : "--");
-  setText("acidConfidence", Number.isFinite(taResult.confidence) ? `${Math.round(taResult.confidence * 100)}%` : "--");
-  setText("acidElapsed", Number.isFinite(taResult.elapsed_time) ? `${taResult.elapsed_time}s` : "--");
-  setText("acidModelName", taResult.model_name || "TA / pH 预测模型");
-  setText("acidModelVersion", [taResult.model_version || phResult.model_version, taResult.model_type || phResult.model_type, taResult.preprocessing || phResult.preprocessing].filter(Boolean).join(" · ") || "未接入");
-  setText("acidModelStatus", ["ok", "success"].includes(taResult.status) || ["ok", "success"].includes(phResult.status) ? "预测完成" : "模型预测待接入");
-  setText("acidMessage", taResult.error_message || phResult.error_message || (hasTa || hasPh ? "预测完成" : "暂无预测结果"));
-}
-
-function clearTasteResult() {
-  state.ratio = null;
-  state.grade = null;
-  setText("resultRatio", "--");
-  setText("gradeValue", "--");
-  setText("tasteRatio", "--");
-  setText("tasteGrade", "--");
-  setText("tasteGradeLarge", "--");
-  setText("tasteExplain", "等待糖度与酸度数据。");
-  setStepStatus("ratio", "waiting");
-  setStepStatus("rating", "waiting");
-}
-
-function clearSscPrediction() {
-  renderSscResult({});
-  state.sampleSession.sscResult = null;
-  clearTasteResult();
-  setStepStatus("sugar", "waiting");
-}
-
-function clearAcidPrediction() {
-  renderAcidResult({}, {});
-  state.sampleSession.taResult = null;
-  state.sampleSession.phResult = null;
-  clearTasteResult();
-  setStepStatus("acid", "waiting");
-}
-
-function clearAllPredictions() {
-  clearSscPrediction();
-  clearAcidPrediction();
-}
-
-async function runSscAnalysis() {
-  if (!requireActiveSample()) return;
-  if (!state.selectedSscModelId) {
-    addLog("当前样品没有兼容的 SSC 模型。", "WARN");
-    setText("sscModelStatus", "无兼容模型");
-    return;
-  }
-  if (!state.analysisDataDir) {
-    addLog("请先在形态分析页面加载当前样品数据。", "WARN");
-    setStepStatus("sugar", "warning");
-    renderQualitySampleSummary();
-    return;
-  }
-  const button = $("#startSscAnalysis");
-  if (button) button.disabled = true;
-  try {
-    await saveModelSelection();
-    setText("sscModelStatus", "正在检查样品数据");
-    const payload = await api("/api/predict-ssc", {
-      method: "POST",
-      body: JSON.stringify(qualityPayload()),
-    });
-    if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
-    if (payload.sample) applyBackendSampleSession(payload.sample);
-    renderSscResult(payload.result || {});
-    const ok = ["ok", "success"].includes(payload.result?.status);
-    setStepStatus("sugar", ok ? "done" : "warning");
-    addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", ok ? "INFO" : "WARN");
-  } catch (error) {
-    setText("sscModelStatus", "预测失败");
-    setText("sscMessage", error.message || "SSC 预测失败");
-    setStepStatus("sugar", "failed");
-    addLog(error.message || "SSC 预测失败。", "ERROR");
-  } finally {
-    updateAnalysisButtonStates();
-  }
-}
-
-async function runAcidAnalysis() {
-  if (!requireActiveSample()) return;
-  if (!state.selectedTaModelId && !state.selectedPhModelId) {
-    addLog("当前样品没有兼容的 TA / pH 模型。", "WARN");
-    setText("acidModelStatus", "无兼容模型");
-    return;
-  }
-  if (!state.analysisDataDir) {
-    addLog("请先在形态分析页面加载当前样品数据。", "WARN");
-    setStepStatus("acid", "warning");
-    renderQualitySampleSummary();
-    return;
-  }
-  const button = $("#startAcidAnalysis");
-  if (button) button.disabled = true;
-  try {
-    await saveModelSelection();
-    setText("acidModelStatus", "正在检查样品数据");
-    const payload = await api("/api/predict-acid", {
-      method: "POST",
-      body: JSON.stringify(qualityPayload()),
-    });
-    if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
-    if (payload.sample) applyBackendSampleSession(payload.sample);
-    renderAcidResult(payload.taResult || {}, payload.phResult || {});
-    const ok = ["ok", "success"].includes(payload.taResult?.status) || ["ok", "success"].includes(payload.phResult?.status);
-    setStepStatus("acid", ok ? "done" : "warning");
-    addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", ok ? "INFO" : "WARN");
-  } catch (error) {
-    setText("acidModelStatus", "预测失败");
-    setText("acidMessage", error.message || "酸度预测失败");
-    setStepStatus("acid", "failed");
-    addLog(error.message || "酸度预测失败。", "ERROR");
-  } finally {
-    updateAnalysisButtonStates();
-  }
-}
-
-function updateTaste(announce = true) {
-  if (!Number.isFinite(state.ssc) || !Number.isFinite(state.ta) || state.ta <= 0) {
-    if (announce) addLog("口感分析需要等待糖度与酸度模型预测结果。", "WARN");
-    return;
-  }
-  const ratio = state.ssc / state.ta;
-  state.ratio = ratio;
-  state.grade = ratio >= 25 && state.ssc >= 11 ? "A" : ratio >= 18 ? "B" : "C";
-  setText("resultRatio", ratio.toFixed(2));
-  setText("gradeValue", state.grade);
-  setText("tasteGradeLarge", state.grade);
-  setText("tasteExplain", `SSC ${state.ssc.toFixed(2)} °Brix，TA ${state.ta.toFixed(2)}%，糖酸比 ${ratio.toFixed(2)}。`);
-  setText("resultSummary", `口感等级 ${state.grade}，糖酸比 ${ratio.toFixed(2)}。`);
-  setStepStatus("ratio", "done");
-  setStepStatus("rating", "done");
-  if (announce) addLog(`口感分析完成：等级 ${state.grade}。`);
-}
-
-async function selectDataset() {
-  try {
-    setDataSource("other");
-    setText("shapeStepLabel", "打开其他文件夹选择器");
-    const payload = await api("/api/select-dataset");
-    if (payload.datasetDir) {
-      await loadSampleFolder(payload.datasetDir, { source: "other" });
-    }
-  } catch (error) {
-    addLog(error.message || "用户取消选择数据集。", "WARN");
-    if (error.payload?.cancelled || String(error.message || "").includes("用户取消")) return;
-    const picker = $("#datasetPicker");
-    if (picker) {
-      picker.value = "";
-      picker.click();
-    }
-  }
-}
-
-async function uploadSelectedDataset(event) {
-  if (!requireActiveSample()) return;
-  const files = Array.from(event.target.files || []);
-  if (!files.length) {
-    addLog("用户取消选择数据集。", "WARN");
-    return;
+  .workspace,
+  .stage-header,
+  .camera-grid,
+  .control-grid,
+  .settings-grid,
+  .process-steps,
+  .shape-layout,
+  .prediction-layout,
+  .prediction-info-grid,
+  .results-panel {
+    grid-template-columns: 1fr;
   }
 
-  const button = $("#selectDataset");
-  const previousText = button?.textContent || "";
-  if (button) {
-    button.disabled = true;
-    button.textContent = "导入中...";
-  }
-  setText("shapeStepLabel", "导入本地样品文件夹");
-  setStepStatus("load-rgbd", "running");
-
-  try {
-    const form = new FormData();
-    files.forEach((file) => {
-      form.append("files", file, file.webkitRelativePath || file.name);
-    });
-    const response = await fetch("/api/upload-dataset", { method: "POST", body: form });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.ok === false) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
-    setDataSource("other");
-    await loadSampleFolder(payload.datasetDir, { source: "other" });
-    setText("shapeStepLabel", "数据集已导入");
-    addLog(`已导入 ${payload.fileCount} 个文件: ${payload.datasetDir}`);
-  } catch (error) {
-    setStepStatus("load-rgbd", "failed");
-    setText("shapeStepLabel", "数据集导入失败");
-    addLog(error.message || "数据集导入失败。", "ERROR");
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = previousText;
-    }
+  .stage {
+    grid-template-rows: auto auto auto;
   }
 }
-
-function setDataSource(source) {
-  state.dataSource = source;
-  if ($("#sourceCurrent")) $("#sourceCurrent").checked = source === "current";
-  if ($("#sourceOther")) $("#sourceOther").checked = source !== "current";
-}
-
-function updateCurrentCaptureControls() {
-  const current = $("#sourceCurrent");
-  const option = $("#currentCaptureOption");
-  if (current) current.disabled = !state.currentCaptureValid || !hasActiveSample();
-  option?.classList.toggle("disabled", !state.currentCaptureValid);
-  setText("currentCaptureHint", state.currentCaptureValid ? state.currentCaptureDir : "暂无本次拍摄数据");
-}
-
-async function handleDataSourceChange(source) {
-  setDataSource(source);
-  if (source === "current") {
-    if (!state.currentCaptureValid || !state.currentCaptureDir) {
-      const report = {
-        status: "missing",
-        message: "本次采集目录已不存在，请重新采集或选择其他文件夹。",
-        rgbCount: 0,
-        spectralCount: 0,
-        pairCount: 0,
-        missing: ["本次采集目录已不存在，请重新采集或选择其他文件夹。"],
-      };
-      renderDataCheck(report);
-      updateSampleSessionFromReport(report);
-      addLog("暂无可用本次拍摄数据。", "WARN");
-      return;
-    }
-    await loadSampleFolder(state.currentCaptureDir, { source: "current" });
-  } else {
-    const report = {
-      status: state.analysisDataDir ? "empty" : "empty",
-      message: state.analysisDataDir ? "已切换为其他文件夹来源。" : "请选择其他文件夹。",
-      rgbCount: 0,
-      spectralCount: 0,
-      pairCount: 0,
-      missing: [],
-    };
-    renderDataCheck(report);
-    updateSampleSessionFromReport(report);
-  }
-}
-
-async function loadSampleFolder(datasetDir, { source = state.dataSource } = {}) {
-  const target = datasetDir || "";
-  state.analysisDataDir = target;
-  setDataSource(source);
-  if ($("#datasetDir")) $("#datasetDir").value = target;
-  $("#colorDir").value = $("#colorDir").value || "rgb";
-  $("#depthDir").value = $("#depthDir").value || "multispectral";
-
-  if (!target) {
-    state.imageBrowser.images = [];
-    state.imageBrowser.index = 0;
-    state.sampleSession.analysisDataDir = "";
-    state.sampleSession.rgbFiles = [];
-    state.sampleSession.multispectralFiles = [];
-    renderDatasetImage();
-    const emptyReport = {
-      status: "empty",
-      message: "请选择本次拍摄或其他文件夹。",
-      rgbCount: 0,
-      spectralCount: 0,
-      pairCount: 0,
-      missing: [],
-    };
-    renderDataCheck(emptyReport);
-    updateSampleSessionFromReport(emptyReport);
-    return;
-  }
-
-  const query = new URLSearchParams({
-    datasetDir: target,
-    colorDir: $("#colorDir")?.value || "",
-    depthDir: $("#depthDir")?.value || "",
-    source,
-  });
-  const report = await api(`/api/sample-folder?${query.toString()}`);
-  renderDataCheck(report);
-  updateSampleSessionFromReport(report);
-  if (source === "current" && report.status === "missing") {
-    state.currentCaptureDir = "";
-    state.currentCaptureValid = false;
-    updateCurrentCaptureControls();
-  }
-  if (report.colorDir) $("#colorDir").value = report.colorDir;
-  if (report.depthDir) $("#depthDir").value = report.depthDir;
-  if (report.valid || Number(report.rgbCount || 0) > 0) {
-    await loadDatasetImages(target);
-    setStepStatus("load-rgbd", report.valid ? "done" : "warning");
-    setText("shapeStepLabel", report.message || "数据目录已检查");
-  } else {
-    state.imageBrowser.images = [];
-    state.imageBrowser.index = 0;
-    state.sampleSession.rgbFiles = [];
-    state.sampleSession.multispectralFiles = [];
-    renderDatasetImage();
-    updateSampleSessionFromImages();
-    setStepStatus("load-rgbd", "warning");
-    setText("shapeStepLabel", report.message || "数据目录不可用");
-  }
-}
-
-function renderDataCheck(report = {}) {
-  const status = report.status || "empty";
-  const complete = status === "complete";
-  const card = $("#dataCheckCard");
-  if (card) card.dataset.status = status;
-  setText("dataCheckTitle", complete ? "✓ 数据目录有效" : status === "empty" ? "暂无数据目录" : "⚠ 数据不完整");
-  setText(
-    "dataCheckSummary",
-    `RGB：${Number(report.rgbCount || 0)} 张 · 多光谱：${Number(report.spectralCount || 0)} 张 · 有效配对：${Number(report.pairCount || 0)} 组\n数据状态：${complete ? "完整" : (report.message || "待检查")}`
-  );
-  const missing = Array.isArray(report.missing) ? report.missing.filter(Boolean) : [];
-  const bad = Array.isArray(report.badImages) ? report.badImages.filter(Boolean) : [];
-  const lines = [];
-  if (missing.length) lines.push(`缺失数据：${missing.join("；")}`);
-  if (bad.length) lines.push(`无法读取：${bad.slice(0, 6).join("，")}${bad.length > 6 ? "..." : ""}`);
-  setText("dataCheckMissing", lines.join("\n"));
-}
-
-async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datasetDir")?.value || "") {
-  if (!datasetDir) {
-    state.imageBrowser.images = [];
-    state.imageBrowser.index = 0;
-    renderDatasetImage();
-    return;
-  }
-  const query = new URLSearchParams({
-    datasetDir,
-    colorDir: $("#colorDir")?.value || "",
-    depthDir: $("#depthDir")?.value || "",
-  });
-  try {
-    const payload = await api(`/api/dataset-images?${query.toString()}`);
-    state.imageBrowser.images = payload.images || [];
-    state.imageBrowser.index = 0;
-    if (payload.colorDir) $("#colorDir").value = payload.colorDir;
-    if (payload.depthDir) $("#depthDir").value = payload.depthDir;
-    renderDatasetImage();
-    updateSampleSessionFromImages();
-    setStepStatus("image-review", state.imageBrowser.images.length ? "done" : "warning");
-    addLog(`图片浏览已加载 ${state.imageBrowser.images.length} 组样品图片。`);
-  } catch (error) {
-    state.imageBrowser.images = [];
-    state.imageBrowser.index = 0;
-    renderDatasetImage();
-    updateSampleSessionFromImages();
-    setStepStatus("image-review", "warning");
-    addLog(`图片浏览未加载: ${error.message}`, "WARN");
-  }
-}
-
-function renderDatasetImage() {
-  const images = state.imageBrowser.images;
-  const color = $("#colorPreview");
-  const depth = $("#depthPreview");
-  if (!images.length) {
-    setPreviewImage("#colorPreview", "#colorPreviewEmpty");
-    setPreviewImage("#depthPreview", "#depthPreviewEmpty");
-    setText("imageBrowserCount", "暂无图片");
-    setText("colorPreviewName", "彩色图");
-    setText("depthPreviewName", "多光谱图");
-    return;
-  }
-  const index = Math.max(0, Math.min(state.imageBrowser.index, images.length - 1));
-  state.imageBrowser.index = index;
-  const item = images[index];
-  setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${item.color.url}&t=${Date.now()}`);
-  setPreviewImage("#depthPreview", "#depthPreviewEmpty", item.depth?.url ? `${item.depth.url}&t=${Date.now()}` : "");
-  setText("imageBrowserCount", `${index + 1} / ${images.length}`);
-  setText("colorPreviewName", item.color.name || "彩色图");
-  setText("depthPreviewName", item.depth?.name || "未提供多光谱图");
-}
-
-function stepDatasetImage(delta) {
-  if (!state.imageBrowser.images.length) return;
-  const count = state.imageBrowser.images.length;
-  state.imageBrowser.index = (state.imageBrowser.index + delta + count) % count;
-  renderDatasetImage();
-}
-
-async function runShapeAnalysis() {
-  if (!requireActiveSample()) return;
-  if (!state.analysisDataDir && !$("#datasetDir")?.value) {
-    setText("shapeStepLabel", "请先选择样品文件夹");
-    setStepStatus("load-rgbd", "warning");
-    addLog("请先选择样品文件夹并确认数据目录有效。", "WARN");
-    return;
-  }
-  if (state.shapeJobId) {
-    addLog("已有形态分析任务正在运行。", "WARN");
-    return;
-  }
-  const mode = $("#shapeMode")?.value || "morphology2d";
-  if (mode === "pointcloud3d") {
-    setText("shapeStepLabel", "三维点云建模为后续预留");
-    setStepStatus("volume", "warning");
-    addLog("点云建模需要深度来源、多角度标定重建或外部点云模型；当前两相机流程先执行普通形态测算。", "WARN");
-    return;
-  }
-  const button = $("#runShapeAnalysis");
-  const cancel = $("#cancelShapeAnalysis");
-  button.disabled = true;
-  cancel.disabled = false;
-  state.shapeStartedAt = performance.now();
-  resetShapeStatus();
-  setStepStatus("load-rgbd", "running");
-  setCurrentStep("load-rgbd");
-  setText("shapeStepLabel", "提交任务中");
-  $("#shapeProgress").style.width = "0%";
-
-  try {
-    const camera = collectCameraSettingsFromForm();
-    const payload = await api("/api/analyze-shape", {
-      method: "POST",
-      body: JSON.stringify({
-        datasetDir: state.analysisDataDir || $("#datasetDir")?.value || "",
-        colorDir: $("#colorDir")?.value || "",
-        depthDir: $("#depthDir")?.value || "",
-        fx: camera.fx,
-        fy: camera.fy,
-        cx: camera.cx,
-        cy: camera.cy,
-        densityGCm3: 1.08,
-        voxelSizeMm: 2.0,
-        maxPairs: 10,
-      }),
-    });
-    state.shapeJobId = payload.jobId;
-    addLog(`形态分析任务已启动: ${state.shapeJobId}`);
-    state.shapeTimer = window.setInterval(pollShapeJob, 650);
-    await pollShapeJob();
-  } catch (error) {
-    finishShapeJob();
-    setStepStatus("load-rgbd", "failed");
-    setText("shapeStepLabel", "任务启动失败");
-    addLog(error.message, "ERROR");
-  }
-}
-
-async function pollShapeJob() {
-  if (!state.shapeJobId) return;
-  try {
-    const payload = await api(`/api/jobs/${state.shapeJobId}`);
-    const job = payload.job;
-    renderShapeJob(job);
-    if (["done", "failed", "cancelled"].includes(job.status)) {
-      finishShapeJob();
-      if (job.status === "done") {
-        renderShapeResult(job.result);
-      } else {
-        const message = job.error?.message || job.message || "分析失败";
-        addLog(message, job.status === "cancelled" ? "WARN" : "ERROR");
-      }
-    }
-  } catch (error) {
-    finishShapeJob();
-    addLog(`查询任务失败: ${error.message}`, "ERROR");
-  }
-}
-
-function renderShapeJob(job) {
-  const progress = Number(job.progress || 0);
-  $("#shapeProgress").style.width = `${progress}%`;
-  setText("shapeStepLabel", job.message || job.step || "运行中");
-  if (state.shapeStartedAt) {
-    setText("shapeElapsed", `${((performance.now() - state.shapeStartedAt) / 1000).toFixed(1)}s`);
-  }
-  const key = shapeStepMap[job.step] || "load-rgbd";
-  setCurrentStep(key);
-  setStepStatus(key, job.status === "failed" ? "failed" : "running");
-  markCompletedShapeSteps(key);
-  const logs = job.logs || [];
-  if (logs.length) {
-    const last = logs[logs.length - 1];
-    if (!$("#runLog").textContent.includes(last)) addLog(last.replace(/^\[[^\]]+\]\s*/, ""));
-  }
-}
-
-function markCompletedShapeSteps(currentKey) {
-  const order = ["load-rgbd", "preprocess", "image-review", "filter", "surface-texture", "measure", "volume", "confirm"];
-  const currentIndex = order.indexOf(currentKey);
-  order.forEach((key, index) => {
-    if (index < currentIndex) setStepStatus(key, "done");
-  });
-}
-
-function renderShapeResult(result) {
-  if (!result) return;
-  const detail = result.details?.[0] || {};
-  const hasPointcloud = Number(result.pointCount || 0) > 0;
-  setText("metricDepth", detail.areaPixels ? `${detail.areaPixels} px` : "--");
-  setText("metricDiameter", detail.diameterPx ? `${Number(detail.diameterPx).toFixed(2)} px` : `${Number(result.diameterMm || 0).toFixed(2)} mm`);
-  setText("metricHeight", detail.heightPx ? `${Number(detail.heightPx).toFixed(2)} px` : `${Number(result.heightMm || 0).toFixed(2)} mm`);
-  setText("metricVolume", hasPointcloud ? `${Number(result.volumeMm3).toFixed(2)} mm³` : "待三维方案");
-  setText("metricWeight", hasPointcloud ? `${Number(result.weightG).toFixed(2)} g` : "待三维方案");
-  renderTextureResult(result.texture);
-  setText("resultShape", hasPointcloud ? `二维形态 + 点云数值 ${result.pointCount} 点` : "二维形态与表面分析完成");
-  setText("resultSummary", `形态分析成功，用时 ${result.elapsedSec}s。`);
-  setStepStatus("confirm", "done");
-  if (result.inputPreviewUrl) setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${result.inputPreviewUrl}?t=${Date.now()}`);
-  if (result.plyUrl) loadPointcloudViewer(result.plyUrl);
-  addLog(hasPointcloud ? `形态分析成功：已读取点云模型 ${result.pointCount} 点。` : "形态分析成功：已完成 RGB 图像形态与表面分析。");
-}
-
-function resetShapeStatus() {
-  clearPointcloudViewer();
-  resetTextureResult();
-  ["load-rgbd", "preprocess", "image-review", "filter", "surface-texture", "measure", "volume", "confirm"].forEach((key) => {
-    setStepStatus(key, "waiting");
-  });
-}
-
-function renderTextureResult(texture) {
-  if (!texture || !texture.ok) {
-    const message = texture?.message || "未获得 RGB 图片";
-    setText("textureStatus", message);
-  setText("metricBloom", "--");
-  setText("metricBloomSide", "--");
-  setText("metricUniformity", "--");
-  setPreviewImage("#texturePreview", "#texturePreviewEmpty");
-  setStepStatus("surface-texture", "warning");
-  return;
-  }
-  const bloom = `${Number(texture.bloomCoveragePercent).toFixed(2)}%`;
-  setText("textureStatus", texture.message || "分析完成");
-  setText("metricBloom", bloom);
-  setText("metricBloomSide", bloom);
-  setText("metricUniformity", `${Number(texture.colorUniformity).toFixed(1)}`);
-  setPreviewImage("#texturePreview", "#texturePreviewEmpty", texture.previewUrl ? `${texture.previewUrl}?t=${Date.now()}` : "");
-  setStepStatus("surface-texture", "done");
-}
-
-function resetTextureResult() {
-  setText("textureStatus", "等待分析");
-  setText("metricBloom", "--");
-  setText("metricBloomSide", "--");
-  setText("metricUniformity", "--");
-  setPreviewImage("#texturePreview", "#texturePreviewEmpty");
-}
-
-function updateShapeMode(mode = $("#shapeMode")?.value || "morphology2d") {
-  state.shapeMode = mode;
-  const isPointcloud = mode === "pointcloud3d";
-  $("#pointcloudSection")?.classList.toggle("is-hidden", !isPointcloud);
-  if (isPointcloud) resizePointcloudCanvas();
-  setText(
-    "shapeModeExplain",
-    isPointcloud
-      ? "该入口用于后续多角度重建、深度相机或外部点云文件接入；当前硬件未提供深度信息，暂不直接生成三维模型。"
-      : "使用彩色图像提取样品轮廓、面积、水平宽度、垂直高度、颜色均匀度、果粉与纹理特征。"
-  );
-  const runButton = $("#runShapeAnalysis");
-  if (runButton && !state.shapeJobId) {
-    runButton.textContent = isPointcloud ? "点云建模待接入" : "开始形态分析";
-    runButton.disabled = isPointcloud || !hasActiveSample();
-  }
-  if (isPointcloud) {
-    setText("shapeStepLabel", "三维建模入口已预留");
-    setStepStatus("volume", "warning");
-  } else {
-    setText("shapeStepLabel", "未开始");
-    setStepStatus("volume", "waiting");
-  }
-}
-
-async function cancelShapeAnalysis() {
-  if (!state.shapeJobId) return;
-  try {
-    await api(`/api/jobs/${state.shapeJobId}/cancel`, { method: "POST", body: "{}" });
-    addLog("已请求取消形态分析任务。", "WARN");
-  } catch (error) {
-    addLog(`取消失败: ${error.message}`, "ERROR");
-  }
-}
-
-function finishShapeJob() {
-  if (state.shapeTimer) window.clearInterval(state.shapeTimer);
-  state.shapeTimer = null;
-  state.shapeJobId = null;
-  if ($("#runShapeAnalysis")) $("#runShapeAnalysis").disabled = !hasActiveSample();
-  if ($("#cancelShapeAnalysis")) $("#cancelShapeAnalysis").disabled = true;
-  updateShapeMode();
-}
-
-function exportReport() {
-  const lines = [
-    "果实口感多光谱无损检测系统 - 检测报告",
-    `样品编号: ${$("#sampleId")?.value || "--"}`,
-    `糖度 SSC: ${$("#resultSsc")?.textContent || "--"}`,
-    `酸度 TA: ${$("#resultTa")?.textContent || "--"}`,
-    `pH: ${$("#resultPh")?.textContent || "--"}`,
-    `糖酸比: ${$("#resultRatio")?.textContent || "--"}`,
-    `综合等级: ${$("#gradeValue")?.textContent || "--"}`,
-    `形态分析: ${$("#resultShape")?.textContent || "--"}`,
-    `果粉覆盖率: ${$("#metricBloomSide")?.textContent || "--"}`,
-    "说明: 硬件控制仍为预留；形态分析在本地 Python 后端执行。",
-  ];
-  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "fruit_quality_report.txt";
-  link.click();
-  URL.revokeObjectURL(link.href);
-  setStepStatus("export", "done");
-  addLog("报告已导出为文本文件。");
-}
-
-function updateClock() {
-  setText("currentTime", new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-}
-
-function openModelStudio() {
-  const url = `${window.location.origin}/model-studio`;
-  window.open(url, "_blank", "noopener");
-  addLog("已打开模型训练与数据管理平台。");
-}
-
-async function shutdownApp() {
-  try {
-    await api("/api/shutdown", { method: "POST", body: "{}" });
-  } catch {
-    addLog("已请求退出程序。", "WARN");
-  }
-  window.close();
-}
-
-document.addEventListener("DOMContentLoaded", async () => {
-  initPointcloudViewer();
-
-  document.querySelectorAll(".task-step").forEach((button) => {
-    button.dataset.status = button.dataset.status || "idle";
-    button.addEventListener("click", () => switchView(button.dataset.view, button.dataset.stepKey));
-  });
-
-  document.querySelectorAll("[data-test]").forEach((button) => {
-    button.addEventListener("click", () => runDeviceTest(button.dataset.test));
-  });
-
-  document.querySelectorAll("[data-log]").forEach((button) => {
-    button.addEventListener("click", () => addLog(button.dataset.log));
-  });
-
-  document.querySelectorAll("[data-step]").forEach((button) => {
-    button.addEventListener("click", () => updateCaptureProgress(Number(button.dataset.step)));
-  });
-
-  document.querySelectorAll(".lamp").forEach((button) => {
-    button.addEventListener("click", () => {
-      document.querySelectorAll(".lamp").forEach((lamp) => lamp.classList.remove("active"));
-      button.classList.add("active");
-      addLog(`当前光源波段切换为 ${button.dataset.band}nm（离线模拟）。`);
-    });
-  });
-
-  $("#sampleId")?.addEventListener("input", () => {
-    setText("resultSampleName", $("#sampleId").value || "--");
-    state.sampleSession.sampleId = $("#sampleId").value || "--";
-    renderQualitySampleSummary();
-  });
-
-  ["#qualityFruitType", "#qualityVariety"].forEach((selector) => {
-    $(selector)?.addEventListener("change", () => {
-      loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
-    });
-  });
-  $("#sscModelSelect")?.addEventListener("change", () => {
-    if (hasActiveSample() && Number.isFinite(state.ssc)) {
-      const ok = window.confirm("更换糖度模型将清空当前 SSC 预测结果和口感结果。");
-      if (!ok) {
-        $("#sscModelSelect").value = state.selectedSscModelId || "";
-        return;
-      }
-      clearSscPrediction();
-    }
-    if (hasActiveSample()) saveModelSelection().catch((error) => addLog(error.message, "WARN"));
-    updateAnalysisButtonStates();
-  });
-  ["#taModelSelect", "#phModelSelect"].forEach((selector) => {
-    $(selector)?.addEventListener("change", () => {
-      if (hasActiveSample() && (Number.isFinite(state.ta) || Number.isFinite(state.ph))) {
-        const ok = window.confirm("更换酸度或 pH 模型将清空当前 TA / pH 预测结果和口感结果。");
-        if (!ok) {
-          if ($("#taModelSelect")) $("#taModelSelect").value = state.selectedTaModelId || "";
-          if ($("#phModelSelect")) $("#phModelSelect").value = state.selectedPhModelId || "";
-          return;
-        }
-        clearAcidPrediction();
-      }
-      if (hasActiveSample()) saveModelSelection().catch((error) => addLog(error.message, "WARN"));
-      updateAnalysisButtonStates();
-    });
-  });
-  $("#createSampleInline")?.addEventListener("click", () => createNewSample().catch((error) => {
-    setText("sampleCreateStatus", "创建失败");
-    addLog(error.message || "创建样品失败。", "ERROR");
-  }));
-  $("#chooseSaveRoot")?.addEventListener("click", chooseSaveRoot);
-  $("#openCaptureFolder")?.addEventListener("click", openCaptureFolder);
-  $("#closeSampleModal")?.addEventListener("click", closeSampleModal);
-  $("#cancelNewSample")?.addEventListener("click", closeSampleModal);
-  $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
-  $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
-  $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
-
-  $("#refreshPorts")?.addEventListener("click", () => {
-    setPill("serialStatus", "串口: 待调试", "warn");
-    setStepStatus("connect", "warning");
-    addLog("已刷新串口列表：当前单片机未接入，保持离线调试。", "WARN");
-  });
-
-  $("#startWorkflow")?.addEventListener("click", () => {
-    if (!requireActiveSample()) return;
-    switchView("capture", "sample");
-    setStepStatus("sample", "running");
-    addLog("检测流程已启动：按离线模式进入样品采集。");
-  });
-
-  $("#emergencyStop")?.addEventListener("click", () => {
-    setPill("motorStatus", "电机: 已停止", "warn");
-    setPill("lightStatus", "光源: 已关闭", "warn");
-    addLog("紧急停止已触发：模拟关闭电机与光源。", "WARN");
-  });
-
-  $("#startSscAnalysis")?.addEventListener("click", runSscAnalysis);
-  $("#startAcidAnalysis")?.addEventListener("click", runAcidAnalysis);
-  $("#evaluateTaste")?.addEventListener("click", () => updateTaste(true));
-  $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
-  $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
-  $("#confirmCalibration")?.addEventListener("click", confirmCalibrationCheck);
-  $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));
-  document.querySelectorAll('input[name="dataSource"]').forEach((input) => {
-    input.addEventListener("change", (event) => handleDataSourceChange(event.target.value));
-  });
-  ["#colorDir", "#depthDir"].forEach((selector) => {
-    $(selector)?.addEventListener("change", () => {
-      if (state.analysisDataDir) loadSampleFolder(state.analysisDataDir, { source: state.dataSource });
-    });
-  });
-  $("#enterAnalysisFromCapture")?.addEventListener("click", enterAnalysisFromCapture);
-  $("#selectDataset")?.addEventListener("click", selectDataset);
-  $("#datasetPicker")?.addEventListener("change", uploadSelectedDataset);
-  $("#prevImage")?.addEventListener("click", () => stepDatasetImage(-1));
-  $("#nextImage")?.addEventListener("click", () => stepDatasetImage(1));
-  $("#refreshImages")?.addEventListener("click", () => loadSampleFolder(state.analysisDataDir || $("#datasetDir")?.value || "", { source: state.dataSource }));
-  $("#runShapeAnalysis")?.addEventListener("click", runShapeAnalysis);
-  $("#cancelShapeAnalysis")?.addEventListener("click", cancelShapeAnalysis);
-  $("#exportReport")?.addEventListener("click", exportReport);
-  $("#clearLog")?.addEventListener("click", () => {
-    setText("runLog", "[INFO] 日志已清空。");
-  });
-  $("#saveLog")?.addEventListener("click", exportReport);
-
-  $("#fullscreenButton")?.addEventListener("click", () => {
-    document.documentElement.requestFullscreen?.();
-  });
-
-  $("#helpButton")?.addEventListener("click", () => {
-    addLog("帮助：左侧任务树按设备准备、采集、形态、糖酸、报告和设置组织；形态分析会调用本地 Python 后端。");
-  });
-
-  $("#modelStudioButton")?.addEventListener("click", openModelStudio);
-  $("#exitButton")?.addEventListener("click", shutdownApp);
-
-  window.setInterval(updateClock, 1000);
-  updateClock();
-  applyCameraSettings();
-  resetCaptureStepStatuses();
-  renderCalibrationStatus();
-  updateShapeMode();
-  try {
-    const status = await api("/api/status");
-    applySampleSessionState(status);
-    state.saveRootDir = status.saveRootDir || state.saveRootDir || "";
-    state.captureStarted = Boolean(status.captureStarted);
-    state.currentCaptureDir = status.currentCaptureDir || "";
-    state.currentCaptureValid = Boolean(status.currentCaptureValid && state.currentCaptureDir);
-    state.analysisDataDir = status.analysisDataDir || status.sampleDataset || "";
-    await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
-    if ($("#qualityFruitType") && state.fruitType) $("#qualityFruitType").value = state.fruitType;
-    if ($("#qualityVariety") && state.variety) $("#qualityVariety").value = state.variety;
-    await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
-    renderCurrentSample();
-    updateCurrentCaptureControls();
-    if (hasActiveSample() && state.analysisDataDir) {
-      const source = state.currentCaptureValid && state.analysisDataDir === state.currentCaptureDir ? "current" : "other";
-      await loadSampleFolder(state.analysisDataDir, { source });
-    } else if (hasActiveSample() && state.currentCaptureValid) {
-      await loadSampleFolder(state.currentCaptureDir, { source: "current" });
-    } else {
-      setDataSource("other");
-      const report = {
-        status: "empty",
-        message: "请选择本次拍摄或其他文件夹。",
-        rgbCount: 0,
-        spectralCount: 0,
-        pairCount: 0,
-        missing: [],
-      };
-      renderDataCheck(report);
-      updateSampleSessionFromReport(report);
-    }
-    if (status.dependencies?.PIL && status.dependencies?.numpy) {
-      addLog("Python 后端已连接，图像分析依赖可用。");
-    }
-    if (!status.dependencies?.cv2) {
-      addLog("未检测到 OpenCV：可选点云模型读取和部分图像处理可能受限。", "WARN");
-    }
-  } catch (error) {
-    addLog(`后端未连接: ${error.message}`, "ERROR");
-  }
-});
