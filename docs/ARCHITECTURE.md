@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-08-27
+更新时间：2026-09-01
 
 ## 总体结构
 
@@ -9,8 +9,12 @@ host_software/static_ui_prototype_bin/
   launcher.py
   backend_server.py
   index.html / styles.css / app.js
+  serial_service.py
+  hardware_controller.py
+  device_manager.py
   pointcloud_service.py
   pipeline_v2.py
+  rotation_plan.py
   quality_prediction.py
   quality_algorithm/
   training/
@@ -39,9 +43,13 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
-| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，采集前置门槛 | 当前为离线模拟 |
+| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，采集前置门槛 | 串口/滤光轮部分可走真实 API，相机和样品台仍为离线/待接入 |
+| STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
+| 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
+| 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*` | HardwareController |
+| 样品旋转计划 | `rotation_plan.py`, `backend_server.py`, `app.js` | `build_capture_rotation_plan()`, `mark_plan_completed()`, `renderRotationPlan()` | 期望角度间隔、起始角度、CW/CCW、闭合补拍 | `captureRotationPlan`、`sample_rotation` metadata、`views.json` | math/json |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
-| 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata | 写模拟图片和校准图 | PIL |
+| 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
 | 主 UI | `index.html` | 页面结构 | 用户操作 | 显示工作站 | `app.js` |
 | 主 UI 状态机 | `app.js` | `state`, `api()`, `getModuleLayoutMode()`, `applyModuleLayout()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、采集/分析布局切换、报告 TXT | Browser APIs |
 | 目录检查 | `pointcloud_service.py` | `inspect_sample_folder()`, `_inspect_sample_folder_by_enabled_bands()` | 样品目录、rgb/multispectral 子目录名 | 数据质量报告 | PIL, quality_algorithm |
@@ -71,27 +79,40 @@ GET /api/status
   -> defaultSaveRoot
 ```
 
-输出包括 Python 依赖、设备准备状态、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。
+输出包括 Python 依赖、设备准备状态、真实/离线设备状态、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。
 
 ### 设备准备
 
 ```text
+app.js loadDevicePorts()/connectDevice()/runHardwareSelfTest()/emergencyStopDevice()
+  -> GET /api/device/ports
+  -> POST /api/device/connect
+  -> POST /api/device/self-test
+  -> POST /api/device/emergency-stop
+  -> backend_server device routes
+  -> DeviceManager
+  -> HardwareController
+  -> SerialService
+  -> STM32 two-byte protocol
+
 app.js runDeviceTest()/confirmCalibrationCheck()
   -> POST /api/device-preparation
   -> SessionState.update_device_preparation()
   -> SessionState.devicePrepared = all(connect, motor, light, camera, calibration)
 ```
 
-当前状态来自离线 UI 操作，不代表真实硬件通信已经接入。`/api/new-sample` 和 `/api/complete-capture` 会通过 `require_device_preparation()` 阻止未完成设备准备时开始样品采集。
+串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。相机 SDK、样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 在相机服务接入前返回 409。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成设备准备时开始样品采集。
 
 ### 样品创建
 
 ```text
 app.js createNewSample()
   -> requireDevicePreparation()
+  -> buildCaptureRotationPlan() 前端预览
   -> POST /api/new-sample
   -> backend_server.require_device_preparation()
   -> backend_server.handle_new_sample()
+  -> rotation_plan.build_capture_rotation_plan()
   -> create_unique_sample_folder()
   -> SessionState.create_sample()
   -> ensure_sample_capture_folder()
@@ -106,7 +127,10 @@ app.js createNewSample()
   calibration/dark/
   calibration/white/
   metadata.json
+  views.json
 ```
+
+`metadata.json` 中 `sample_rotation` 是样品台多视角计划；`filter_wheel_rotation` 是滤光片转轮波段切换说明。两者控制域独立，不能混用。
 
 ### 路径选择
 
@@ -131,9 +155,12 @@ Model Studio labels.csv
 ```text
 app.js completeCurrentCapture()
   -> POST /api/complete-capture
+  -> rotation_plan.build_capture_rotation_plan()
   -> create_offline_capture_dataset()
+  -> rotation_plan.mark_plan_completed()
   -> SessionState.current_capture_dir = capture_dir
   -> SessionState.analysis_data_dir = capture_dir
+  -> SessionState.capture_rotation_plan = sample_rotation
 ```
 
 当前写入模拟文件：
@@ -146,7 +173,22 @@ calibration/white/white_001.png ...
 metadata.json
 ```
 
-注意：暗/白文件名不是按波长命名，因此当前离线采集可用于未标定归一化流程；完整按波长校准仍需真实采集规范。
+启用样品多角度旋转拍摄时，为兼容当前非递归图片读取，仍保持单层目录：
+
+```text
+rgb/rgb_view_000.png
+rgb/rgb_view_045.png
+multispectral/view000_450.png
+multispectral/view000_560.png
+multispectral/view045_450.png
+...
+views.json
+metadata.json
+```
+
+每个 View 记录 `view_id`、`sample_id`、`logical_angle_deg`、`mechanical_angle_deg`、`direction`、`capture_order`、`rgb_files`、`multispectral_files`、`closure_view`。当前样品台回 Home 是离线模拟状态，真实硬件接入后应替换为独立的 sample stage 控制接口。
+
+注意：未启用多角度时仍保留旧离线输出。启用多角度时暗/白文件按波长补充 `dark_<band>.png`、`white_<band>.png`；完整真实校准仍需真实采集规范。
 
 ### 目录检查和图片预览
 

@@ -227,6 +227,56 @@
                   <input id="sampleFolderPath" placeholder="创建样品后自动生成本次样品目录" readonly />
                 </label>
               </div>
+              <div class="rotation-capture-card" id="rotationCaptureCard">
+                <div class="rotation-capture-head">
+                  <label class="toggle-line">
+                    <input id="multiViewEnabled" type="checkbox" />
+                    <span>启用样品多角度旋转拍摄</span>
+                  </label>
+                  <span id="rotationPlanStatus">单视角</span>
+                </div>
+                <div class="rotation-settings-fields" id="rotationSettingsFields" hidden>
+                  <label>期望角度间隔
+                    <div class="degree-input">
+                      <input id="rotationIntervalDeg" type="number" min="1" step="0.1" value="30" />
+                      <span>°</span>
+                    </div>
+                  </label>
+                  <label>起始角度
+                    <div class="degree-input">
+                      <input id="rotationStartAngleDeg" type="number" step="0.1" value="0" />
+                      <span>°</span>
+                    </div>
+                  </label>
+                  <label>旋转方向
+                    <select id="rotationDirection">
+                      <option value="CW">顺时针 CW</option>
+                      <option value="CCW">逆时针 CCW</option>
+                    </select>
+                  </label>
+                  <div class="rotation-quick-values" aria-label="常用角度">
+                    <button type="button" data-rotation-interval="15">15°</button>
+                    <button type="button" data-rotation-interval="30">30°</button>
+                    <button type="button" data-rotation-interval="45">45°</button>
+                    <button type="button" data-rotation-interval="60">60°</button>
+                    <button type="button" data-rotation-interval="90">90°</button>
+                  </div>
+                  <details class="rotation-advanced">
+                    <summary>高级设置</summary>
+                    <label class="toggle-line">
+                      <input id="includeClosureView" type="checkbox" />
+                      <span>补拍闭合角度（360°）</span>
+                    </label>
+                    <p>360° 与 0° 位置相同，仅用于首尾一致性检查，默认不参与普通采集。</p>
+                  </details>
+                </div>
+                <div class="rotation-plan-summary" id="rotationPlanSummary">
+                  <span>预计采集</span><strong id="rotationViewCount">1 个视角</strong>
+                  <span>实际间隔</span><strong id="rotationActualInterval">--</strong>
+                  <span>角度序列</span><strong id="rotationAngles">0°</strong>
+                </div>
+                <p class="hint">样品旋转用于水果多视角采集；滤光片转轮用于切换多光谱波段，两者是独立控制对象。</p>
+              </div>
               <div class="sample-create-actions">
                 <button class="primary-action" id="createSampleInline" type="button">新建样品</button>
                 <button id="openCaptureFolder" type="button" disabled>打开文件夹</button>
@@ -241,6 +291,7 @@
             </div>
             <div class="progress-track"><div id="captureProgress"></div></div>
             <p id="captureProgressText">采集进度: 0 / 4</p>
+            <div class="capture-rotation-status" id="captureRotationStatus">样品旋转：单视角；滤光片转轮独立切换多光谱波段。</div>
             <div class="capture-actions">
               <span id="captureSaveStatus">等待采集完成</span>
               <button id="enterAnalysisFromCapture" type="button" disabled>进入分析</button>

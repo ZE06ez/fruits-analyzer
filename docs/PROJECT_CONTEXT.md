@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-08-27
+更新时间：2026-09-01
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -39,11 +39,12 @@
 | --- | --- | --- |
 | RGB 彩色相机 | 文档建议 RER-USB48MP01 等工业 USB 彩色相机，用于外观和形态 | MOCK/PARTIAL：UI 有彩色相机预览区；采集由 `create_offline_capture_dataset()` 写入模拟 PNG；没有相机 SDK 或真实采集代码 |
 | 黑白多光谱相机 | 文档建议 MGS231M-H2 黑白相机，400-1000 nm，配合滤光片 | MOCK/PARTIAL：数据目录和算法支持 `multispectral/` 灰度图；没有真实相机 SDK |
-| 滤光片转轮 | 文档建议 8-16 孔，STM32 控制 HOME/定位；代码开发配置启用 450/560/670 nm | PARTIAL/MOCK：`quality_algorithm/filter_config.development.json` 有软件配置；没有串口协议和电机控制实现 |
-| 光源 | 顶部/侧向/底部/紫外/近红外光源，可调亮度并与曝光同步 | MOCK：UI 有光源波段按钮和自检日志；没有真实 LED/调光通信 |
-| 电机/驱动器 | STM32 + 步进驱动器控制滤光轮、可能的样品台/门控 | MOCK：UI 有电机自检、平台正反转按钮；点击只写日志 |
+| 滤光片转轮 | 文档建议 8-16 孔，STM32 控制 HOME/定位；代码开发配置启用 450/560/670 nm | PARTIAL：已有 `serial_service.py`、`hardware_controller.py`、`device_manager.py` 的两字节 STM32 串口控制层和滤光轮寻零/相对旋转命令；真实运行需连接 STM32 和 pyserial |
+| 样品旋转平台 | 围绕水果旋转，用于 RGB + 多光谱多视角采集 | PARTIAL/MOCK：主程序已支持 `sample_rotation` 角度计划、UI 设置、metadata/views.json 记录和离线模拟多 View 文件；没有真实样品台电机控制 |
+| 光源 | 顶部/侧向/底部/紫外/近红外光源，可调亮度并与曝光同步 | PARTIAL：控制层已有 RGB LED 两路和钨灯两路开关命令及互锁；主 UI 光源波段按钮仍是离线自检/日志，没有亮度调节闭环 |
+| 电机/驱动器 | STM32 + 步进驱动器控制滤光轮、可能的样品台/门控 | PARTIAL：滤光片轮和升降门已有 STM32 控制命令；样品旋转平台仍只有计划和 UI，没有真实电机接口 |
 | 暗箱/样品台 | 封闭光环境，固定样品位置 | TODO：代码只体现需求和文档，没有传感器/门控/限位状态接入 |
-| 真实设备状态读取 | 门状态、急停、电机报警、温度等 | TODO：`/api/status` 返回后端依赖和会话状态，不返回真实硬件状态 |
+| 真实设备状态读取 | 门状态、急停、电机报警、温度等 | PARTIAL：`/api/status` 返回 `device` 状态，`/api/device/status` 可查询风扇、门、滤光轮、光源、故障码和急停状态；温度等扩展状态未接入 |
 
 ## 3. 软件架构
 
@@ -74,6 +75,10 @@ UI
 - `host_software/static_ui_prototype_bin/index.html`：主检测工作站 UI。
 - `host_software/static_ui_prototype_bin/app.js`：前端状态机、采集/分析布局切换、样品流程、模型选择、分析调用、结果渲染。
 - `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
+- `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 两字节串口服务，115200 8N1，一问一答，不自动重发机械命令。
+- `host_software/static_ui_prototype_bin/hardware_controller.py`：风扇、升降门、RGB LED、钨灯、滤光片轮、状态查询、急停和故障清除控制层。
+- `host_software/static_ui_prototype_bin/device_manager.py`：后端设备管理层，连接串口、执行 PING、自检、急停、采集状态，并在相机未接入时拒绝真实采集。
+- `host_software/static_ui_prototype_bin/rotation_plan.py`：样品台多角度旋转采集计划；与滤光片转轮角度独立。
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
 - `host_software/static_ui_prototype_bin/quality_prediction.py`：`SampleSession`、`PredictionResult`、SSC/TA/pH 预测入口。
@@ -88,22 +93,24 @@ UI
 1. 启动软件：运行 `python launcher.py` 或打包后的 EXE。
 2. `launcher.py` 启动本地后端并打开浏览器页面。
 3. UI 加载 `/api/status`，获取依赖状态、默认保存根目录、当前样品会话、Model Studio 发布模型目录。
-4. 用户进行设备准备页面的连接检查、电机自检、光源自检、相机自检和标定检查：当前仍属于离线模拟，但前端和后端都会把它作为样品采集前置条件。
+4. 用户进行设备准备页面的连接检查、电机自检、光源自检、相机自检和标定检查：串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；相机自检、光源波段按钮和样品台控制仍主要是离线流程记录。
 5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
-6. 完成设备准备后点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，写入 `metadata.json`，并创建 `rgb/`、`multispectral/`、`calibration/dark/`、`calibration/white/`。
-7. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
-8. 用户点击采集步骤：当前只更新 UI 进度与日志。
-9. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`，向当前样品目录写入模拟 RGB、多光谱、暗场、白板图片，并把本次目录设为 `analysisDataDir`。
-10. 进入 `shape/sugar/acid/taste` 分析模块时，主程序中央区切换为分析布局：隐藏 RGB/多光谱相机预览面板，并让分析内容占用中央空间；设备准备、采集和设置模块仍保留双相机预览。
-11. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
-12. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
-13. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
-14. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
-15. 点击“开始糖度分析”：`POST /api/predict-ssc` 构建 `SampleSession`，调用 `predict_ssc()`。
-16. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
-17. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
-18. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
-19. 导出报告：前端生成本地 TXT 文本，说明硬件仍为预留。
+6. 可在“样品采集”页设置样品台多角度旋转拍摄：启用/关闭、期望角度间隔、起始角度、CW/CCW、是否补拍闭合角度。该设置属于 `sample_rotation`，不等同于滤光片转轮角度。
+7. 完成设备准备后点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json`，并创建 `rgb/`、`multispectral/`、`calibration/dark/`、`calibration/white/`。
+8. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
+9. 用户点击采集步骤：当前只更新 UI 进度与日志；采集开始后旋转计划锁定。
+10. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`。未启用多角度时保持旧离线单层文件；启用多角度时写 `rgb/rgb_view_000.png`、`multispectral/view000_450.png` 等兼容命名文件，并写 `views.json` 和 metadata 中的 `capture_views`。
+11. 采集完成后样品旋转计划标记 `returned_home=true`、`home_status=HOME_OK`；当前只是模拟回 Home，不代表真实电机已接入。
+12. 进入 `shape/sugar/acid/taste` 分析模块时，主程序中央区切换为分析布局：隐藏 RGB/多光谱相机预览面板，并让分析内容占用中央空间；设备准备、采集和设置模块仍保留双相机预览。
+13. 形态分析页可选择“本次拍摄”或“其他文件夹”；“其他文件夹”通过系统目录选择器选择，`GET /api/sample-folder` 检查目录结构，支持 `rgb/` 和 `multispectral/`。本地已有样品目录可以直接分析，不强制先创建当前样品。
+14. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
+15. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
+16. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
+17. 点击“开始糖度分析”：`POST /api/predict-ssc` 构建 `SampleSession`，调用 `predict_ssc()`。
+18. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
+19. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
+20. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
+21. 导出报告：前端生成本地 TXT 文本，说明硬件仍为预留。
 
 ## 5. Model Studio 工作流
 
@@ -172,6 +179,7 @@ UI
 | PyInstaller 打包配置 | DONE | `FruitTasteAnalyzer.spec`、`launcher.py`、`run_analyzer.bat` |
 | 样品创建与目录结构 | DONE | 设备准备完成后，`/api/new-sample` 创建目录和 `metadata.json` |
 | 本次拍摄目录进入分析流程 | PARTIAL/MOCK | 会自动设为 `analysisDataDir`，但图片由离线函数生成 |
+| 样品多角度旋转拍摄计划 | DONE/MOCK | `rotation_plan.py` 计算视角、实际间隔、闭合 View 和 Home 状态；当前无真实样品台电机 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 系统目录选择器选择其他样品目录，再由 `/api/sample-folder` 检查 |
 | 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
@@ -187,9 +195,9 @@ UI
 | SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；当前无生产模型时返回缺失 |
 | 糖酸比/口感分析 | PARTIAL | 前端根据预测值计算，等级规则较简单 |
 | 真实相机 SDK | TODO | 无 SDK/驱动封装 |
-| 真实电机/滤光轮串口 | TODO | 无串口协议实现 |
-| 真实光源控制 | TODO | 只有 UI 模拟 |
-| 门控/急停/温度/报警 | TODO | 只有历史需求文档 |
+| 真实电机/滤光轮串口 | PARTIAL | 已有两字节串口层、滤光轮 HOME/相对旋转、状态查询和测试；未完成真实采集编排 |
+| 真实光源控制 | PARTIAL | 控制层已有 RGB LED/钨灯开关和互锁；主 UI 仍未提供逐路真实光源控制 |
+| 门控/急停/温度/报警 | PARTIAL/TODO | 升降门、急停、故障码已有控制/查询；温度和报警扩展未接入 |
 | 标定配准 | PARTIAL/TODO | 暗/白校正有；RGB 到多光谱 calibrated registration 未接入 |
 | 历史记录数据库/正式报告 | TODO/PARTIAL | Model Studio 有 SQLite；检测结果未持久化到历史库，报告为前端 TXT |
 
@@ -201,6 +209,9 @@ UI
 - 主程序继续以 Python 上位机为核心。
 - 当前前端是静态 HTML/CSS/JS，后端是 Python 本地 HTTPServer；历史文档中的 Vue/FastAPI/Electron 是早期建议，不是当前实现。
 - 相机 SDK 预计通过厂家 C/C++ SDK 与 Python 对接；当前尚未接入。
+- 样品旋转角度和滤光片转轮角度必须完全独立：`sample_rotation` 控制样品台多视角，`filter_wheel_rotation` 控制多光谱波段切换，不能用同一字段或同一电机状态表示。
+- 多角度采集默认不拍 360°，因为 0° 与 360° 是同一位置；只有用户启用闭合补拍时才生成 `closure_view=true` 的额外 View。
+- 多 View 仍属于同一个水果 Sample，同一个 `sample_id`；后续如果展开为多行特征，训练/验证必须继续按 `sample_id` 分组，避免同一水果进入 train/test 两边。
 - 第一版模型以 PLSR 为基线，SVR 作为主要对照，RF 作为额外比较模型。
 - 预处理支持 RAW / SNV / MSC。
 - 训练数据不足时必须失败，不能造假标签或伪造模型结果。
@@ -217,9 +228,10 @@ UI
 
 代码和文档中确认的主要缺口：
 
-- 真实硬件通信未接入：相机、STM32、串口、滤光轮、光源、电机、门控、急停、温度、报警都还是 TODO/MOCK。
+- 真实采集闭环未接入：STM32 串口、滤光轮、门控、急停、部分光源命令已有控制层；相机 SDK、样品台真实旋转、温度和扩展报警仍未接入。
+- 样品旋转平台当前只有角度计划、UI、metadata 和离线模拟文件，缺少 `home_sample_stage()`、`move_sample_stage_to_angle()`、`wait_sample_stage_stable()` 等真实硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
-- 主 UI 的自检按钮、串口刷新、光源切换、紧急停止均为前端模拟日志。
+- 主 UI 的串口刷新/连接、硬件通信自检、滤光轮寻零自检、紧急停止已接后端设备 API；相机预览、相机自检、样品台正反转和光源波段按钮仍是离线日志/状态。
 - `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 明确抛出 `NotImplementedError`。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
@@ -244,7 +256,7 @@ Phase 2：接入硬件最小闭环
 
 - 接入 RGB 相机 SDK，完成预览、拍照、保存和曝光/增益锁定。
 - 接入黑白相机 SDK，完成单波段拍照和 RAW/位深保存。
-- 接入 STM32 串口协议，完成滤光轮 HOME/GOTO、光源开关/亮度、状态读取。
+- 扩展 STM32 串口协议接入，补齐真实采集编排、滤光轮绝对定位/GOTO、样品台电机、光源亮度、温度/报警状态。
 - 将 `create_offline_capture_dataset()` 替换为真实采集流程，同时保留明确的离线调试模式。
 - 增加暗场/白板采集 UI 与 metadata 写入。
 

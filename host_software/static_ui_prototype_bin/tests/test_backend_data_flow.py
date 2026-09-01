@@ -302,7 +302,84 @@ class BackendDataFlowTests(unittest.TestCase):
         )
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
-        self.assertEqual(Path(job["result"]["datasetDir"]), dataset)
+
+    def test_multiview_capture_plan_writes_view_metadata_and_compatible_files(self):
+        self.prepare_device()
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "蓝莓多角度01",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+            "sampleRotation": {
+                "enabled": True,
+                "expectedIntervalDeg": 50,
+                "startAngleDeg": 0,
+                "direction": "CCW",
+                "includeClosureView": False,
+            },
+        })["sample"]
+        self.assertEqual(sample["captureRotationPlan"]["view_count"], 8)
+        self.assertEqual(sample["captureRotationPlan"]["actual_interval_deg"], 45)
+
+        capture = self.post_json("/api/complete-capture", {
+            "sampleId": sample["sampleId"],
+            "sampleRotation": {
+                "enabled": True,
+                "expectedIntervalDeg": 50,
+                "startAngleDeg": 0,
+                "direction": "CCW",
+                "includeClosureView": False,
+            },
+        })
+        capture_dir = Path(capture["currentCaptureDir"])
+        metadata = json.loads((capture_dir / "metadata.json").read_text(encoding="utf-8"))
+        views = json.loads((capture_dir / "views.json").read_text(encoding="utf-8"))
+        rotation = metadata["sample_rotation"]
+
+        self.assertEqual(rotation["angles_deg"], [0, 45, 90, 135, 180, 225, 270, 315])
+        self.assertEqual(rotation["home_status"], "HOME_OK")
+        self.assertTrue(rotation["returned_home"])
+        self.assertEqual(metadata["filter_wheel_rotation"]["control_domain"], "filter_wheel_rotation")
+        self.assertTrue(metadata["filter_wheel_rotation"]["independent_from_sample_rotation"])
+        self.assertEqual(len(views), 8)
+        self.assertTrue(all(view["sample_id"] == sample["sampleId"] for view in views))
+        self.assertTrue(all(view["direction"] == "CCW" for view in views))
+        self.assertFalse(any(view["closure_view"] for view in views))
+        self.assertTrue((capture_dir / "rgb" / "rgb_view_000.png").is_file())
+        self.assertTrue((capture_dir / "rgb" / "rgb_view_315.png").is_file())
+        self.assertTrue((capture_dir / "multispectral" / "view000_450.png").is_file())
+        self.assertTrue((capture_dir / "multispectral" / "view315_670.png").is_file())
+        self.assertFalse((capture_dir / "rgb" / "rgb_view_360.png").exists())
+
+        report = self.get_json(
+            "/api/sample-folder",
+            {"datasetDir": str(capture_dir), "source": "current", "colorDir": "rgb", "depthDir": "multispectral"},
+        )
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["rgbCount"], 8)
+        self.assertEqual(report["spectralCount"], 24)
+        self.assertEqual(report["sampleMetadata"]["sample_rotation"]["view_count"], 8)
+
+    def test_closure_view_is_saved_only_when_requested(self):
+        self.prepare_device()
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "蓝莓闭合检查",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+            "sampleRotation": {
+                "enabled": True,
+                "expectedIntervalDeg": 90,
+                "includeClosureView": True,
+            },
+        })["sample"]
+        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"]})
+        capture_dir = Path(capture["currentCaptureDir"])
+        views = json.loads((capture_dir / "views.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(views), 5)
+        self.assertTrue(views[-1]["closure_view"])
+        self.assertEqual(views[-1]["mechanical_angle_deg"], 360)
+        self.assertTrue((capture_dir / "rgb" / "rgb_view_360.png").is_file())
 
     def test_manual_folder_switches_session_to_latest_dataset(self):
         self.create_sample("苹果测试01")

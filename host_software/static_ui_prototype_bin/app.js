@@ -39,6 +39,7 @@ const state = {
   serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
+  captureRotationPlan: null,
   hasSample: false,
   sampleName: "",
   sampleId: "",
@@ -85,6 +86,14 @@ const DEFAULT_CAMERA_SETTINGS = {
   fy: 652.77,
   cx: 631.75,
   cy: 364.95,
+};
+
+const DEFAULT_ROTATION_SETTINGS = {
+  enabled: false,
+  expectedIntervalDeg: 30,
+  startAngleDeg: 0,
+  direction: "CW",
+  includeClosureView: false,
 };
 
 const titles = {
@@ -167,6 +176,167 @@ function escapeHtml(value = "") {
 function parseNumberSetting(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeAngleDeg(value) {
+  const normalized = ((Number(value) % 360) + 360) % 360;
+  return Math.abs(normalized) < 1e-9 ? 0 : Number(normalized.toFixed(6));
+}
+
+function formatAngleDeg(value) {
+  const rounded = Number(Number(value).toFixed(6));
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function viewToken(angle, closure = false) {
+  if (closure) return "360";
+  const text = formatAngleDeg(normalizeAngleDeg(angle)).replace(".", "p");
+  return /^\d+$/.test(text) ? String(Number(text)).padStart(3, "0") : text;
+}
+
+function readRotationSettingsFromForm() {
+  return {
+    enabled: Boolean($("#multiViewEnabled")?.checked),
+    expectedIntervalDeg: parseNumberSetting($("#rotationIntervalDeg")?.value, DEFAULT_ROTATION_SETTINGS.expectedIntervalDeg),
+    startAngleDeg: parseNumberSetting($("#rotationStartAngleDeg")?.value, DEFAULT_ROTATION_SETTINGS.startAngleDeg),
+    direction: $("#rotationDirection")?.value === "CCW" ? "CCW" : "CW",
+    includeClosureView: Boolean($("#includeClosureView")?.checked),
+  };
+}
+
+function applyRotationPlanToForm(plan = {}) {
+  if ($("#multiViewEnabled")) $("#multiViewEnabled").checked = Boolean(plan.enabled);
+  if ($("#rotationIntervalDeg") && Number.isFinite(Number(plan.expected_interval_deg))) {
+    $("#rotationIntervalDeg").value = plan.enabled ? formatAngleDeg(plan.expected_interval_deg) : DEFAULT_ROTATION_SETTINGS.expectedIntervalDeg;
+  }
+  if ($("#rotationStartAngleDeg") && Number.isFinite(Number(plan.start_angle_deg))) {
+    $("#rotationStartAngleDeg").value = formatAngleDeg(plan.start_angle_deg);
+  }
+  if ($("#rotationDirection")) $("#rotationDirection").value = plan.direction === "CCW" ? "CCW" : "CW";
+  if ($("#includeClosureView")) $("#includeClosureView").checked = Boolean(plan.include_closure_view);
+}
+
+function buildCaptureRotationPlan(settings = readRotationSettingsFromForm()) {
+  const enabled = Boolean(settings.enabled);
+  const direction = settings.direction === "CCW" ? "CCW" : "CW";
+  const startAngleDeg = normalizeAngleDeg(settings.startAngleDeg || 0);
+  const includeClosureView = Boolean(enabled && settings.includeClosureView);
+  let expectedIntervalDeg = Number(settings.expectedIntervalDeg);
+  if (!enabled) {
+    expectedIntervalDeg = 360;
+  } else if (!Number.isFinite(expectedIntervalDeg) || expectedIntervalDeg <= 0) {
+    throw new Error("期望角度间隔必须大于 0。");
+  }
+  const viewCount = !enabled || expectedIntervalDeg >= 360 ? 1 : Math.ceil(360 / expectedIntervalDeg);
+  const actualIntervalDeg = 360 / viewCount;
+  const normalAngles = Array.from({ length: viewCount }, (_, index) => normalizeAngleDeg(startAngleDeg + index * actualIntervalDeg));
+  const angles = [...normalAngles];
+  if (includeClosureView) angles.push(Number((startAngleDeg + 360).toFixed(6)));
+  const views = angles.map((angle, index) => {
+    const closure = includeClosureView && index === angles.length - 1;
+    return {
+      view_id: `view_${viewToken(angle, closure)}`,
+      logical_angle_deg: normalizeAngleDeg(angle),
+      mechanical_angle_deg: closure ? Number((startAngleDeg + 360).toFixed(6)) : normalizeAngleDeg(angle),
+      capture_order: index + 1,
+      direction,
+      closure_view: closure,
+      sample_rotation_control: "sample_stage",
+      filter_wheel_control: "independent",
+    };
+  });
+  return {
+    enabled,
+    sample_rotation_hardware: "simulated",
+    expected_interval_deg: Number(expectedIntervalDeg.toFixed(6)),
+    view_count: viewCount,
+    total_capture_views: views.length,
+    actual_interval_deg: Number(actualIntervalDeg.toFixed(6)),
+    start_angle_deg: startAngleDeg,
+    direction,
+    include_closure_view: includeClosureView,
+    angles_deg: angles,
+    normal_angles_deg: normalAngles,
+    closure_angle_deg: includeClosureView ? Number((startAngleDeg + 360).toFixed(6)) : null,
+    returned_home: false,
+    home_status: "PENDING",
+    completed_views: [],
+    pending_views: views.map((view) => view.view_id),
+    failed_view: "",
+    rotation_domain: "sample_rotation",
+    filter_wheel_rotation_independent: true,
+    views,
+  };
+}
+
+function renderRotationPlan(plan = null) {
+  if (plan) applyRotationPlanToForm(plan);
+  const fields = $("#rotationSettingsFields");
+  const card = $("#rotationCaptureCard");
+  const enabled = Boolean($("#multiViewEnabled")?.checked);
+  if (fields) fields.hidden = !enabled;
+  try {
+    const nextPlan = plan || buildCaptureRotationPlan();
+    state.captureRotationPlan = nextPlan;
+    if (card) card.dataset.status = "ok";
+    setText("rotationPlanStatus", nextPlan.enabled ? "多角度" : "单视角");
+    setText("rotationViewCount", `${nextPlan.total_capture_views || nextPlan.view_count} 个视角`);
+    setText("rotationActualInterval", nextPlan.enabled ? `${formatAngleDeg(nextPlan.actual_interval_deg)}°` : "--");
+    setText("rotationAngles", (nextPlan.angles_deg || [0]).map((angle) => `${formatAngleDeg(angle)}°`).join(" · "));
+    renderCaptureRotationStatus(nextPlan);
+    return nextPlan;
+  } catch (error) {
+    if (card) card.dataset.status = "invalid";
+    setText("rotationPlanStatus", "设置无效");
+    setText("rotationViewCount", "--");
+    setText("rotationActualInterval", "--");
+    setText("rotationAngles", error.message || "期望角度间隔无效");
+    setText("captureRotationStatus", "样品旋转设置无效，无法开始采集。");
+    return null;
+  }
+}
+
+function lockRotationSettings() {
+  const locked = Boolean(state.captureStarted);
+  [
+    "#multiViewEnabled",
+    "#rotationIntervalDeg",
+    "#rotationStartAngleDeg",
+    "#rotationDirection",
+    "#includeClosureView",
+  ].forEach((selector) => {
+    const node = $(selector);
+    if (node) node.disabled = locked;
+  });
+  document.querySelectorAll("[data-rotation-interval]").forEach((button) => {
+    button.disabled = locked;
+  });
+}
+
+function renderCaptureRotationStatus(plan = state.captureRotationPlan) {
+  if (!plan || !plan.enabled) {
+    setText("captureRotationStatus", "样品旋转：单视角；滤光片转轮独立切换多光谱波段。");
+    return;
+  }
+  const total = plan.total_capture_views || plan.view_count || 0;
+  const angles = (plan.angles_deg || []).map((angle) => `${formatAngleDeg(angle)}°`).join(" · ");
+  const home = plan.returned_home ? "，采集结束已回 Home" : "，采集结束将回 Home";
+  setText(
+    "captureRotationStatus",
+    `多角度采集：预计 ${total} 个视角，实际间隔 ${formatAngleDeg(plan.actual_interval_deg)}°，方向 ${plan.direction}${home}。角度：${angles}。滤光片转轮独立切换波段。`
+  );
+}
+
+function collectRotationPayload() {
+  const plan = renderRotationPlan();
+  if (!plan) return null;
+  return {
+    enabled: Boolean(plan.enabled),
+    expectedIntervalDeg: readRotationSettingsFromForm().expectedIntervalDeg,
+    startAngleDeg: readRotationSettingsFromForm().startAngleDeg,
+    direction: plan.direction,
+    includeClosureView: Boolean(plan.include_closure_view),
+  };
 }
 
 function readCameraSettings() {
@@ -505,6 +675,7 @@ function renderCurrentSample() {
   if ($("#enterAnalysisFromCapture")) $("#enterAnalysisFromCapture").disabled = disabled || !state.analysisDataDir;
   if ($("#openCaptureFolder")) $("#openCaptureFolder").disabled = disabled || !state.currentCaptureDir;
   if ($("#chooseSaveRoot")) $("#chooseSaveRoot").disabled = state.captureStarted;
+  lockRotationSettings();
   updateDevicePreparationControls();
   updateAnalysisButtonStates();
   updateShapeMode();
@@ -535,6 +706,7 @@ function clearSampleDependentState() {
   state.currentCaptureValid = false;
   state.analysisDataDir = "";
   state.saveRootDir = "";
+  state.captureRotationPlan = null;
   state.imageBrowser.images = [];
   state.imageBrowser.index = 0;
   state.dataCheck = { status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0 };
@@ -555,6 +727,7 @@ function clearSampleDependentState() {
   renderDatasetImage();
   renderDataCheck({ status: "empty", rgbCount: 0, spectralCount: 0, pairCount: 0, message: "请先创建当前样品。" });
   resetShapeStatus();
+  renderRotationPlan();
   updateCurrentCaptureControls();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
@@ -1068,6 +1241,7 @@ function resetCaptureStepStatuses() {
   if ($("#captureProgress")) $("#captureProgress").style.width = "0%";
   setText("captureProgressText", "采集进度: 0 / 4");
   setText("captureSaveStatus", "等待采集完成");
+  renderCaptureRotationStatus();
 }
 
 function renderCalibrationStatus() {
@@ -1095,6 +1269,7 @@ async function updateCaptureProgress(step) {
   if (!requireDevicePreparation()) return;
   if (!requireActiveSample()) return;
   state.captureStarted = true;
+  lockRotationSettings();
   state.captureStep = Math.max(state.captureStep, step);
   const percent = Math.min(100, state.captureStep * 25);
   const progress = $("#captureProgress");
@@ -1117,13 +1292,20 @@ async function completeCurrentCapture() {
   const button = $("#enterAnalysisFromCapture");
   try {
     setText("captureSaveStatus", "正在保存本次拍摄数据...");
+    const rotationSettings = collectRotationPayload();
+    if (!rotationSettings) {
+      setText("captureSaveStatus", "旋转拍摄设置无效");
+      return;
+    }
     const payload = await api("/api/complete-capture", {
       method: "POST",
-      body: JSON.stringify({ sampleId: $("#sampleId")?.value || "" }),
+      body: JSON.stringify({ sampleId: $("#sampleId")?.value || "", sampleRotation: rotationSettings }),
     });
     state.currentCaptureDir = payload.currentCaptureDir || "";
     state.currentCaptureValid = Boolean(state.currentCaptureDir);
     state.analysisDataDir = payload.analysisDataDir || state.currentCaptureDir;
+    state.captureRotationPlan = payload.captureRotationPlan || state.captureRotationPlan;
+    renderRotationPlan(state.captureRotationPlan);
     setText("captureSaveStatus", state.currentCaptureValid ? `本次拍摄已保存: ${state.currentCaptureDir}` : "本次拍摄数据未生成");
     if (button) button.disabled = !state.analysisDataDir;
     renderCurrentSample();
@@ -1373,6 +1555,12 @@ async function createNewSample() {
     setText("sampleCreateStatus", "请选择保存位置");
     return;
   }
+  const rotationSettings = collectRotationPayload();
+  if (!rotationSettings) {
+    setText("sampleCreateStatus", "旋转设置无效");
+    setText("newSampleHint", "期望角度间隔必须大于 0。");
+    return;
+  }
   setText("sampleCreateStatus", "正在创建样品");
   await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
   const payload = {
@@ -1380,6 +1568,7 @@ async function createNewSample() {
     saveRootDir,
     fruitType: $("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "",
     variety: $("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic",
+    sampleRotation: rotationSettings,
   };
   const response = await api("/api/new-sample", { method: "POST", body: JSON.stringify(payload) });
   applySampleSessionState(response.sample || {});
@@ -1407,12 +1596,14 @@ function applySampleSessionState(sample = {}) {
   state.selectedSscModelId = sample.selectedSscModelId || "";
   state.selectedTaModelId = sample.selectedTaModelId || "";
   state.selectedPhModelId = sample.selectedPhModelId || "";
+  state.captureRotationPlan = sample.captureRotationPlan || state.captureRotationPlan || buildCaptureRotationPlan(DEFAULT_ROTATION_SETTINGS);
   state.sampleSession.sampleId = state.sampleId;
   state.sampleSession.sampleName = state.sampleName;
   state.sampleSession.fruitType = state.fruitType;
   state.sampleSession.variety = state.variety;
   if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
   if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+  renderRotationPlan(state.captureRotationPlan);
 }
 
 async function chooseSaveRoot() {
@@ -2181,6 +2372,22 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
+  [
+    "#multiViewEnabled",
+    "#rotationIntervalDeg",
+    "#rotationStartAngleDeg",
+    "#rotationDirection",
+    "#includeClosureView",
+  ].forEach((selector) => {
+    $(selector)?.addEventListener("input", () => renderRotationPlan());
+    $(selector)?.addEventListener("change", () => renderRotationPlan());
+  });
+  document.querySelectorAll("[data-rotation-interval]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if ($("#rotationIntervalDeg")) $("#rotationIntervalDeg").value = button.dataset.rotationInterval || DEFAULT_ROTATION_SETTINGS.expectedIntervalDeg;
+      renderRotationPlan();
+    });
+  });
 
   $("#refreshPorts")?.addEventListener("click", () => loadDevicePorts());
   $("#connectDevice")?.addEventListener("click", () => connectDevice());
@@ -2241,6 +2448,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.setInterval(updateClock, 1000);
   updateClock();
   applyCameraSettings();
+  renderRotationPlan();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
   updateDevicePreparationControls();

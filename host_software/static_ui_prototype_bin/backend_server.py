@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
+from rotation_plan import build_capture_rotation_plan, mark_plan_completed
 
 class JobStore:
     def __init__(self) -> None:
@@ -92,6 +93,7 @@ class SessionState:
         self.selected_ssc_model_id: str = ""
         self.selected_ta_model_id: str = ""
         self.selected_ph_model_id: str = ""
+        self.capture_rotation_plan: dict = build_capture_rotation_plan({})
 
     def set_current_capture_dir(self, value: str | Path) -> None:
         with self._lock:
@@ -100,6 +102,10 @@ class SessionState:
     def set_analysis_data_dir(self, value: str | Path) -> None:
         with self._lock:
             self.analysis_data_dir = str(value)
+
+    def set_capture_rotation_plan(self, plan: dict) -> None:
+        with self._lock:
+            self.capture_rotation_plan = dict(plan)
 
     def create_sample(self, payload: dict, model_resolver=None) -> dict:
         sample_name = str(payload.get("sampleName") or payload.get("sample_name") or "").strip()
@@ -122,6 +128,7 @@ class SessionState:
             selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc) if selected_ssc else ""
             selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta) if selected_ta else ""
             selected_ph = model_resolver(fruit_type, variety, "ph", selected_ph) if selected_ph else ""
+        rotation_plan = build_capture_rotation_plan(payload)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         sample_id = f"S{stamp}_{uuid.uuid4().hex[:8]}"
         created_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -135,6 +142,7 @@ class SessionState:
             self.selected_ssc_model_id = selected_ssc
             self.selected_ta_model_id = selected_ta
             self.selected_ph_model_id = selected_ph
+            self.capture_rotation_plan = rotation_plan
             self.current_capture_dir = capture_dir
             self.analysis_data_dir = ""
             self.capture_started = False
@@ -185,6 +193,7 @@ class SessionState:
             selected_ssc_model_id = self.selected_ssc_model_id
             selected_ta_model_id = self.selected_ta_model_id
             selected_ph_model_id = self.selected_ph_model_id
+            capture_rotation_plan = dict(self.capture_rotation_plan)
             device_prep = dict(self.device_prep)
         current_path = Path(current).expanduser() if current else None
         current_valid = bool(current_path and current_path.exists() and current_path.is_dir())
@@ -209,6 +218,7 @@ class SessionState:
             "selectedSscModelId": selected_ssc_model_id,
             "selectedTaModelId": selected_ta_model_id,
             "selectedPhModelId": selected_ph_model_id,
+            "captureRotationPlan": capture_rotation_plan,
             "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
         }
 
@@ -1069,14 +1079,23 @@ def create_handler(
                 return
             sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
+                metadata = dict(info)
+                if isinstance(payload.get("sampleRotation"), dict) or isinstance(payload.get("sample_rotation"), dict):
+                    rotation_plan = build_capture_rotation_plan(payload)
+                    metadata["captureRotationPlan"] = rotation_plan
+                    session.set_capture_rotation_plan(rotation_plan)
                 session.set_capture_started(True)
-                capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=info)
+                capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=metadata)
+                metadata = read_sample_metadata(capture_dir)
+                if isinstance(metadata.get("sample_rotation"), dict):
+                    session.set_capture_rotation_plan(metadata["sample_rotation"])
                 session.set_current_capture_dir(capture_dir)
                 session.set_analysis_data_dir(capture_dir)
                 self.json_response({
                     "ok": True,
                     "currentCaptureDir": str(capture_dir),
                     "analysisDataDir": str(capture_dir),
+                    "captureRotationPlan": metadata.get("sample_rotation") if isinstance(metadata.get("sample_rotation"), dict) else info.get("captureRotationPlan"),
                     "message": "本次拍摄数据已保存",
                 })
             except Exception as exc:
@@ -1599,9 +1618,17 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
             "save_root_dir": metadata.get("saveRootDir") or "",
             "created_at": metadata.get("createdAt") or "",
             "captured_at": metadata.get("capturedAt") or metadata.get("captured_at") or "",
+            "sample_rotation": metadata.get("captureRotationPlan") or metadata.get("sample_rotation") or build_capture_rotation_plan({}),
+            "filter_wheel_rotation": {
+                "independent_from_sample_rotation": True,
+                "control_domain": "filter_wheel_rotation",
+                "purpose": "multispectral_band_selection",
+            },
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        meta["capture_views"] = list((meta["sample_rotation"] or {}).get("views") or [])
         (capture_root / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        (capture_root / "views.json").write_text(json.dumps(meta["capture_views"], ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_dir: str | Path | None = None, metadata: dict | None = None) -> Path:
@@ -1622,36 +1649,78 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_d
     spectral_dir = capture_root / "multispectral"
     dark_dir = capture_root / "calibration" / "dark"
     white_dir = capture_root / "calibration" / "white"
+    rotation_plan = build_capture_rotation_plan(metadata or {})
 
-    for index in range(3):
-        rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
-        draw = ImageDraw.Draw(rgb_image)
-        draw.rectangle((0, 330, 640, 420), fill=(36, 48, 64))
-        offset = index * 10
-        draw.ellipse((250 + offset, 120, 390 + offset, 270), fill=(94, 142, 63), outline=(146, 190, 95), width=4)
-        draw.line((320 + offset, 118, 318 + offset, 82), fill=(84, 68, 44), width=5)
-        draw.ellipse((326 + offset, 86, 365 + offset, 108), fill=(68, 130, 74))
-        draw.text((22, 22), f"Offline Capture RGB {index + 1}", fill=(203, 213, 225))
-        rgb_path = rgb_dir / f"rgb_{index + 1:03d}.png"
-        rgb_image.save(rgb_path)
+    try:
+        from quality_algorithm.filters import enabled_bands
 
-        spectral_image = Image.new("L", (640, 420), 16)
-        sdraw = ImageDraw.Draw(spectral_image)
-        band = 450 + index * 110
-        shade = 96 + index * 36
-        sdraw.ellipse((250 + offset, 120, 390 + offset, 270), fill=shade, outline=min(240, shade + 48), width=4)
-        sdraw.text((22, 22), f"{band}nm", fill=220)
-        spectral_path = spectral_dir / f"{band}.png"
-        spectral_image.save(spectral_path)
+        spectral_bands = [band.wavelength_nm for band in enabled_bands()]
+    except Exception:
+        spectral_bands = [450, 560, 670]
 
-        Image.new("L", (640, 420), 6).save(dark_dir / f"dark_{index + 1:03d}.png")
-        Image.new("L", (640, 420), 235).save(white_dir / f"white_{index + 1:03d}.png")
+    if rotation_plan.get("enabled"):
+        for view_index, view in enumerate(rotation_plan.get("views") or [], start=1):
+            view["sample_id"] = metadata.get("sampleId") or metadata.get("sample_id") or sample_id
+            token = str(view.get("view_id") or f"view_{view_index:03d}").replace("view_", "")
+            angle = float(view.get("logical_angle_deg") or 0)
+            offset = int((view_index - 1) * 7) % 80
+            rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
+            draw = ImageDraw.Draw(rgb_image)
+            draw.rectangle((0, 330, 640, 420), fill=(36, 48, 64))
+            draw.ellipse((240 + offset, 120, 380 + offset, 270), fill=(94, 142, 63), outline=(146, 190, 95), width=4)
+            draw.line((310 + offset, 118, 308 + offset, 82), fill=(84, 68, 44), width=5)
+            draw.ellipse((316 + offset, 86, 355 + offset, 108), fill=(68, 130, 74))
+            draw.text((22, 22), f"Sample View {view_index}: {angle:g} deg", fill=(203, 213, 225))
+            rgb_path = rgb_dir / f"rgb_view_{token}.png"
+            rgb_image.save(rgb_path)
+            view["rgb_files"] = [str(rgb_path.relative_to(capture_root)).replace("\\", "/")]
+
+            view_spectral_files = []
+            for band_index, band in enumerate(spectral_bands):
+                spectral_image = Image.new("L", (640, 420), 16)
+                sdraw = ImageDraw.Draw(spectral_image)
+                shade = min(230, 82 + band_index * 34 + (view_index % 4) * 8)
+                sdraw.ellipse((240 + offset, 120, 380 + offset, 270), fill=shade, outline=min(240, shade + 48), width=4)
+                sdraw.text((22, 22), f"View {angle:g} deg / {band}nm", fill=220)
+                spectral_path = spectral_dir / f"view{token}_{band}.png"
+                spectral_image.save(spectral_path)
+                view_spectral_files.append(str(spectral_path.relative_to(capture_root)).replace("\\", "/"))
+                Image.new("L", (640, 420), 6).save(dark_dir / f"dark_{band}.png")
+                Image.new("L", (640, 420), 235).save(white_dir / f"white_{band}.png")
+            view["multispectral_files"] = view_spectral_files
+    else:
+        for index, band in enumerate(spectral_bands[:3]):
+            rgb_image = Image.new("RGB", (640, 420), (22, 32, 48))
+            draw = ImageDraw.Draw(rgb_image)
+            draw.rectangle((0, 330, 640, 420), fill=(36, 48, 64))
+            offset = index * 10
+            draw.ellipse((250 + offset, 120, 390 + offset, 270), fill=(94, 142, 63), outline=(146, 190, 95), width=4)
+            draw.line((320 + offset, 118, 318 + offset, 82), fill=(84, 68, 44), width=5)
+            draw.ellipse((326 + offset, 86, 365 + offset, 108), fill=(68, 130, 74))
+            draw.text((22, 22), f"Offline Capture RGB {index + 1}", fill=(203, 213, 225))
+            rgb_path = rgb_dir / f"rgb_{index + 1:03d}.png"
+            rgb_image.save(rgb_path)
+
+            spectral_image = Image.new("L", (640, 420), 16)
+            sdraw = ImageDraw.Draw(spectral_image)
+            shade = 96 + index * 36
+            sdraw.ellipse((250 + offset, 120, 390 + offset, 270), fill=shade, outline=min(240, shade + 48), width=4)
+            sdraw.text((22, 22), f"{band}nm", fill=220)
+            spectral_path = spectral_dir / f"{band}.png"
+            spectral_image.save(spectral_path)
+
+            Image.new("L", (640, 420), 6).save(dark_dir / f"dark_{index + 1:03d}.png")
+            Image.new("L", (640, 420), 235).save(white_dir / f"white_{index + 1:03d}.png")
 
     if metadata is not None:
-        metadata = {**metadata, "capturedAt": time.strftime("%Y-%m-%d %H:%M:%S")}
+        rotation_plan = mark_plan_completed(rotation_plan)
+        metadata = {**metadata, "capturedAt": time.strftime("%Y-%m-%d %H:%M:%S"), "captureRotationPlan": rotation_plan}
         ensure_sample_capture_folder(capture_root, metadata)
 
-    expected = [rgb_dir / "rgb_001.png", spectral_dir / "450.png", dark_dir / "dark_001.png", white_dir / "white_001.png"]
+    if rotation_plan.get("enabled"):
+        expected = [rgb_dir / "rgb_view_000.png", spectral_dir / f"view000_{spectral_bands[0]}.png", dark_dir / f"dark_{spectral_bands[0]}.png", white_dir / f"white_{spectral_bands[0]}.png"]
+    else:
+        expected = [rgb_dir / "rgb_001.png", spectral_dir / f"{spectral_bands[0]}.png", dark_dir / "dark_001.png", white_dir / "white_001.png"]
     if not all(path.exists() for path in expected):
         raise RuntimeError("采集文件写入校验失败")
     return capture_root

@@ -19,6 +19,7 @@
 - 不允许虚构已经接入的硬件、相机 SDK、STM32 串口、光源、电机或生产模型。
 - 真实优先级固定为：当前代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。
 - `create_offline_capture_dataset()` 是离线验证函数，不是真实采集。
+- `sample_rotation` 是样品台/水果多视角旋转；`filter_wheel_rotation` 是滤光片转轮切换多光谱波段。两者是独立控制对象，不允许混用角度、状态或电机逻辑。
 - `trained_models/<target>/` 只有存在 `model.joblib` 和 `metadata.json` 时才代表可用默认模型。
 - Production/Default 模型必须通过 Model Studio 人工发布，不能由训练任务自动替换。
 - 支持不同水果/品种/指标使用不同模型；注意 `generic` 品种兜底。

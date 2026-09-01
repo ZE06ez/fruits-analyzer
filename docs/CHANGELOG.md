@@ -2,6 +2,44 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-01 STM32 硬件层与样品多角度拍摄合并
+
+- 修改内容：在同一整合分支中同时保留 zdyzzddy 的 STM32 两字节串口硬件层和本地样品多角度旋转拍摄计划；主 UI 可刷新串口、连接/断开 STM32、执行硬件通信自检、滤光轮寻零自检、急停和清故障，同时采集页保留样品台多视角角度计划。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/serial_service.py`
+  - `host_software/static_ui_prototype_bin/hardware_controller.py`
+  - `host_software/static_ui_prototype_bin/device_manager.py`
+  - `host_software/static_ui_prototype_bin/rotation_plan.py`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `host_software/static_ui_prototype_bin/tests/test_device_manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_hardware_controller.py`
+  - `host_software/static_ui_prototype_bin/tests/test_serial_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_rotation_plan.py`
+- 为什么修改：避免硬件整合分支丢失本地多角度拍摄功能，并明确 `sample_rotation` 是样品台多视角计划，`filter_wheel_rotation` 是滤光片转轮波段切换，两者控制域独立。
+- 是否影响原有功能：不替换 Model Studio、样品会话、SSC/TA/pH 预测或离线采集；真实相机 SDK 和真实样品台电机仍未接入，`/api/capture/start` 在相机服务接入前仍明确返回不可真实采集。
+
+## 2026-08-30 样品多角度旋转拍摄计划
+
+- 修改内容：主程序样品采集页新增样品多角度旋转拍摄设置，支持启用/关闭、期望角度间隔、起始角度、CW/CCW、闭合补拍；新增 `rotation_plan.py` 统一计算视角数量、实际均分角度、角度序列、闭合 View 和 Home 状态；离线采集在启用多角度时写入兼容命名的 RGB/多光谱多 View 图片、`views.json` 和 metadata 中的 `sample_rotation`。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/rotation_plan.py`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/tests/test_rotation_plan.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：为后续样品旋转平台硬件接入提前固定采集计划、文件记录和 metadata 结构，同时明确样品旋转角度与滤光片转轮角度是两套完全独立的控制对象。
+- 是否影响原有功能：不修改 Model Studio、PLSR/SVR/RF 训练、预测接口或真实硬件通信；默认未启用多角度时保留原离线单视角输出。当前样品台控制仍为模拟状态。
+
 ## 2026-08-27 主程序采集/分析中央布局切换
 
 - 修改内容：主程序中央工作区新增采集模式和分析模式布局；设备准备、采集、设置等模块保留 RGB/多光谱相机预览，形态、糖度、酸度和口感分析模块隐藏相机预览并让分析内容重排占用中央空间。

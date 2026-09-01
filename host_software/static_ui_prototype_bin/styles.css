@@ -536,6 +536,152 @@ label {
   flex: 0 1 120px;
 }
 
+.rotation-capture-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 15, 27, 0.34);
+}
+
+.rotation-capture-head,
+.toggle-line,
+.degree-input,
+.rotation-quick-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rotation-capture-head {
+  justify-content: space-between;
+}
+
+.rotation-capture-head > span {
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(15, 23, 42, 0.52);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.toggle-line {
+  width: fit-content;
+  margin: 0;
+  color: var(--soft);
+}
+
+.toggle-line input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--blue);
+}
+
+.rotation-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.rotation-settings-fields[hidden] {
+  display: none;
+}
+
+.rotation-settings-fields label {
+  margin: 0;
+}
+
+.degree-input {
+  margin-top: 6px;
+}
+
+.degree-input input {
+  min-width: 0;
+}
+
+.degree-input span {
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.rotation-quick-values {
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+}
+
+.rotation-quick-values button {
+  min-height: 28px;
+  padding: 0 11px;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.rotation-advanced {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+.rotation-advanced summary {
+  cursor: pointer;
+  color: var(--soft);
+  font-weight: 900;
+}
+
+.rotation-advanced p {
+  margin: 6px 0 0 24px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rotation-plan-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(80px, 0.5fr) max-content minmax(80px, 0.5fr) max-content minmax(160px, 1.5fr);
+  gap: 6px 10px;
+  align-items: baseline;
+}
+
+.rotation-plan-summary span,
+.capture-rotation-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rotation-plan-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rotation-capture-card[data-status="invalid"] {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.16);
+}
+
+.rotation-capture-card[data-status="invalid"] .rotation-plan-summary strong,
+.rotation-capture-card[data-status="invalid"] .rotation-capture-head > span {
+  color: var(--red);
+}
+
+.capture-rotation-status {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 6px;
+  background: rgba(9, 15, 27, 0.42);
+}
+
 .status-chip {
   min-height: 26px;
   padding: 5px 10px;
@@ -1930,6 +2076,8 @@ pre {
   .camera-grid,
   .control-grid,
   .settings-grid,
+  .rotation-settings-fields,
+  .rotation-plan-summary,
   .process-steps,
   .shape-layout,
   .prediction-layout,
