@@ -483,6 +483,12 @@ function renderHardwareStatus() {
   setText("deviceFanState", `风扇: ${hardware.fanOn ? "开启" : connected ? "关闭" : "--"}`);
   setText("deviceDoorState", `门: ${doorNames[hardware.door] || hardware.door || "--"}`);
   setText("deviceWheelState", `滤光轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "--"}`);
+  setText("deviceRgbLedState", connected
+    ? `RGB LED: 1路${hardware.rgbLed1On ? "开" : "关"} / 2路${hardware.rgbLed2On ? "开" : "关"}`
+    : "RGB LED: --");
+  setText("deviceTungstenState", connected
+    ? `钨灯: 1路${hardware.tungsten1On ? "开" : "关"} / 2路${hardware.tungsten2On ? "开" : "关"}`
+    : "钨灯: --");
   setText("deviceErrorState", `故障码: ${hardware.errorCode ?? "--"}`);
   setText("deviceConnectionHint", connected
     ? `已连接 ${port}。真实采集仍需等待相机服务接入。`
@@ -496,6 +502,7 @@ function renderHardwareStatus() {
   $("#connectDevice") && ($("#connectDevice").disabled = connected);
   $("#disconnectDevice") && ($("#disconnectDevice").disabled = !connected);
   $("#faultClearDevice") && ($("#faultClearDevice").disabled = !connected);
+  $("#refreshDeviceStatus") && ($("#refreshDeviceStatus").disabled = !connected);
   $("#hardwareSelfTest") && ($("#hardwareSelfTest").disabled = !connected);
   $("#hardwareMotionSelfTest") && ($("#hardwareMotionSelfTest").disabled = !connected);
 }
@@ -2393,6 +2400,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#connectDevice")?.addEventListener("click", () => connectDevice());
   $("#disconnectDevice")?.addEventListener("click", () => disconnectDevice());
   $("#faultClearDevice")?.addEventListener("click", () => faultClearDevice());
+  $("#refreshDeviceStatus")?.addEventListener("click", () => refreshHardwareStatus());
   $("#hardwareSelfTest")?.addEventListener("click", () => runHardwareSelfTest(false));
   $("#hardwareMotionSelfTest")?.addEventListener("click", () => runHardwareSelfTest(true));
 
@@ -2453,6 +2461,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderCalibrationStatus();
   updateDevicePreparationControls();
   updateShapeMode();
+  await loadDevicePorts();
+  await refreshHardwareStatus();
   try {
     const status = await api("/api/status");
     applyHardwareStatus(status.device || {});

@@ -39,7 +39,7 @@ class HardwareControllerTests(unittest.TestCase):
 
     def test_tungsten_requires_fan_and_closed_door(self):
         serial = FakeSerialService()
-        serial.set_response(0x30, 0x00, 0x00)
+        serial.set_response(0x30, 0x00, 0x00)  # fan off
         serial.set_response(0x31, 0x00, DoorState.CLOSED)
         controller = HardwareController(serial)
 
@@ -50,7 +50,7 @@ class HardwareControllerTests(unittest.TestCase):
 
     def test_tungsten_rejects_rgb_led_conflict(self):
         serial = FakeSerialService()
-        serial.set_response(0x30, 0x00, 0b00000111)
+        serial.set_response(0x30, 0x00, 0b00000111)  # fan + RGB LEDs
         serial.set_response(0x31, 0x00, DoorState.CLOSED)
         controller = HardwareController(serial)
 
@@ -59,7 +59,7 @@ class HardwareControllerTests(unittest.TestCase):
 
     def test_rgb_led_rejects_tungsten_conflict(self):
         serial = FakeSerialService()
-        serial.set_response(0x30, 0x00, 0b00001001)
+        serial.set_response(0x30, 0x00, 0b00001001)  # fan + tungsten 1
         serial.set_response(0x31, 0x00, DoorState.CLOSED)
         controller = HardwareController(serial)
 

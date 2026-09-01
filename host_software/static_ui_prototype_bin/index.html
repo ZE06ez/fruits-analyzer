@@ -36,22 +36,25 @@
       <aside class="sidebar">
         <section class="side-card connect-card">
           <h2>连接控制 / Process Control</h2>
-          <label for="serialPort">设备串口</label>
+          <label for="serialPort">STM32F407 串口</label>
           <div class="inline-field">
             <select id="serialPort">
               <option value="">正在读取串口...</option>
             </select>
-            <button id="refreshPorts">刷新</button>
+            <button id="refreshPorts" type="button">刷新</button>
           </div>
           <div class="inline-field connect-actions">
             <button id="connectDevice" type="button">连接</button>
             <button id="disconnectDevice" type="button">断开</button>
+            <button id="refreshDeviceStatus" type="button">读取状态</button>
             <button id="faultClearDevice" type="button">清除故障</button>
           </div>
           <div class="device-status-grid" aria-label="硬件状态">
             <span id="deviceFanState">风扇: --</span>
             <span id="deviceDoorState">门: --</span>
             <span id="deviceWheelState">滤光轮: --</span>
+            <span id="deviceRgbLedState">RGB LED: --</span>
+            <span id="deviceTungstenState">钨灯: --</span>
             <span id="deviceErrorState">故障码: --</span>
           </div>
           <p class="hint" id="deviceConnectionHint">未连接 STM32 时仍可按离线调试流程验证软件界面。</p>
@@ -121,7 +124,7 @@
             <p class="eyebrow">当前模块 / Current Module</p>
             <h2 id="viewTitle">电机检测</h2>
           </div>
-          <div class="mode-badge" id="runMode">离线调试模式</div>
+          <div class="mode-badge" id="runMode">STM32联调 / 相机待接入</div>
         </section>
 
         <section class="camera-grid">
@@ -638,7 +641,7 @@
         <button id="clearLog">清空</button>
         <button id="saveLog">保存</button>
       </div>
-      <pre id="runLog">[INFO] 界面已载入，当前为离线调试模式。
+      <pre id="runLog">[INFO] 界面已载入，STM32待连接，相机SDK尚未接入。
 [INFO] 单片机、相机、光源、电机尚未接入真实通信。
 [INFO] 当前形态分析以两相机二维测算为主，三维点云建模作为后续预留入口。</pre>
     </footer>

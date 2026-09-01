@@ -104,6 +104,8 @@ class SerialService:
 
         self._serial: Any | None = None
         self._port_name = ""
+
+        # 使用可重入锁，保证连接、断开和命令收发不会互相冲突。
         self._lock = threading.RLock()
 
     @property
@@ -172,7 +174,10 @@ class SerialService:
                 self._port_name = port
                 self._clear_buffers(serial_port)
 
-                LOGGER.info("STM32 串口已连接：%s，115200 8N1", port)
+                LOGGER.info(
+                    "STM32 串口已连接：%s，115200 8N1",
+                    port,
+                )
 
             except SerialServiceError:
                 self._serial = None
@@ -181,7 +186,9 @@ class SerialService:
             except Exception as exc:
                 self._serial = None
                 self._port_name = ""
-                raise SerialConnectionError(f"连接串口 {port} 失败：{exc}") from exc
+                raise SerialConnectionError(
+                    f"连接串口 {port} 失败：{exc}"
+                ) from exc
 
     def disconnect(self) -> None:
         """关闭当前串口连接。"""
@@ -258,6 +265,7 @@ class SerialService:
             expected_reply_cmd = cmd | 0x80
 
             try:
+                # 两字节协议没有帧头和 CRC，因此每条新命令前清理旧数据。
                 reset_input = getattr(serial_port, "reset_input_buffer", None)
                 if callable(reset_input):
                     reset_input()
@@ -272,7 +280,11 @@ class SerialService:
                 if callable(flush):
                     flush()
 
-                LOGGER.debug("串口 TX：%02X %02X", cmd, param)
+                LOGGER.debug(
+                    "串口 TX：%02X %02X",
+                    cmd,
+                    param,
+                )
 
                 reply = self._read_exactly(
                     serial_port,
@@ -283,12 +295,18 @@ class SerialService:
             except SerialServiceError:
                 raise
             except Exception as exc:
-                raise SerialConnectionError(f"串口通信失败：{exc}") from exc
+                raise SerialConnectionError(
+                    f"串口通信失败：{exc}"
+                ) from exc
 
             reply_cmd = reply[0]
             result = reply[1]
 
-            LOGGER.debug("串口 RX：%02X %02X", reply_cmd, result)
+            LOGGER.debug(
+                "串口 RX：%02X %02X",
+                reply_cmd,
+                result,
+            )
 
             if reply_cmd != expected_reply_cmd:
                 raise ProtocolResponseError(

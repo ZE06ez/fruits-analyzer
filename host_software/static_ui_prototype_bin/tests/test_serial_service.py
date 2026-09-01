@@ -88,7 +88,10 @@ class SerialServiceTests(unittest.TestCase):
 
         self.assertEqual(len(ports), 1)
         self.assertEqual(ports[0].device, "COM3")
-        self.assertEqual(ports[0].description, "STM32 Virtual COM Port")
+        self.assertEqual(
+            ports[0].description,
+            "STM32 Virtual COM Port",
+        )
 
     def test_connect_uses_115200_8n1(self):
         fake = FakeSerial()
@@ -161,6 +164,7 @@ class SerialServiceTests(unittest.TestCase):
                 timeout_s=0.01,
             )
 
+        # 机械命令超时后不能自动重发。
         self.assertEqual(fake.writes, [b"\x20\x01"])
 
     def test_command_requires_connection(self):
