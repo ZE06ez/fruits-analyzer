@@ -22,6 +22,21 @@ const state = {
     camera: false,
     calibration: false,
   },
+  hardwareStatus: {
+    connected: false,
+    port: "",
+    fanOn: false,
+    door: "unknown",
+    wheelPosition: null,
+    wheelHomed: false,
+    rgbLed1On: false,
+    rgbLed2On: false,
+    tungsten1On: false,
+    tungsten2On: false,
+    errorCode: null,
+    emergencyStopped: false,
+  },
+  serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
   hasSample: false,
@@ -254,12 +269,19 @@ function updateDevicePreparationControls() {
 }
 
 function renderDevicePreparationStatus() {
+  renderHardwareStatus();
   if (state.devicePrep.connect) {
-    setPill("serialStatus", "串口: 离线连接检查通过", "ok");
+    const serialText = state.hardwareStatus.connected
+      ? `串口: ${state.hardwareStatus.port || "已连接"}`
+      : "串口: 离线连接检查通过";
+    setPill("serialStatus", serialText, "ok");
     setStepStatus("connect", "done");
+  } else {
+    setPill("serialStatus", "串口: 未连接", "");
+    setStepStatus("connect", "waiting");
   }
   if (state.devicePrep.motor) {
-    setPill("motorStatus", "电机: 离线自检通过", "ok");
+    setPill("motorStatus", state.hardwareStatus.connected ? "电机: 硬件自检通过" : "电机: 离线自检通过", "ok");
     setStepStatus("motor", "done");
   }
   if (state.devicePrep.light) {
@@ -275,6 +297,179 @@ function renderDevicePreparationStatus() {
     renderCalibrationStatus();
   }
   updateDevicePreparationControls();
+}
+
+function renderHardwareStatus() {
+  const hardware = state.hardwareStatus || {};
+  const connected = Boolean(hardware.connected);
+  const port = hardware.port || "";
+  const doorNames = {
+    unknown: "未知",
+    open: "已升起",
+    closed: "已关闭",
+    moving: "运动中",
+    error: "异常",
+  };
+  setText("deviceFanState", `风扇: ${hardware.fanOn ? "开启" : connected ? "关闭" : "--"}`);
+  setText("deviceDoorState", `门: ${doorNames[hardware.door] || hardware.door || "--"}`);
+  setText("deviceWheelState", `滤光轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "--"}`);
+  setText("deviceErrorState", `故障码: ${hardware.errorCode ?? "--"}`);
+  setText("deviceConnectionHint", connected
+    ? `已连接 ${port}。真实采集仍需等待相机服务接入。`
+    : "未连接 STM32 时仍可按离线调试流程验证软件界面。");
+  setText("doorLiftState", `升降门: ${doorNames[hardware.door] || hardware.door || "未连接"}`);
+  setText("filterWheelState", `滤光片轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "待连接"}`);
+  const sampleStage = connected
+    ? "样品台: 未接入控制"
+    : "样品台: 未连接";
+  setText("sampleRotationState", sampleStage);
+  $("#connectDevice") && ($("#connectDevice").disabled = connected);
+  $("#disconnectDevice") && ($("#disconnectDevice").disabled = !connected);
+  $("#faultClearDevice") && ($("#faultClearDevice").disabled = !connected);
+  $("#hardwareSelfTest") && ($("#hardwareSelfTest").disabled = !connected);
+  $("#hardwareMotionSelfTest") && ($("#hardwareMotionSelfTest").disabled = !connected);
+}
+
+function applyHardwareStatus(device = {}) {
+  state.hardwareStatus = { ...state.hardwareStatus, ...(device || {}) };
+  if (state.hardwareStatus.connected) {
+    state.devicePrep.connect = true;
+  }
+  renderHardwareStatus();
+}
+
+function renderSerialPorts() {
+  const select = $("#serialPort");
+  if (!select) return;
+  const selected = select.value;
+  const ports = state.serialPorts || [];
+  select.innerHTML = "";
+  if (!ports.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "无可用串口";
+    select.appendChild(option);
+    return;
+  }
+  ports.forEach((port) => {
+    const option = document.createElement("option");
+    option.value = port.device || "";
+    option.textContent = [port.device, port.description].filter(Boolean).join(" · ");
+    select.appendChild(option);
+  });
+  if (ports.some((port) => port.device === selected)) select.value = selected;
+}
+
+async function loadDevicePorts() {
+  try {
+    const payload = await api("/api/device/ports");
+    state.serialPorts = payload.ports || [];
+    renderSerialPorts();
+    addLog(state.serialPorts.length ? `已读取 ${state.serialPorts.length} 个串口。` : "未发现可用串口。", state.serialPorts.length ? "INFO" : "WARN");
+  } catch (error) {
+    state.serialPorts = [];
+    renderSerialPorts();
+    addLog(error.message || "串口列表读取失败。", "WARN");
+  }
+}
+
+async function refreshHardwareStatus() {
+  try {
+    const payload = await api("/api/device/status");
+    applyHardwareStatus(payload.device || {});
+    renderDevicePreparationStatus();
+  } catch (error) {
+    addLog(error.message || "硬件状态读取失败。", "WARN");
+  }
+}
+
+async function connectDevice() {
+  const port = $("#serialPort")?.value || "";
+  if (!port) {
+    addLog("请选择串口后再连接 STM32。", "WARN");
+    return;
+  }
+  try {
+    const payload = await api("/api/device/connect", {
+      method: "POST",
+      body: JSON.stringify({ port }),
+    });
+    applyHardwareStatus(payload.device || {});
+    state.devicePrep.connect = true;
+    setText("statusNote", "STM32 已连接，串口通信检查通过。");
+    addLog(`STM32 已连接并通过 PING：${state.hardwareStatus.port || port}`);
+    await syncDevicePreparation();
+  } catch (error) {
+    setText("statusNote", error.message || "STM32 连接失败。");
+    addLog(error.message || "STM32 连接失败。", "ERROR");
+  }
+}
+
+async function disconnectDevice() {
+  try {
+    const payload = await api("/api/device/disconnect", {
+      method: "POST",
+      body: "{}",
+    });
+    applyHardwareStatus(payload.device || { connected: false });
+    state.devicePrep.connect = false;
+    addLog("已断开 STM32，并在断开前尝试执行安全停止。", "WARN");
+    await syncDevicePreparation();
+  } catch (error) {
+    addLog(error.message || "断开 STM32 失败。", "ERROR");
+  }
+}
+
+async function runHardwareSelfTest(includeMotion = false) {
+  try {
+    const payload = await api("/api/device/self-test", {
+      method: "POST",
+      body: JSON.stringify({ includeMotion }),
+    });
+    applyHardwareStatus(payload.result?.status || {});
+    state.devicePrep.connect = true;
+    if (includeMotion) state.devicePrep.motor = true;
+    setStepStatus(includeMotion ? "motor" : "connect", "done");
+    setText("statusNote", includeMotion ? "滤光片轮寻零自检通过。" : "STM32 通信自检通过。");
+    addLog(includeMotion ? "硬件自检通过：PING、风扇开启、滤光片轮寻零已执行。" : "硬件通信自检通过：PING 与风扇开启已执行。");
+    await syncDevicePreparation();
+  } catch (error) {
+    addLog(error.message || "硬件自检失败。", "ERROR");
+  }
+}
+
+async function faultClearDevice() {
+  try {
+    const payload = await api("/api/device/fault-clear", {
+      method: "POST",
+      body: "{}",
+    });
+    applyHardwareStatus(payload.device || {});
+    addLog("STM32 故障状态已请求清除。");
+  } catch (error) {
+    addLog(error.message || "清除故障失败。", "ERROR");
+  }
+}
+
+async function emergencyStopDevice() {
+  if (state.hardwareStatus.connected) {
+    try {
+      const payload = await api("/api/device/emergency-stop", {
+        method: "POST",
+        body: "{}",
+      });
+      applyHardwareStatus(payload.device || {});
+      setPill("motorStatus", "电机: 已安全停止", "warn");
+      setPill("lightStatus", "光源: 已关闭", "warn");
+      addLog("紧急停止已发送到 STM32。", "WARN");
+      return;
+    } catch (error) {
+      addLog(error.message || "发送急停失败，已进入本地停止状态。", "ERROR");
+    }
+  }
+  setPill("motorStatus", "电机: 已停止", "warn");
+  setPill("lightStatus", "光源: 已关闭", "warn");
+  addLog("紧急停止已触发：当前未连接 STM32，已按本地离线状态处理。", "WARN");
 }
 
 async function syncDevicePreparation() {
@@ -834,6 +1029,10 @@ function switchView(view, stepKey = null) {
 }
 
 async function runDeviceTest(type) {
+  if (type === "motor" && state.hardwareStatus.connected) {
+    await runHardwareSelfTest(true);
+    return;
+  }
   const map = {
     motor: {
       pill: "motorStatus",
@@ -1983,13 +2182,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
 
-  $("#refreshPorts")?.addEventListener("click", () => {
-    state.devicePrep.connect = true;
-    setPill("serialStatus", "串口: 离线连接检查通过", "ok");
-    setStepStatus("connect", "done");
-    addLog("已完成连接检查：当前单片机未接入，按离线调试模式记录为准备完成。", "WARN");
-    syncDevicePreparation().catch((error) => addLog(error.message, "WARN"));
-  });
+  $("#refreshPorts")?.addEventListener("click", () => loadDevicePorts());
+  $("#connectDevice")?.addEventListener("click", () => connectDevice());
+  $("#disconnectDevice")?.addEventListener("click", () => disconnectDevice());
+  $("#faultClearDevice")?.addEventListener("click", () => faultClearDevice());
+  $("#hardwareSelfTest")?.addEventListener("click", () => runHardwareSelfTest(false));
+  $("#hardwareMotionSelfTest")?.addEventListener("click", () => runHardwareSelfTest(true));
 
   $("#startWorkflow")?.addEventListener("click", () => {
     if (!requireDevicePreparation()) return;
@@ -1999,11 +2197,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     addLog("检测流程已启动：按离线模式进入样品采集。");
   });
 
-  $("#emergencyStop")?.addEventListener("click", () => {
-    setPill("motorStatus", "电机: 已停止", "warn");
-    setPill("lightStatus", "光源: 已关闭", "warn");
-    addLog("紧急停止已触发：模拟关闭电机与光源。", "WARN");
-  });
+  $("#emergencyStop")?.addEventListener("click", () => emergencyStopDevice());
 
   $("#startSscAnalysis")?.addEventListener("click", runSscAnalysis);
   $("#startAcidAnalysis")?.addEventListener("click", runAcidAnalysis);
@@ -2053,7 +2247,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateShapeMode();
   try {
     const status = await api("/api/status");
+    applyHardwareStatus(status.device || {});
     if (status.devicePrep) state.devicePrep = { ...state.devicePrep, ...status.devicePrep };
+    if (state.hardwareStatus.connected) state.devicePrep.connect = true;
     renderDevicePreparationStatus();
     applySampleSessionState(status);
     state.saveRootDir = status.saveRootDir || state.saveRootDir || "";
@@ -2091,6 +2287,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!status.dependencies?.cv2) {
       addLog("未检测到 OpenCV：可选点云模型读取和部分图像处理可能受限。", "WARN");
     }
+    await loadDevicePorts();
   } catch (error) {
     addLog(`后端未连接: ${error.message}`, "ERROR");
   }

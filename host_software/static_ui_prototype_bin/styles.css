@@ -261,6 +261,38 @@ label {
   gap: 8px;
 }
 
+.connect-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 8px;
+}
+
+.connect-actions button {
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+.device-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.device-status-grid span {
+  min-height: 34px;
+  padding: 8px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.36);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.hardware-actions {
+  margin-top: 10px;
+}
+
 .task-tree {
   display: grid;
   gap: 12px;
