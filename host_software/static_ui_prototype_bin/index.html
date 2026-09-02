@@ -547,28 +547,191 @@
           <article class="view-page" data-page="camera-settings">
             <div class="panel-title">
               <h3>相机设定 / Camera Settings</h3>
-              <span id="cameraSettingsStatus">可编辑参数</span>
+              <span id="cameraSettingsStatus">RGB 默认</span>
             </div>
-            <div class="settings-grid">
-              <label>分辨率<input id="cameraResolution" value="1280 x 720" /></label>
-              <label>曝光时间<input id="cameraExposure" value="自动" /></label>
-              <label>焦距 fx<input id="cameraFx" type="number" step="0.01" value="652.77" /></label>
-              <label>焦距 fy<input id="cameraFy" type="number" step="0.01" value="652.77" /></label>
-              <label>主点 cx<input id="cameraCx" type="number" step="0.01" value="631.75" /></label>
-              <label>主点 cy<input id="cameraCy" type="number" step="0.01" value="364.95" /></label>
+
+            <div class="camera-settings-tabs" role="tablist" aria-label="相机选择">
+              <button class="active" type="button" data-camera-settings-tab="rgb">RGB 彩色相机</button>
+              <button type="button" data-camera-settings-tab="multispectral">多光谱黑白相机</button>
             </div>
-            <div class="button-row">
-              <button id="saveCameraSettings" type="button">保存参数</button>
-              <button id="resetCameraSettings" type="button">恢复默认</button>
-            </div>
-            <p class="hint">fx/fy/cx/cy 会用于需要相机内参的形态分析；分辨率和曝光时间将在真实相机 SDK 接入后用于相机采集配置。</p>
-            <div class="calibration-confirm">
-              <div>
-                <strong>标定检查</strong>
-                <span id="calibrationConfirmText">未确认。本按钮仅记录人工检查结果，不代表已连接真实标定设备。</span>
+
+            <section class="camera-settings-device active" id="rgbCameraSettingsPanel" data-camera-settings-panel="rgb">
+              <div class="camera-device-summary">
+                <div>
+                  <div class="camera-device-heading">
+                    <span class="status-dot" id="rgbCameraStatusDot" data-status="idle"></span>
+                    <strong>RGB 彩色相机</strong>
+                  </div>
+                  <p id="rgbCameraStatusText">等待检测</p>
+                </div>
+                <div class="camera-summary-metrics">
+                  <span id="rgbCameraTransportText">UVC / DirectShow</span>
+                  <span id="rgbCameraActualResolutionText">3840 x 2160</span>
+                  <span id="rgbCameraActualFpsText">25 FPS</span>
+                  <span id="rgbCameraActualFourccText">MJPG</span>
+                </div>
+                <div class="button-row compact">
+                  <button id="testRgbCamera" type="button">重新检测</button>
+                  <button id="startRgbPreview" type="button">打开预览</button>
+                  <button id="stopRgbPreview" type="button" class="secondary">停止预览</button>
+                </div>
               </div>
-              <button id="confirmCalibration" type="button">确认检查通过</button>
-            </div>
+
+              <div class="camera-settings-workspace">
+                <div class="camera-live-panel">
+                  <div class="camera-live-frame">
+                    <img id="rgbLivePreview" alt="RGB 实时预览" />
+                    <span class="empty-preview" id="rgbLivePreviewEmpty">RGB 预览未启动</span>
+                  </div>
+                  <p class="hint" id="rgbPreviewMeta">预览使用 960 x 540、最高 12 FPS；正式拍照配置仍保持 3840 x 2160。</p>
+                </div>
+
+                <div class="camera-control-panel">
+                  <section class="camera-setting-section">
+                    <h4>设备连接</h4>
+                    <div class="settings-grid compact">
+                      <label>设备索引<input id="cameraDeviceIndex" type="number" step="1" min="0" value="1" /></label>
+                      <label>连接方式<input id="cameraTransport" value="UVC / DirectShow" readonly /></label>
+                    </div>
+                    <p class="hint">device_index=1 只是当前开发电脑的枚举结果，不是跨电脑永久设备 ID。修改设备索引会重新打开 RGB 相机。</p>
+                  </section>
+
+                  <section class="camera-setting-section">
+                    <h4>采集参数</h4>
+                    <div class="settings-grid compact">
+                      <label>分辨率
+                        <select id="cameraResolution">
+                          <option value="3840x2160">3840 x 2160</option>
+                          <option value="1920x1080">1920 x 1080</option>
+                          <option value="1280x720">1280 x 720</option>
+                        </select>
+                      </label>
+                      <label>FPS
+                        <select id="cameraFps">
+                          <option value="25">25</option>
+                          <option value="15">15</option>
+                          <option value="10">10</option>
+                          <option value="30">30</option>
+                        </select>
+                      </label>
+                      <label>视频格式
+                        <select id="cameraFourcc">
+                          <option value="MJPG">MJPG</option>
+                          <option value="YUY2">YUY2</option>
+                        </select>
+                      </label>
+                    </div>
+                    <p class="hint">修改分辨率、FPS、视频格式会重新启动 RGB 相机；应用后以下方实际值为准。</p>
+                  </section>
+
+                  <section class="camera-setting-section">
+                    <h4>图像参数</h4>
+                    <div class="camera-toggle-grid">
+                      <label class="toggle-line"><input id="cameraAutoExposureEnabled" type="checkbox" checked /><span>自动曝光</span></label>
+                      <label>曝光时间<input id="cameraExposure" type="number" step="0.01" value="-5" /></label>
+                      <label class="toggle-line"><input id="cameraGainAuto" type="checkbox" checked /><span>增益保持默认</span></label>
+                      <label>增益<input id="cameraGain" type="number" step="0.01" value="1" /></label>
+                      <label class="toggle-line"><input id="cameraAutoWhiteBalanceEnabled" type="checkbox" checked /><span>自动白平衡</span></label>
+                      <label>白平衡<input id="cameraWhiteBalance" type="number" step="1" value="4600" /></label>
+                    </div>
+                  </section>
+
+                  <div class="camera-apply-summary" id="rgbApplySummary">
+                    <span>请求值 / 实际值会在应用参数后显示。</span>
+                  </div>
+
+                  <div class="button-row">
+                    <button id="applyRgbCameraSettings" type="button">应用到相机</button>
+                    <button id="saveCameraSettings" type="button" class="secondary">保存为默认配置</button>
+                    <button id="resetCameraSettings" type="button" class="secondary">恢复默认</button>
+                  </div>
+
+                  <details class="camera-advanced">
+                    <summary>高级设置</summary>
+                    <section class="camera-setting-section">
+                      <h4>标定与几何参数</h4>
+                      <div class="settings-grid compact">
+                        <label>焦距 fx<input id="cameraFx" type="number" step="0.01" value="652.77" /></label>
+                        <label>焦距 fy<input id="cameraFy" type="number" step="0.01" value="652.77" /></label>
+                        <label>主点 cx<input id="cameraCx" type="number" step="0.01" value="631.75" /></label>
+                        <label>主点 cy<input id="cameraCy" type="number" step="0.01" value="364.95" /></label>
+                      </div>
+                      <p class="hint">用于相机几何标定和形态分析，普通采集用户无需修改。</p>
+                    </section>
+                    <section class="camera-setting-section">
+                      <h4>能力与技术状态</h4>
+                      <pre id="rgbCameraCapabilityText">等待检测</pre>
+                    </section>
+                  </details>
+
+                  <section class="camera-setting-section calibration-status-section">
+                    <h4>标定状态</h4>
+                    <div class="calibration-grid">
+                      <span>相机内参</span><strong>已配置</strong>
+                      <span>RGB ↔ Multispectral</span><strong>尚未完成</strong>
+                    </div>
+                    <div class="calibration-confirm">
+                      <span id="calibrationConfirmText">未确认。本按钮仅记录人工检查结果，不代表 RGB ↔ 多光谱配准已完成。</span>
+                      <button id="confirmCalibration" type="button">确认检查通过</button>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+            <section class="camera-settings-device" id="multispectralCameraSettingsPanel" data-camera-settings-panel="multispectral">
+              <div class="camera-device-summary">
+                <div>
+                  <div class="camera-device-heading">
+                    <span class="status-dot" id="multispectralCameraStatusDot" data-status="waiting"></span>
+                    <strong>多光谱黑白相机</strong>
+                  </div>
+                  <p id="multispectralCameraStatusText">等待相机供电 / 尚未完成真实连接验证</p>
+                </div>
+                <div class="camera-summary-metrics">
+                  <span>DO3THINK / 度申</span>
+                  <span>GigE / RJ45</span>
+                  <span>DVP2 SDK</span>
+                  <span>Realtek PCIe GbE</span>
+                </div>
+              </div>
+
+              <div class="camera-settings-workspace multispectral-only">
+                <section class="camera-setting-section">
+                  <h4>黑白相机连接</h4>
+                  <div class="settings-grid compact">
+                    <label>厂商<input value="DO3THINK / 度申" readonly /></label>
+                    <label>连接方式<input value="GigE / RJ45" readonly /></label>
+                    <label>SDK<input value="DVP2" readonly /></label>
+                    <label>网络适配器<input value="Realtek PCIe GbE Family Controller" readonly /></label>
+                    <label>相机 IP<input id="multispectralCameraIp" value="等待设备" readonly /></label>
+                    <label>MAC<input id="multispectralCameraMac" value="等待设备" readonly /></label>
+                    <label>Serial<input id="multispectralCameraSerial" value="等待设备" readonly /></label>
+                    <label>Link Speed<input id="multispectralLinkSpeed" value="等待设备" readonly /></label>
+                  </div>
+                  <p class="hint">不能根据 Realtek 网卡存在判断相机在线；必须等待 DVP2 枚举到真实相机。</p>
+                </section>
+
+                <section class="camera-setting-section">
+                  <h4>采集参数</h4>
+                  <div class="settings-grid compact">
+                    <label>PixelFormat<select disabled><option>待设备接入</option></select></label>
+                    <label>Exposure<input value="待设备接入" readonly /></label>
+                    <label>Gain<input value="待设备接入" readonly /></label>
+                    <label>Trigger Mode<select disabled><option>Software Trigger 待接入</option></select></label>
+                  </div>
+                </section>
+
+                <details class="camera-advanced" open>
+                  <summary>多光谱曝光方案</summary>
+                  <div class="spectral-exposure-table">
+                    <span>450 nm</span><strong>--</strong>
+                    <span>560 nm</span><strong>--</strong>
+                    <span>670 nm</span><strong>--</strong>
+                  </div>
+                </details>
+              </div>
+            </section>
           </article>
 
           <article class="view-page" data-page="light-settings">

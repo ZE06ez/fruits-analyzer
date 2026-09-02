@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from camera_service import CameraError
 from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
 from rotation_plan import build_capture_rotation_plan, mark_plan_completed
@@ -270,7 +271,10 @@ class SessionState:
         return all(bool(self.device_prep.get(key)) for key in self.OFFLINE_PREP_KEYS)
 
     def _true_capture_prepared(self) -> bool:
-        return all(bool(self.device_prep.get(key)) for key in self.TRUE_CAPTURE_PREP_KEYS)
+        # RGB can be verified independently, but the real-capture gate also
+        # needs the multispectral SDK and CaptureCoordinator. Keep this false
+        # until the complete hardware capture path owns the readiness contract.
+        return False
 
     def set_capture_started(self, value: bool = True) -> None:
         with self._lock:
@@ -484,6 +488,9 @@ def create_handler(
                 "tungsten2On": False,
                 "errorCode": None,
                 "emergencyStopped": False,
+                "cameras": getattr(device_manager, "camera_manager", None).status()
+                if getattr(device_manager, "camera_manager", None)
+                else {},
                 "error": str(exc),
             }
 
@@ -510,10 +517,12 @@ def create_handler(
                 except Exception as exc:
                     dependencies = {"error": str(exc)}
                 session_info = session.snapshot()
+                device_status = safe_device_status()
                 self.json_response({
                     "ok": True,
                     "dependencies": dependencies,
-                    "device": safe_device_status(),
+                    "device": device_status,
+                    "cameras": device_status.get("cameras", {}),
                     "sampleDataset": default_sample_dataset(app_dir),
                     "sampleDatasets": {},
                     "defaultSaveRoot": default_save_root(app_dir),
@@ -535,6 +544,36 @@ def create_handler(
                         "ok": True,
                         "device": device_manager.status(),
                     })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/camera/status":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "cameras": device_manager.camera_manager.status(),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/camera/rgb/preview-frame":
+                try:
+                    data, meta = device_manager.camera_manager.rgb_preview_jpeg()
+                    self.binary_response(
+                        data,
+                        meta.get("contentType") or "image/jpeg",
+                        headers={
+                            "X-Preview-Width": str(meta.get("previewWidth") or ""),
+                            "X-Preview-Height": str(meta.get("previewHeight") or ""),
+                            "X-Source-Shape": "x".join(str(value) for value in meta.get("sourceShape") or ()),
+                        },
+                    )
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
@@ -641,6 +680,53 @@ def create_handler(
                         "ok": True,
                         "device": device_manager.fault_clear(),
                     })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/camera/rgb/apply-settings":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.apply_rgb_settings(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
+            if parsed.path == "/api/camera/rgb/preview/start":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.start_rgb_preview(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/camera/rgb/preview/stop":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.stop_rgb_preview(),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
@@ -1552,6 +1638,16 @@ def create_handler(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def binary_response(self, data: bytes, content_type: str, headers: dict[str, str] | None = None, status: int = 200) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

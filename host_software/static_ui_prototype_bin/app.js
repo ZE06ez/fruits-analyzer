@@ -44,6 +44,15 @@ const state = {
     errorCode: null,
     emergencyStopped: false,
   },
+  cameraStatus: {
+    rgb: null,
+    multispectral: null,
+  },
+  cameraSettingsTab: "rgb",
+  rgbPreviewRunning: false,
+  rgbPreviewFetching: false,
+  rgbPreviewTimer: null,
+  rgbPreviewFrameUrl: "",
   serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
@@ -90,8 +99,18 @@ const state = {
 
 const CAMERA_SETTINGS_KEY = "fruitAnalyzer.cameraSettings";
 const DEFAULT_CAMERA_SETTINGS = {
-  resolution: "1280 x 720",
-  exposure: "自动",
+  deviceIndex: 1,
+  width: 3840,
+  height: 2160,
+  resolution: "3840 x 2160",
+  fps: 25,
+  fourcc: "MJPG",
+  autoExposureEnabled: true,
+  exposure: -5,
+  gainAuto: true,
+  gain: 1,
+  autoWhiteBalanceEnabled: true,
+  whiteBalance: 4600,
   fx: 652.77,
   fy: 652.77,
   cx: 631.75,
@@ -180,6 +199,8 @@ const checkStatusText = {
   warning: "需注意",
   failed: "失败",
   not_connected: "尚未接入",
+  sdk_missing: "SDK 未安装",
+  unsupported: "暂不支持",
   manual_required: "需要确认",
 };
 
@@ -218,6 +239,28 @@ function escapeHtml(value = "") {
 function parseNumberSetting(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseResolutionSetting(value, fallback = DEFAULT_CAMERA_SETTINGS) {
+  if (typeof value === "string") {
+    const match = value.replace(/\s+/g, "").match(/^(\d+)[x×](\d+)$/i);
+    if (match) {
+      return {
+        width: Number(match[1]),
+        height: Number(match[2]),
+        resolution: `${Number(match[1])} x ${Number(match[2])}`,
+      };
+    }
+  }
+  const width = parseNumberSetting(value?.width, fallback.width);
+  const height = parseNumberSetting(value?.height, fallback.height);
+  return { width, height, resolution: `${width} x ${height}` };
+}
+
+function legacyAutoEnabled(value, fallback = true) {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return fallback;
+  return ["auto", "自动", "on", "true"].includes(value.trim().toLowerCase());
 }
 
 function normalizeAngleDeg(value) {
@@ -384,9 +427,20 @@ function collectRotationPayload() {
 function readCameraSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(CAMERA_SETTINGS_KEY) || "{}");
+    const resolution = parseResolutionSetting(saved.resolution || saved, DEFAULT_CAMERA_SETTINGS);
     return {
-      resolution: String(saved.resolution || DEFAULT_CAMERA_SETTINGS.resolution),
-      exposure: String(saved.exposure || DEFAULT_CAMERA_SETTINGS.exposure),
+      deviceIndex: parseNumberSetting(saved.deviceIndex, DEFAULT_CAMERA_SETTINGS.deviceIndex),
+      width: resolution.width,
+      height: resolution.height,
+      resolution: resolution.resolution,
+      fps: parseNumberSetting(saved.fps, DEFAULT_CAMERA_SETTINGS.fps),
+      fourcc: String(saved.fourcc || DEFAULT_CAMERA_SETTINGS.fourcc),
+      autoExposureEnabled: legacyAutoEnabled(saved.autoExposureEnabled ?? saved.autoExposure, DEFAULT_CAMERA_SETTINGS.autoExposureEnabled),
+      exposure: parseNumberSetting(saved.exposure, DEFAULT_CAMERA_SETTINGS.exposure),
+      gainAuto: legacyAutoEnabled(saved.gainAuto, DEFAULT_CAMERA_SETTINGS.gainAuto),
+      gain: parseNumberSetting(saved.gain, DEFAULT_CAMERA_SETTINGS.gain),
+      autoWhiteBalanceEnabled: legacyAutoEnabled(saved.autoWhiteBalanceEnabled ?? saved.autoWhiteBalance, DEFAULT_CAMERA_SETTINGS.autoWhiteBalanceEnabled),
+      whiteBalance: parseNumberSetting(saved.whiteBalance, DEFAULT_CAMERA_SETTINGS.whiteBalance),
       fx: parseNumberSetting(saved.fx, DEFAULT_CAMERA_SETTINGS.fx),
       fy: parseNumberSetting(saved.fy, DEFAULT_CAMERA_SETTINGS.fy),
       cx: parseNumberSetting(saved.cx, DEFAULT_CAMERA_SETTINGS.cx),
@@ -398,9 +452,25 @@ function readCameraSettings() {
 }
 
 function collectCameraSettingsFromForm() {
+  const resolution = parseResolutionSetting($("#cameraResolution")?.value, DEFAULT_CAMERA_SETTINGS);
+  const autoExposureEnabled = Boolean($("#cameraAutoExposureEnabled")?.checked);
+  const gainAuto = Boolean($("#cameraGainAuto")?.checked);
+  const autoWhiteBalanceEnabled = Boolean($("#cameraAutoWhiteBalanceEnabled")?.checked);
   return {
-    resolution: $("#cameraResolution")?.value.trim() || DEFAULT_CAMERA_SETTINGS.resolution,
-    exposure: $("#cameraExposure")?.value.trim() || DEFAULT_CAMERA_SETTINGS.exposure,
+    deviceIndex: parseNumberSetting($("#cameraDeviceIndex")?.value, DEFAULT_CAMERA_SETTINGS.deviceIndex),
+    width: resolution.width,
+    height: resolution.height,
+    resolution: resolution.resolution,
+    fps: parseNumberSetting($("#cameraFps")?.value, DEFAULT_CAMERA_SETTINGS.fps),
+    fourcc: $("#cameraFourcc")?.value.trim() || DEFAULT_CAMERA_SETTINGS.fourcc,
+    autoExposureEnabled,
+    autoExposure: autoExposureEnabled ? 0.75 : 0.25,
+    exposure: autoExposureEnabled ? null : parseNumberSetting($("#cameraExposure")?.value, DEFAULT_CAMERA_SETTINGS.exposure),
+    gainAuto,
+    gain: gainAuto ? null : parseNumberSetting($("#cameraGain")?.value, DEFAULT_CAMERA_SETTINGS.gain),
+    autoWhiteBalanceEnabled,
+    autoWhiteBalance: autoWhiteBalanceEnabled ? 1 : 0,
+    whiteBalance: autoWhiteBalanceEnabled ? null : parseNumberSetting($("#cameraWhiteBalance")?.value, DEFAULT_CAMERA_SETTINGS.whiteBalance),
     fx: parseNumberSetting($("#cameraFx")?.value, DEFAULT_CAMERA_SETTINGS.fx),
     fy: parseNumberSetting($("#cameraFy")?.value, DEFAULT_CAMERA_SETTINGS.fy),
     cx: parseNumberSetting($("#cameraCx")?.value, DEFAULT_CAMERA_SETTINGS.cx),
@@ -409,12 +479,21 @@ function collectCameraSettingsFromForm() {
 }
 
 function applyCameraSettings(settings = readCameraSettings()) {
-  if ($("#cameraResolution")) $("#cameraResolution").value = settings.resolution;
+  if ($("#cameraDeviceIndex")) $("#cameraDeviceIndex").value = settings.deviceIndex;
+  if ($("#cameraResolution")) $("#cameraResolution").value = `${settings.width}x${settings.height}`;
+  if ($("#cameraFps")) $("#cameraFps").value = settings.fps;
+  if ($("#cameraFourcc")) $("#cameraFourcc").value = settings.fourcc;
   if ($("#cameraExposure")) $("#cameraExposure").value = settings.exposure;
+  if ($("#cameraAutoExposureEnabled")) $("#cameraAutoExposureEnabled").checked = Boolean(settings.autoExposureEnabled);
+  if ($("#cameraGainAuto")) $("#cameraGainAuto").checked = Boolean(settings.gainAuto);
+  if ($("#cameraGain")) $("#cameraGain").value = settings.gain ?? DEFAULT_CAMERA_SETTINGS.gain;
+  if ($("#cameraAutoWhiteBalanceEnabled")) $("#cameraAutoWhiteBalanceEnabled").checked = Boolean(settings.autoWhiteBalanceEnabled);
+  if ($("#cameraWhiteBalance")) $("#cameraWhiteBalance").value = settings.whiteBalance;
   if ($("#cameraFx")) $("#cameraFx").value = settings.fx;
   if ($("#cameraFy")) $("#cameraFy").value = settings.fy;
   if ($("#cameraCx")) $("#cameraCx").value = settings.cx;
   if ($("#cameraCy")) $("#cameraCy").value = settings.cy;
+  updateCameraParameterControlState();
   setText("cameraSettingsStatus", "当前参数");
 }
 
@@ -422,8 +501,8 @@ function saveCameraSettings() {
   const settings = collectCameraSettingsFromForm();
   localStorage.setItem(CAMERA_SETTINGS_KEY, JSON.stringify(settings));
   applyCameraSettings(settings);
-  setText("cameraSettingsStatus", "已保存");
-  addLog(`相机参数已保存：fx/fy=${settings.fx}/${settings.fy}，cx/cy=${settings.cx}/${settings.cy}`);
+  setText("cameraSettingsStatus", "默认配置已保存");
+  addLog(`相机参数已保存：RGB index=${settings.deviceIndex}，${settings.resolution} @ ${settings.fps}fps ${settings.fourcc}；fx/fy=${settings.fx}/${settings.fy}。`);
 }
 
 function resetCameraSettings() {
@@ -431,6 +510,227 @@ function resetCameraSettings() {
   applyCameraSettings({ ...DEFAULT_CAMERA_SETTINGS });
   setText("cameraSettingsStatus", "已恢复默认");
   addLog("相机参数已恢复为默认值。", "WARN");
+}
+
+function updateCameraParameterControlState() {
+  const autoExposure = Boolean($("#cameraAutoExposureEnabled")?.checked);
+  const gainAuto = Boolean($("#cameraGainAuto")?.checked);
+  const autoWhiteBalance = Boolean($("#cameraAutoWhiteBalanceEnabled")?.checked);
+  if ($("#cameraExposure")) $("#cameraExposure").disabled = autoExposure;
+  if ($("#cameraGain")) $("#cameraGain").disabled = gainAuto;
+  if ($("#cameraWhiteBalance")) $("#cameraWhiteBalance").disabled = autoWhiteBalance;
+}
+
+function setCameraSettingsTab(tab) {
+  state.cameraSettingsTab = tab === "multispectral" ? "multispectral" : "rgb";
+  $$(".camera-settings-tabs button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.cameraSettingsTab === state.cameraSettingsTab);
+  });
+  $$("[data-camera-settings-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.cameraSettingsPanel === state.cameraSettingsTab);
+  });
+  if (state.cameraSettingsTab !== "rgb" && state.rgbPreviewRunning) {
+    stopRgbPreview();
+  }
+  renderCameraSettingsStatus();
+}
+
+function formatCameraResolution(width, height, separator = " x ") {
+  return width && height ? `${width}${separator}${height}` : "--";
+}
+
+function renderCameraSettingsStatus() {
+  const rgb = state.cameraStatus?.rgb || {};
+  const actual = rgb.actual || {};
+  const requested = rgb.requested || {};
+  const rgbReady = Boolean(rgb.connected || rgb.available);
+  const statusDot = $("#rgbCameraStatusDot");
+  if (statusDot) statusDot.dataset.status = rgbReady ? "connected" : rgb.error ? "error" : "idle";
+  setText("rgbCameraStatusText", rgbReady ? "已连接" : (rgb.error || "未检测到 RGB 相机"));
+  setText("rgbCameraTransportText", rgb.transport || "UVC / DirectShow");
+  setText("rgbCameraActualResolutionText", formatCameraResolution(actual.width || rgb.resolution?.width || requested.width, actual.height || rgb.resolution?.height || requested.height));
+  setText("rgbCameraActualFpsText", Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")} FPS` : `${requested.fps || 25} FPS`);
+  setText("rgbCameraActualFourccText", actual.fourcc || requested.fourcc || "MJPG");
+  const capabilityText = {
+    requested,
+    actual,
+    capabilities: rgb.capabilities || {},
+    technicalError: rgb.technicalError || "",
+  };
+  setText("rgbCameraCapabilityText", JSON.stringify(capabilityText, null, 2));
+
+  const multispectral = state.cameraStatus?.multispectral || {};
+  const multiConnected = Boolean(multispectral.connected || multispectral.available);
+  const multiDot = $("#multispectralCameraStatusDot");
+  if (multiDot) multiDot.dataset.status = multiConnected ? "connected" : "waiting";
+  setText(
+    "multispectralCameraStatusText",
+    multiConnected ? "已连接" : (multispectral.error || "等待相机供电 / 尚未完成真实连接验证")
+  );
+  const multiActual = multispectral.actual || {};
+  if ($("#multispectralCameraIp")) $("#multispectralCameraIp").value = multiActual.cameraIp || "等待设备";
+  if ($("#multispectralCameraMac")) $("#multispectralCameraMac").value = multiActual.cameraMac || "等待设备";
+  if ($("#multispectralCameraSerial")) $("#multispectralCameraSerial").value = multiActual.cameraSerial || "等待设备";
+  if ($("#multispectralLinkSpeed")) $("#multispectralLinkSpeed").value = multiActual.linkSpeed || "等待设备";
+}
+
+function renderRgbApplySummary(result = null, error = null) {
+  const node = $("#rgbApplySummary");
+  if (!node) return;
+  if (error) {
+    node.dataset.status = "error";
+    node.innerHTML = `<span>${escapeHtml(error.message || "参数应用失败")}</span>`;
+    return;
+  }
+  if (!result) {
+    node.dataset.status = "";
+    node.innerHTML = "<span>请求值 / 实际值会在应用参数后显示。</span>";
+    return;
+  }
+  const summary = result.summary || {};
+  const restartText = result.restartRequired ? "已重新打开相机" : "动态参数已下发";
+  const status = summary.matchesRequested ? "ok" : "warning";
+  node.dataset.status = status;
+  node.innerHTML = [
+    `<span>${escapeHtml(restartText)}</span>`,
+    `<span>分辨率：请求 ${escapeHtml(summary.requestedResolution || "--")} / 实际 ${escapeHtml(summary.actualResolution || "--")}</span>`,
+    `<span>FPS：请求 ${escapeHtml(summary.requestedFps ?? "--")} / 实际 ${escapeHtml(summary.actualFps ?? "--")}</span>`,
+    `<span>FOURCC：请求 ${escapeHtml(summary.requestedFourcc || "--")} / 实际 ${escapeHtml(summary.actualFourcc || "--")}${summary.matchesRequested ? "，已应用" : "，相机未完全接受请求参数"}</span>`,
+    `<span>曝光：请求 ${escapeHtml(summary.requestedExposure ?? "Auto")} / 实际 ${escapeHtml(summary.actualExposure ?? "--")}</span>`,
+    `<span>增益：请求 ${escapeHtml(summary.requestedGain ?? "默认")} / 实际 ${escapeHtml(summary.actualGain ?? "--")}</span>`,
+    `<span>白平衡：请求 ${escapeHtml(summary.requestedWhiteBalance ?? "Auto")} / 实际 ${escapeHtml(summary.actualWhiteBalance ?? "--")}</span>`,
+  ].join("");
+}
+
+async function refreshCameraSettingsStatus() {
+  try {
+    const payload = await api("/api/camera/status");
+    applyCameraStatus(payload.cameras || {});
+    renderCameraSettingsStatus();
+  } catch (error) {
+    addLog(error.message || "相机状态读取失败。", "WARN");
+  }
+}
+
+async function applyRgbCameraSettings() {
+  const settings = collectCameraSettingsFromForm();
+  setText("cameraSettingsStatus", "正在应用到相机");
+  renderRgbApplySummary(null);
+  try {
+    const payload = await api("/api/camera/rgb/apply-settings", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), rgb: result.status, preview: result.preview });
+    renderCameraSettingsStatus();
+    renderRgbApplySummary(result);
+    setText("cameraSettingsStatus", "已回读实际参数");
+    addLog(result.restartRequired ? "RGB 相机参数已应用，并重新打开相机。" : "RGB 动态参数已应用到相机。");
+  } catch (error) {
+    renderRgbApplySummary(null, error);
+    setText("cameraSettingsStatus", "应用失败");
+    addLog(error.message || "RGB 相机参数应用失败。", "ERROR");
+  }
+}
+
+async function startRgbPreview() {
+  try {
+    const payload = await api("/api/camera/rgb/preview/start", {
+      method: "POST",
+      body: JSON.stringify({ width: 960, height: 540, fps: 12 }),
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { rgb: result.status } : {}), preview: result.preview });
+    state.rgbPreviewRunning = true;
+    renderCameraSettingsStatus();
+    scheduleRgbPreviewFrames();
+    setText("rgbLivePreviewEmpty", "正在读取 RGB 预览");
+    addLog("RGB 实时预览已启动：960x540，最高 12 FPS。");
+  } catch (error) {
+    state.rgbPreviewRunning = false;
+    setText("rgbLivePreviewEmpty", error.message || "RGB 预览启动失败");
+    addLog(error.message || "RGB 预览启动失败。", "ERROR");
+  }
+}
+
+async function stopRgbPreview() {
+  clearRgbPreviewTimer();
+  releaseRgbPreviewUrl();
+  state.rgbPreviewRunning = false;
+  const image = $("#rgbLivePreview");
+  if (image) {
+    image.classList.remove("active");
+    image.removeAttribute("src");
+  }
+  setText("rgbLivePreviewEmpty", "RGB 预览未启动");
+  try {
+    const payload = await api("/api/camera/rgb/preview/stop", {
+      method: "POST",
+      body: "{}",
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { rgb: result.status } : {}), preview: result.preview });
+    renderCameraSettingsStatus();
+  } catch (error) {
+    addLog(error.message || "停止 RGB 预览失败。", "WARN");
+  }
+}
+
+function scheduleRgbPreviewFrames() {
+  clearRgbPreviewTimer();
+  fetchRgbPreviewFrame();
+  state.rgbPreviewTimer = window.setInterval(fetchRgbPreviewFrame, 1000 / 12);
+}
+
+function clearRgbPreviewTimer() {
+  if (state.rgbPreviewTimer) {
+    window.clearInterval(state.rgbPreviewTimer);
+    state.rgbPreviewTimer = null;
+  }
+}
+
+function releaseRgbPreviewUrl() {
+  if (state.rgbPreviewFrameUrl) {
+    URL.revokeObjectURL(state.rgbPreviewFrameUrl);
+    state.rgbPreviewFrameUrl = "";
+  }
+}
+
+async function fetchRgbPreviewFrame() {
+  if (!state.rgbPreviewRunning) return;
+  if (state.rgbPreviewFetching) return;
+  state.rgbPreviewFetching = true;
+  try {
+    const response = await fetch(`/api/camera/rgb/preview-frame?t=${Date.now()}`);
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const payload = await response.json();
+        message = payload.error || message;
+      } catch {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    releaseRgbPreviewUrl();
+    state.rgbPreviewFrameUrl = URL.createObjectURL(blob);
+    const image = $("#rgbLivePreview");
+    if (image) {
+      image.src = state.rgbPreviewFrameUrl;
+      image.classList.add("active");
+    }
+    setText("rgbLivePreviewEmpty", "");
+    setText("rgbPreviewMeta", `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"}；正式拍照配置仍保持 3840 x 2160。`);
+  } catch (error) {
+    clearRgbPreviewTimer();
+    state.rgbPreviewRunning = false;
+    const image = $("#rgbLivePreview");
+    if (image) image.classList.remove("active");
+    setText("rgbLivePreviewEmpty", error.message || "RGB 预览已停止");
+    addLog(error.message || "RGB 预览已停止。", "WARN");
+  } finally {
+    state.rgbPreviewFetching = false;
+  }
 }
 
 function hasActiveSample() {
@@ -602,7 +902,7 @@ function requireDevicePreparation(message = "请先完成设备准备：连接�
 
 function updateDevicePreparationControls() {
   const ready = isDevicePreparationReady();
-  const hint = ready ? "离线验证可用；真实采集仍需接入相机 SDK。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
+  const hint = ready ? "离线验证可用；真实采集仍需完整相机与采集协调器。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
   $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
   $("#startWorkflow") && ($("#startWorkflow").title = hint);
   $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
@@ -614,7 +914,7 @@ function updateDevicePreparationControls() {
     button.disabled = !ready;
     button.title = hint;
   });
-  if (ready) setText("statusNote", "设备检查已完成：离线验证可用，真实采集仍需等待相机 SDK 接入。");
+  if (ready) setText("statusNote", "设备检查已完成：离线验证可用，真实采集仍需完整相机与采集协调器。");
 }
 
 function renderDevicePreparationStatus() {
@@ -638,8 +938,17 @@ function renderDevicePreparationStatus() {
     setStepStatus("light", "done");
   }
   if (state.devicePrep.camera) {
-    setPill("cameraStatus", "相机: 离线自检通过", "ok");
+    setPill("cameraStatus", "相机: 检查通过", "ok");
     setStepStatus("camera", "done");
+  } else {
+    const rgbReady = Boolean(state.cameraStatus.rgb?.connected || state.cameraStatus.rgb?.available);
+    const spectralSdkMissing = state.cameraStatus.multispectral?.sdkAvailable === false;
+    const cameraText = rgbReady
+      ? "相机: RGB 可用，多光谱待接入"
+      : spectralSdkMissing
+        ? "相机: DVP2 SDK 未安装"
+        : "相机: 未连接";
+    setPill("cameraStatus", cameraText, "warn");
   }
   if (state.devicePrep.calibration) {
     state.calibrationStatus = "passed";
@@ -671,7 +980,7 @@ function renderHardwareStatus() {
     : "钨灯: --");
   setText("deviceErrorState", `故障码: ${hardware.errorCode ?? "--"}`);
   setText("deviceConnectionHint", connected
-    ? `已连接 ${port}。真实采集仍需等待相机服务接入。`
+    ? `已连接 ${port}。真实采集仍需等待完整采集协调器。`
     : "未连接 STM32 时仍可按离线调试流程验证软件界面。");
   setText("doorLiftState", `升降门: ${doorNames[hardware.door] || hardware.door || "未连接"}`);
   setText("filterWheelState", `滤光片轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "待连接"}`);
@@ -700,6 +1009,7 @@ function defaultDeviceChecks(status = "pending") {
 
 function checksFromHardwareStatus(device = state.hardwareStatus) {
   const connected = Boolean(device.connected);
+  const cameras = device.cameras || state.cameraStatus || {};
   const checks = defaultDeviceChecks("pending");
   checks.controller = {
     status: connected ? "passed" : "not_connected",
@@ -721,16 +1031,8 @@ function checksFromHardwareStatus(device = state.hardwareStatus) {
     label: "滤光轮",
     message: connected ? (device.wheelHomed ? `位置 ${device.wheelPosition}` : "尚未寻零") : "需要连接 STM32",
   };
-  checks.rgbCamera = {
-    status: "not_connected",
-    label: "RGB 相机",
-    message: "相机 SDK 尚未接入",
-  };
-  checks.multispectralCamera = {
-    status: "not_connected",
-    label: "多光谱相机",
-    message: "相机 SDK 尚未接入",
-  };
+  checks.rgbCamera = cameraCheckFromStatus("rgb", cameras.rgb, "RGB 相机");
+  checks.multispectralCamera = cameraCheckFromStatus("multispectral", cameras.multispectral, "多光谱相机");
   checks.light = {
     status: connected ? "manual_required" : "not_connected",
     label: "光源控制",
@@ -742,6 +1044,37 @@ function checksFromHardwareStatus(device = state.hardwareStatus) {
     message: state.calibrationStatus === "passed" ? "已人工确认" : "需要人工确认",
   };
   return checks;
+}
+
+function cameraCheckFromStatus(role, camera, label) {
+  if (!camera) {
+    return {
+      status: "not_connected",
+      label,
+      message: role === "multispectral" ? "多光谱 GigE 相机 DVP2 SDK 尚未安装" : "RGB 相机未连接",
+    };
+  }
+  if (role === "multispectral" && camera.sdkAvailable === false) {
+    return {
+      status: "sdk_missing",
+      label,
+      message: camera.error || "多光谱 GigE 相机 DVP2 SDK 尚未安装",
+    };
+  }
+  const ready = Boolean(camera.connected || camera.available);
+  const actual = camera.actual || {};
+  const width = actual.width || camera.resolution?.width;
+  const height = actual.height || camera.resolution?.height;
+  const resolution = width && height
+    ? `${width}x${height}`
+    : "";
+  const fps = Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")}fps` : "";
+  const fourcc = actual.fourcc || "";
+  return {
+    status: ready ? "passed" : "not_connected",
+    label,
+    message: ready ? ["已连接", resolution, fps, fourcc].filter(Boolean).join(" ") : (camera.error || `${label}未连接`),
+  };
 }
 
 function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCheckDetail) {
@@ -757,14 +1090,14 @@ function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCh
   }
 
   const values = Object.values(normalized);
-  const blocked = values.filter((item) => ["failed", "not_connected"].includes(item.status || "")).length;
+  const blocked = values.filter((item) => ["failed", "not_connected", "sdk_missing"].includes(item.status || "")).length;
   const manual = values.filter((item) => item.status === "manual_required").length;
   const controllerOk = normalized.controller?.status === "passed";
   const offlineReady = controllerOk && normalized.fan?.status === "passed" && ["passed", "manual_required"].includes(normalized.filterWheel?.status);
   const summary = state.deviceCheckRunning
     ? "设备检查中，包含滤光轮归零/运动检查..."
     : offlineReady
-      ? "离线验证可用；真实采集不可用，等待相机 SDK 接入。"
+      ? "离线验证可用；真实采集不可用，等待完整相机服务和采集协调器。"
       : controllerOk
         ? `设备未完全就绪；${manual} 项需要确认，${blocked} 项不可用。`
         : "未连接 STM32；请先选择串口并连接。";
@@ -775,12 +1108,21 @@ function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCh
 
 function applyHardwareStatus(device = {}) {
   state.hardwareStatus = { ...state.hardwareStatus, ...(device || {}) };
+  applyCameraStatus(device.cameras || state.cameraStatus);
   if (state.hardwareStatus.connected) {
     state.devicePrep.connect = true;
   }
   renderHardwareStatus();
   renderDeviceChecks(checksFromHardwareStatus());
   renderSystemStatus();
+}
+
+function applyCameraStatus(cameras = {}) {
+  state.cameraStatus = {
+    ...state.cameraStatus,
+    ...(cameras || {}),
+  };
+  renderCameraSettingsStatus();
 }
 
 function renderSerialPorts() {
@@ -945,7 +1287,7 @@ async function runUnifiedDeviceCheck() {
     setStepStatus("motor", state.devicePrep.motor ? "done" : "warning");
     setStepStatus("light", state.devicePrep.light ? "done" : "warning");
     setStepStatus("camera", "warning");
-    setText("statusNote", "设备检查完成：离线验证可用；RGB 和多光谱相机 SDK 尚未接入，真实采集不可用。");
+    setText("statusNote", "设备检查完成：离线验证可用；RGB 走 OpenCV/DirectShow 检查，多光谱等待 DVP2 SDK，真实采集不可用。");
     addLog("一键设备检查完成：已复用 STM32 状态读取与硬件自检；相机仍为尚未接入。");
     await syncDevicePreparation();
   } catch (error) {
@@ -1741,7 +2083,7 @@ async function runDeviceTest(type) {
       step: "camera",
       status: "warning",
       prepValue: false,
-      log: "相机检查完成：RGB 相机与多光谱相机 SDK 尚未接入，不能开始真实采集。",
+      log: "相机检查完成：RGB 已进入 OpenCV/DirectShow 接入层；多光谱相机等待 DVP2 SDK，不能开始真实采集。",
     },
   };
   const item = map[type];
@@ -3104,6 +3446,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#startSscAnalysis")?.addEventListener("click", runSscAnalysis);
   $("#startAcidAnalysis")?.addEventListener("click", runAcidAnalysis);
   $("#evaluateTaste")?.addEventListener("click", () => updateTaste(true));
+  document.querySelectorAll("[data-camera-settings-tab]").forEach((button) => {
+    button.addEventListener("click", () => setCameraSettingsTab(button.dataset.cameraSettingsTab));
+  });
+  ["#cameraAutoExposureEnabled", "#cameraGainAuto", "#cameraAutoWhiteBalanceEnabled"].forEach((selector) => {
+    $(selector)?.addEventListener("change", updateCameraParameterControlState);
+  });
+  $("#testRgbCamera")?.addEventListener("click", refreshCameraSettingsStatus);
+  $("#applyRgbCameraSettings")?.addEventListener("click", applyRgbCameraSettings);
+  $("#startRgbPreview")?.addEventListener("click", startRgbPreview);
+  $("#stopRgbPreview")?.addEventListener("click", stopRgbPreview);
   $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
   $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
@@ -3138,6 +3490,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.setInterval(updateClock, 1000);
   updateClock();
   applyCameraSettings();
+  setCameraSettingsTab("rgb");
+  renderRgbApplySummary();
   renderRotationPlan();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
@@ -3150,6 +3504,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     const status = await api("/api/status");
     applyHardwareStatus(status.device || {});
+    applyCameraStatus(status.cameras || status.device?.cameras || {});
     if (status.devicePrep) state.devicePrep = { ...state.devicePrep, ...status.devicePrep };
     if (state.hardwareStatus.connected) state.devicePrep.connect = true;
     renderDevicePreparationStatus();

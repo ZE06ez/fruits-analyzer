@@ -93,6 +93,21 @@ class BackendDataFlowTests(unittest.TestCase):
         })["sample"]
         self.assertTrue(sample["hasSample"])
 
+    def test_true_capture_prepared_remains_false_until_capture_coordinator_exists(self):
+        prep = self.post_json("/api/device-preparation", {
+            "connect": True,
+            "motor": True,
+            "light": True,
+            "camera": True,
+            "calibration": True,
+        })
+
+        self.assertTrue(prep["devicePrepared"])
+        self.assertFalse(prep["trueCapturePrepared"])
+
+        status = self.get_json("/api/status")
+        self.assertFalse(status["trueCapturePrepared"])
+
     def make_dataset(self, name: str, rgb_dir_name: str = "rgb", spectral_dir_name: str = "multispectral") -> Path:
         dataset = self.root / name
         rgb = dataset / rgb_dir_name

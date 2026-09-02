@@ -373,7 +373,9 @@ label {
 }
 
 .device-check-item[data-status="warning"] span::before,
-.device-check-item[data-status="manual_required"] span::before {
+.device-check-item[data-status="manual_required"] span::before,
+.device-check-item[data-status="sdk_missing"] span::before,
+.device-check-item[data-status="unsupported"] span::before {
   background: var(--amber);
 }
 
@@ -1201,6 +1203,243 @@ body.model-advanced .model-overview-panel {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.settings-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.camera-settings-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.42);
+}
+
+.camera-settings-tabs button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  color: #9fb2c8;
+  background: transparent;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.camera-settings-tabs button.active {
+  color: #f8fafc;
+  background: rgba(14, 165, 233, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.25);
+}
+
+.camera-settings-device {
+  display: none;
+}
+
+.camera-settings-device.active {
+  display: block;
+}
+
+.camera-device-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.1fr) minmax(360px, 1.7fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(9, 15, 27, 0.52);
+}
+
+.camera-device-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #f8fafc;
+}
+
+.camera-device-heading strong {
+  font-size: 18px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #64748b;
+  box-shadow: 0 0 0 4px rgba(100, 116, 139, 0.12);
+}
+
+.status-dot[data-status="connected"] {
+  background: #4ade80;
+  box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.14);
+}
+
+.status-dot[data-status="warning"],
+.status-dot[data-status="waiting"] {
+  background: #fbbf24;
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.14);
+}
+
+.status-dot[data-status="error"] {
+  background: #fb7185;
+  box-shadow: 0 0 0 4px rgba(251, 113, 133, 0.14);
+}
+
+.camera-device-summary p {
+  margin: 6px 0 0;
+  color: #9fb2c8;
+  font-weight: 800;
+}
+
+.camera-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.camera-summary-metrics span,
+.camera-apply-summary span,
+.calibration-grid span,
+.calibration-grid strong,
+.spectral-exposure-table span,
+.spectral-exposure-table strong {
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 7px;
+  background: rgba(2, 6, 23, 0.32);
+  color: #c8d8eb;
+  font-weight: 850;
+}
+
+.camera-settings-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.25fr);
+  gap: 14px;
+}
+
+.camera-settings-workspace.multispectral-only {
+  display: block;
+}
+
+.camera-live-panel,
+.camera-control-panel,
+.camera-setting-section,
+.camera-advanced {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  background: rgba(9, 15, 27, 0.42);
+}
+
+.camera-live-panel,
+.camera-control-panel {
+  padding: 12px;
+}
+
+.camera-setting-section,
+.camera-advanced {
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.camera-setting-section h4 {
+  margin: 0 0 10px;
+  color: #f8fafc;
+  font-size: 15px;
+}
+
+.camera-live-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  border-radius: 8px;
+  background: #020617;
+}
+
+.camera-live-frame img {
+  display: none;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.camera-live-frame img.active {
+  display: block;
+}
+
+.camera-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.camera-toggle-grid label:not(.toggle-line),
+.settings-grid label {
+  min-width: 0;
+}
+
+.camera-toggle-grid input:disabled {
+  opacity: 0.48;
+}
+
+.camera-apply-summary {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.camera-apply-summary[data-status="ok"] span {
+  border-color: rgba(74, 222, 128, 0.26);
+  color: #a7f3d0;
+}
+
+.camera-apply-summary[data-status="warning"] span {
+  border-color: rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+}
+
+.camera-apply-summary[data-status="error"] span {
+  border-color: rgba(251, 113, 133, 0.3);
+  color: #fecdd3;
+}
+
+.button-row.compact {
+  justify-content: flex-end;
+  margin: 0;
+}
+
+.button-row.compact button {
+  min-width: 96px;
+}
+
+.camera-advanced summary {
+  color: #dbeafe;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.camera-advanced pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  color: #b7c6da;
+  white-space: pre-wrap;
+}
+
+.calibration-grid,
+.spectral-exposure-table {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .test-button,
@@ -2202,7 +2441,7 @@ label {
 #startSscAnalysis,
 #startAcidAnalysis,
 #enterAnalysisFromCapture,
-#saveCameraSettings {
+#applyRgbCameraSettings {
   border-color: rgba(103, 232, 249, 0.36);
   background: linear-gradient(135deg, rgba(91, 67, 186, 0.62), rgba(14, 95, 133, 0.5));
   color: #f8fbff;
@@ -2404,6 +2643,11 @@ pre {
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .camera-device-summary,
+  .camera-settings-workspace {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -2416,6 +2660,9 @@ pre {
   .camera-grid,
   .control-grid,
   .settings-grid,
+  .settings-grid.compact,
+  .camera-toggle-grid,
+  .camera-summary-metrics,
   .rotation-settings-fields,
   .rotation-plan-summary,
   .process-steps,
@@ -2428,5 +2675,10 @@ pre {
 
   .stage {
     grid-template-rows: auto auto auto;
+  }
+
+  .camera-settings-tabs {
+    width: 100%;
+    grid-template-columns: 1fr;
   }
 }
