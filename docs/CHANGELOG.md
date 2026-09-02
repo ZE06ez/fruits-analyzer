@@ -2,6 +2,77 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-03 Camera Settings UX + RGB Preview
+
+- 修改内容：重整主程序相机设置页，增加 RGB 彩色相机 / 多光谱黑白相机分段切换；RGB 页面分为设备连接、采集参数、图像参数、实时预览、requested/actual 应用结果、高级标定参数和标定状态；`fx/fy/cx/cy` 移到高级设置；“保存参数”拆分为“应用到相机”和“保存为默认配置”；新增 `/api/camera/status`、`/api/camera/rgb/apply-settings`、`/api/camera/rgb/preview/start`、`/api/camera/rgb/preview-frame`、`/api/camera/rgb/preview/stop`；`CameraManager` 用单实例和锁统一 RGB self-test、preview、参数应用，预览帧从真实 RGB 取帧后降采样为 960x540 JPEG；多光谱页改为 DO3THINK/度申 GigE/RJ45 + DVP2 待接入结构，PixelFormat/Exposure/Gain/Trigger 和波段曝光表均禁用/预留，不显示白平衡。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+  - `AGENTS.md`
+- 为什么修改：把相机设置从开发调试表单整理成普通检测设备可理解的交互，并让 RGB 参数形成 UI -> Backend API -> CameraManager -> RgbUvcCamera -> actual 回读的真实闭环。
+- 是否影响原有功能：不进入 P1B，不实现 CaptureCoordinator，不修改图像目录工作流，不伪造多光谱 DVP2 API，不放行 `/api/capture/start`；`trueCapturePrepared` 继续保持 false。
+
+## 2026-09-02 P1A-RGB Hardware Finalize
+
+- 修改内容：收尾已通过当前电脑实机验证的 RGB UVC 相机层；新增 `RgbCameraConfig` 配置层，默认记录 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，但 adapter 内不硬编码设备索引；`RgbUvcCamera.open()` 按 DirectShow -> FOURCC -> 宽高 -> FPS 顺序请求参数，并在状态中分离 `requested`、`actual`、`capabilities`；`capture_frame()` 继续返回 RGB `uint8` H×W×3；手动测试脚本增加 width/height/fps/fourcc/exposure/gain/frames 参数、稳定性输出和能力探测输出；主 UI 相机设定默认值改为当前 RGB 实机验证参数；多光谱相机文档和状态改为 DO3THINK/度申 GigE/RJ45 + DVP2 边界，不把 Wi-Fi/普通网口 link 当成相机连接，不使用 OpenCV VideoCapture。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/camera_service/__init__.py`
+  - `host_software/static_ui_prototype_bin/camera_service/base.py`
+  - `host_software/static_ui_prototype_bin/camera_service/config.py`
+  - `host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`
+  - `host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/manual_camera_test.py`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_device_manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+  - `AGENTS.md`
+- 为什么修改：把“RGB 相机已经能在当前电脑真实打开和取帧”这件事固化进配置、状态、手动测试和文档，同时继续防止主流程误认为完整真实采集已就绪。
+- 是否影响原有功能：不开发 P1B，不实现 CaptureCoordinator，不放行 `/api/capture/start`，不自动打开真实相机跑 unittest，不修改图像目录工作流，不提交 `camera/` 厂商资料或 SDK 二进制。
+
+## 2026-09-02 P1A-1 Camera Service 基础层与 RGB UVC 适配
+
+- 修改内容：新增独立 `camera_service` 包，定义统一相机状态、帧结构和异常；新增 `RgbUvcCamera`，通过 OpenCV `cv2.CAP_DSHOW` 适配 Windows UVC/DirectShow RGB 相机，`capture_frame()` 返回 RGB `uint8` H×W×3 numpy 帧；新增 `Dvp2MonoCamera`，只做 DVP2 SDK/DLL 发现和安全 unavailable/unsupported 状态，不猜测未确认的 DVP2 API；新增 `CameraManager` 并接入 `DeviceManager.status()`、`DeviceManager.self_test()` 和 `/api/status` 的 camera 状态；一键设备检查读取 CameraManager，RGB 未插入时为 `not_connected`，DVP2 缺 SDK 时为 `sdk_missing`；`trueCapturePrepared` 在 P1A-1 仍强制为 `false`，`CameraIntegrationRequired` 继续保护真实采集入口。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/camera_service/__init__.py`
+  - `host_software/static_ui_prototype_bin/camera_service/base.py`
+  - `host_software/static_ui_prototype_bin/camera_service/errors.py`
+  - `host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`
+  - `host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/manual_camera_test.py`
+  - `host_software/static_ui_prototype_bin/device_manager.py`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_device_manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：为真实相机接入建立可测试、可扩展的边界，同时把当前能真实实现的 RGB/UVC 路径与暂时只能发现 SDK 的 DVP2 路径严格分开。
+- 是否影响原有功能：不修改图像目录工作流，不修改 `create_offline_capture_dataset()`，不接入 P1B CaptureCoordinator，不放行真实整套采集，不提交 `camera/` 厂商资料或 SDK 二进制。
+
 ## 2026-09-02 P0 普通检测流程状态与设备检查优化
 
 - 修改内容：主界面顶栏新增统一“当前状态”，由前端集中函数按设备异常、正在执行任务、离线验证、分析任务、样品和设备准备状态派生；设备准备页新增“开始设备检查”普通入口，复用 `/api/device/status` 和 `/api/device/self-test`，并显示控制器、升降门、风扇、滤光轮、RGB 相机、多光谱相机、光源控制和标定状态；`DeviceManager.self_test()` 返回结构化 `checks`，相机明确为 `not_connected`，标定为 `manual_required`；样品采集页新增普通模式“检测模型”摘要，默认隐藏高级模型下拉框，点击“更换模型”后保留原有手动选择。

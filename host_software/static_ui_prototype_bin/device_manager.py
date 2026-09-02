@@ -4,6 +4,7 @@ import logging
 import threading
 from typing import Any, Callable
 
+from camera_service import CameraManager
 from hardware_controller import DoorState, HardwareController
 from serial_service import SerialService
 
@@ -20,7 +21,7 @@ class DeviceNotConnectedError(DeviceManagerError):
 
 
 class CameraIntegrationRequired(DeviceManagerError):
-    """真实相机服务尚未接入。"""
+    """完整真实采集协调器尚未接入。"""
 
 
 class DeviceManager:
@@ -43,9 +44,11 @@ class DeviceManager:
         self,
         serial_service: Any | None = None,
         controller_factory: Callable[[Any], HardwareController] = HardwareController,
+        camera_manager: CameraManager | None = None,
     ) -> None:
         self.serial = serial_service or SerialService()
         self.controller_factory = controller_factory
+        self.camera_manager = camera_manager or CameraManager()
         self.controller: HardwareController | None = None
 
         self._lock = threading.RLock()
@@ -123,6 +126,7 @@ class DeviceManager:
                 "emergencyStopped": (
                     self._emergency_stopped or error_code == 0x08
                 ),
+                "cameras": self.camera_manager.status(),
             }
 
     def self_test(self, include_motion: bool = False) -> dict[str, Any]:
@@ -175,7 +179,7 @@ class DeviceManager:
             return dict(self._capture)
 
     def start_capture(self, sample_id: str = "") -> dict[str, Any]:
-        """相机服务接入前，明确拒绝启动真实采集。"""
+        """CaptureCoordinator 接入前，明确拒绝启动真实采集。"""
 
         with self._lock:
             self._require_controller()
@@ -183,7 +187,7 @@ class DeviceManager:
                 "status": "not_ready",
                 "progress": 0,
                 "sampleId": str(sample_id).strip(),
-                "message": "相机服务尚未接入，不能开始真实采集",
+                "message": "完整真实采集协调器尚未接入，不能开始真实采集",
             }
             raise CameraIntegrationRequired(self._capture["message"])
 
@@ -223,6 +227,7 @@ class DeviceManager:
         wheel_state = "passed" if include_motion and wheel_homed else "manual_required"
         if include_motion and not wheel_homed:
             wheel_state = "warning"
+        camera_checks = self.camera_manager.checks(probe_rgb=include_motion)
 
         return {
             "controller": {
@@ -245,16 +250,8 @@ class DeviceManager:
                 "label": "滤光轮",
                 "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "尚未确认 HOME",
             },
-            "rgbCamera": {
-                "status": "not_connected",
-                "label": "RGB 相机",
-                "message": "相机 SDK 尚未接入",
-            },
-            "multispectralCamera": {
-                "status": "not_connected",
-                "label": "多光谱相机",
-                "message": "相机 SDK 尚未接入",
-            },
+            "rgbCamera": camera_checks["rgbCamera"],
+            "multispectralCamera": camera_checks["multispectralCamera"],
             "light": {
                 "status": "manual_required" if connected else "not_connected",
                 "label": "光源控制",
@@ -272,11 +269,10 @@ class DeviceManager:
         return {
             "status": "not_ready",
             "progress": 0,
-            "message": "相机服务尚未接入",
+            "message": "完整真实采集协调器尚未接入",
         }
 
-    @staticmethod
-    def _empty_status() -> dict[str, Any]:
+    def _empty_status(self) -> dict[str, Any]:
         return {
             "connected": False,
             "port": "",
@@ -290,4 +286,5 @@ class DeviceManager:
             "tungsten2On": False,
             "errorCode": None,
             "emergencyStopped": False,
+            "cameras": self.camera_manager.status(),
         }

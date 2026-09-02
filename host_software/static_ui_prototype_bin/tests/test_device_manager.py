@@ -79,12 +79,51 @@ class FakeHardwareController:
         self.fault_clear_count += 1
 
 
+class FakeCameraManager:
+    def __init__(self):
+        self.probe_requests = []
+
+    def status(self):
+        return {
+            "rgb": {
+                "available": False,
+                "connected": False,
+                "transport": "UVC/DirectShow",
+                "error": "RGB 相机未连接",
+            },
+            "multispectral": {
+                "sdkAvailable": False,
+                "available": False,
+                "connected": False,
+                "transport": "GigE/DVP2",
+                "error": "多光谱 GigE 相机 DVP2 SDK 尚未安装",
+            },
+        }
+
+    def checks(self, *, probe_rgb=False):
+        self.probe_requests.append(probe_rgb)
+        return {
+            "rgbCamera": {
+                "status": "not_connected",
+                "label": "RGB 相机",
+                "message": "RGB 相机未连接",
+            },
+            "multispectralCamera": {
+                "status": "sdk_missing",
+                "label": "多光谱相机",
+                "message": "多光谱 GigE 相机 DVP2 SDK 尚未安装",
+            },
+        }
+
+
 class DeviceManagerTests(unittest.TestCase):
     def make_manager(self):
         serial = FakeSerialService()
+        cameras = FakeCameraManager()
         manager = DeviceManager(
             serial_service=serial,
             controller_factory=FakeHardwareController,
+            camera_manager=cameras,
         )
         return manager, serial
 
@@ -107,6 +146,10 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(status["wheelPosition"], 2)
         self.assertTrue(status["wheelHomed"])
         self.assertTrue(status["fanOn"])
+        self.assertIn("cameras", status)
+        self.assertFalse(status["cameras"]["rgb"]["connected"])
+        self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
+        self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
 
     def test_self_test_does_not_move_wheel_by_default(self):
         manager, _ = self.make_manager()
@@ -117,10 +160,11 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertEqual(result["checks"]["controller"]["status"], "passed")
         self.assertEqual(result["checks"]["rgbCamera"]["status"], "not_connected")
-        self.assertEqual(result["checks"]["multispectralCamera"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["multispectralCamera"]["status"], "sdk_missing")
         self.assertEqual(result["checks"]["calibration"]["status"], "manual_required")
         self.assertEqual(manager.controller.fan_on_count, 1)
         self.assertEqual(manager.controller.wheel_home_count, 0)
+        self.assertEqual(manager.camera_manager.probe_requests[-1], False)
 
     def test_self_test_moves_wheel_only_when_requested(self):
         manager, _ = self.make_manager()
@@ -130,6 +174,7 @@ class DeviceManagerTests(unittest.TestCase):
 
         self.assertEqual(result["checks"]["filterWheel"]["status"], "passed")
         self.assertEqual(manager.controller.wheel_home_count, 1)
+        self.assertEqual(manager.camera_manager.probe_requests[-1], True)
 
     def test_start_capture_is_rejected_until_camera_service_exists(self):
         manager, _ = self.make_manager()

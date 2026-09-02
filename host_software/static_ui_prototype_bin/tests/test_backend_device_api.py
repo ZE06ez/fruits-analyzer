@@ -13,12 +13,76 @@ from backend_server import JobStore, SessionState, create_handler
 from device_manager import CameraIntegrationRequired
 
 
+class FakeCameraManager:
+    def __init__(self):
+        self.applied_payload = None
+        self.preview_running = False
+
+    def status(self):
+        return {
+            "rgb": {
+                "available": True,
+                "connected": self.preview_running,
+                "transport": "UVC/DirectShow",
+                "requested": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+                "actual": {"width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG", "matchesRequested": True},
+                "capabilities": {"exposure": {"supported": True, "settable": True, "current": -5}},
+            },
+            "multispectral": {
+                "sdkAvailable": False,
+                "available": False,
+                "connected": False,
+                "transport": "GigE/DVP2",
+                "error": "多光谱 GigE 相机 DVP2 SDK 尚未安装",
+            },
+            "preview": {
+                "rgb": {"running": self.preview_running, "width": 960, "height": 540, "fps": 12},
+            },
+        }
+
+    def apply_rgb_settings(self, payload):
+        self.applied_payload = dict(payload)
+        return {
+            "restartRequired": payload.get("width") != 3840,
+            "previewRestarted": False,
+            "settingResults": {"exposure": {"accepted": True}},
+            "status": self.status()["rgb"],
+            "summary": {
+                "requestedResolution": f"{payload.get('width')}x{payload.get('height')}",
+                "actualResolution": "3840x2160",
+                "requestedFps": payload.get("fps"),
+                "actualFps": 25,
+                "requestedFourcc": payload.get("fourcc"),
+                "actualFourcc": "MJPG",
+                "matchesRequested": payload.get("width") == 3840,
+            },
+            "preview": {"rgb": self.status()["preview"]["rgb"]},
+        }
+
+    def start_rgb_preview(self, payload=None):
+        self.preview_running = True
+        return {"status": self.status()["rgb"], "preview": {"rgb": self.status()["preview"]["rgb"]}}
+
+    def stop_rgb_preview(self):
+        self.preview_running = False
+        return {"status": self.status()["rgb"], "preview": {"rgb": self.status()["preview"]["rgb"]}}
+
+    def rgb_preview_jpeg(self):
+        return b"\xff\xd8fake-jpeg\xff\xd9", {
+            "contentType": "image/jpeg",
+            "previewWidth": 960,
+            "previewHeight": 540,
+            "sourceShape": (2160, 3840, 3),
+        }
+
+
 class FakeDeviceManager:
     def __init__(self):
         self.connected = False
         self.port = ""
         self.self_test_motion = None
         self.emergency_stopped = False
+        self.camera_manager = FakeCameraManager()
 
     def _status(self):
         return {
@@ -34,6 +98,7 @@ class FakeDeviceManager:
             "tungsten2On": False,
             "errorCode": 0 if self.connected else None,
             "emergencyStopped": self.emergency_stopped,
+            "cameras": self.camera_manager.status(),
         }
 
     def list_ports(self):
@@ -61,8 +126,8 @@ class FakeDeviceManager:
             "checks": {
                 "controller": {"status": "passed", "label": "STM32 控制器", "message": "PING 通过"},
                 "filterWheel": {"status": "passed", "label": "滤光轮", "message": "位置: 0"},
-                "rgbCamera": {"status": "not_connected", "label": "RGB 相机", "message": "相机 SDK 尚未接入"},
-                "multispectralCamera": {"status": "not_connected", "label": "多光谱相机", "message": "相机 SDK 尚未接入"},
+                "rgbCamera": {"status": "not_connected", "label": "RGB 相机", "message": "RGB 相机未连接"},
+                "multispectralCamera": {"status": "sdk_missing", "label": "多光谱相机", "message": "多光谱 GigE 相机 DVP2 SDK 尚未安装"},
                 "calibration": {"status": "manual_required", "label": "标定状态", "message": "当前需要操作员人工确认"},
             },
         }
@@ -76,10 +141,10 @@ class FakeDeviceManager:
         return self._status()
 
     def capture_status(self):
-        return {"status": "not_ready", "progress": 0, "message": "相机服务尚未接入"}
+        return {"status": "not_ready", "progress": 0, "message": "完整真实采集协调器尚未接入"}
 
     def start_capture(self, sample_id=""):
-        raise CameraIntegrationRequired("相机服务尚未接入，不能开始真实采集")
+        raise CameraIntegrationRequired("完整真实采集协调器尚未接入，不能开始真实采集")
 
     def cancel_capture(self):
         return {"status": "cancelled", "progress": 0, "message": "采集已取消"}
@@ -117,6 +182,9 @@ class BackendDeviceApiTests(unittest.TestCase):
         with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def get_response(self, path: str):
+        return urllib.request.urlopen(self.base_url + path, timeout=5)
+
     def post_json(self, path: str, payload: dict | None = None) -> dict:
         request = urllib.request.Request(
             self.base_url + path,
@@ -129,7 +197,10 @@ class BackendDeviceApiTests(unittest.TestCase):
     def test_status_and_connect_expose_hardware_state(self):
         status = self.get_json("/api/status")
         self.assertIn("device", status)
+        self.assertIn("cameras", status)
         self.assertFalse(status["device"]["connected"])
+        self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
+        self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
 
         ports = self.get_json("/api/device/ports")
         self.assertEqual(ports["ports"][0]["device"], "COM3")
@@ -143,6 +214,7 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertTrue(self.device.self_test_motion)
         self.assertEqual(self_test["result"]["checks"]["controller"]["status"], "passed")
         self.assertEqual(self_test["result"]["checks"]["rgbCamera"]["status"], "not_connected")
+        self.assertEqual(self_test["result"]["checks"]["multispectralCamera"]["status"], "sdk_missing")
         self.assertEqual(self_test["result"]["checks"]["calibration"]["status"], "manual_required")
 
     def test_capture_start_reports_camera_integration_gap(self):
@@ -150,6 +222,44 @@ class BackendDeviceApiTests(unittest.TestCase):
             self.post_json("/api/capture/start", {"sampleId": "S001"})
 
         self.assertEqual(context.exception.code, 409)
+
+    def test_camera_settings_api_apply_and_preview(self):
+        status = self.get_json("/api/camera/status")
+        self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
+        self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
+
+        applied = self.post_json("/api/camera/rgb/apply-settings", {
+            "deviceIndex": 1,
+            "width": 3840,
+            "height": 2160,
+            "fps": 25,
+            "fourcc": "MJPG",
+            "exposure": -6,
+        })
+        self.assertTrue(applied["result"]["summary"]["matchesRequested"])
+        self.assertEqual(self.device.camera_manager.applied_payload["exposure"], -6)
+
+        started = self.post_json("/api/camera/rgb/preview/start", {"width": 960, "height": 540, "fps": 12})
+        self.assertTrue(started["result"]["preview"]["rgb"]["running"])
+        with self.get_response("/api/camera/rgb/preview-frame") as response:
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(response.headers["X-Preview-Width"], "960")
+            self.assertTrue(response.read().startswith(b"\xff\xd8"))
+        stopped = self.post_json("/api/camera/rgb/preview/stop")
+        self.assertFalse(stopped["result"]["preview"]["rgb"]["running"])
+
+    def test_camera_settings_ui_separates_rgb_and_multispectral_controls(self):
+        html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
+        self.assertIn("data-camera-settings-tab=\"rgb\"", html)
+        self.assertIn("data-camera-settings-tab=\"multispectral\"", html)
+        self.assertIn("id=\"rgbLivePreview\"", html)
+        self.assertIn("标定与几何参数", html)
+        multispectral_section = html.split('id="multispectralCameraSettingsPanel"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("GigE / RJ45", multispectral_section)
+        self.assertIn("DVP2", multispectral_section)
+        self.assertIn("PixelFormat", multispectral_section)
+        self.assertNotIn("White Balance", multispectral_section)
+        self.assertNotIn("白平衡", multispectral_section)
 
 
 if __name__ == "__main__":
