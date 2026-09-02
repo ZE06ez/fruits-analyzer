@@ -72,6 +72,9 @@ class JobStore:
 
 
 class SessionState:
+    OFFLINE_PREP_KEYS = ("connect", "motor", "light")
+    TRUE_CAPTURE_PREP_KEYS = ("connect", "motor", "light", "camera", "calibration")
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.sample_id: str = ""
@@ -184,9 +187,14 @@ class SessionState:
             for key in allowed:
                 if key in payload:
                     self.device_prep[key] = bool(payload.get(key))
-            prepared = all(self.device_prep.values())
+            prepared = self._offline_prepared()
+            true_capture_prepared = self._true_capture_prepared()
             device_prep = dict(self.device_prep)
-        return {"devicePrep": device_prep, "devicePrepared": prepared}
+        return {
+            "devicePrep": device_prep,
+            "devicePrepared": prepared,
+            "trueCapturePrepared": true_capture_prepared,
+        }
 
     def apply_sample_metadata(self, metadata: dict) -> None:
         with self._lock:
@@ -223,6 +231,8 @@ class SessionState:
             selected_ph_model_id = self.selected_ph_model_id
             capture_rotation_plan = dict(self.capture_rotation_plan)
             device_prep = dict(self.device_prep)
+            device_prepared = self._offline_prepared()
+            true_capture_prepared = self._true_capture_prepared()
         current_path = Path(current).expanduser() if current else None
         current_valid = bool(current_path and current_path.exists() and current_path.is_dir())
         if current and not current_valid:
@@ -245,7 +255,8 @@ class SessionState:
             "otherImageDirs": other_image_dir_names,
             "captureStarted": capture_started,
             "devicePrep": device_prep,
-            "devicePrepared": all(device_prep.values()),
+            "devicePrepared": device_prepared,
+            "trueCapturePrepared": true_capture_prepared,
             "fruitType": fruit_type,
             "variety": variety,
             "selectedSscModelId": selected_ssc_model_id,
@@ -254,6 +265,12 @@ class SessionState:
             "captureRotationPlan": capture_rotation_plan,
             "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
         }
+
+    def _offline_prepared(self) -> bool:
+        return all(bool(self.device_prep.get(key)) for key in self.OFFLINE_PREP_KEYS)
+
+    def _true_capture_prepared(self) -> bool:
+        return all(bool(self.device_prep.get(key)) for key in self.TRUE_CAPTURE_PREP_KEYS)
 
     def set_capture_started(self, value: bool = True) -> None:
         with self._lock:

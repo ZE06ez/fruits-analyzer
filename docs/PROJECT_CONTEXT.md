@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-01
+更新时间：2026-09-02
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -73,7 +73,7 @@ UI
 关键文件：
 
 - `host_software/static_ui_prototype_bin/index.html`：主检测工作站 UI。
-- `host_software/static_ui_prototype_bin/app.js`：前端状态机、采集/分析布局切换、样品流程、模型选择、分析调用、结果渲染。
+- `host_software/static_ui_prototype_bin/app.js`：前端状态机、全局系统状态派生、采集/分析布局切换、样品流程、模型普通/高级展示、分析调用、结果渲染。
 - `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
 - `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 两字节串口服务，115200 8N1，一问一答，不自动重发机械命令。
 - `host_software/static_ui_prototype_bin/hardware_controller.py`：风扇、升降门、RGB LED、钨灯、滤光片轮、状态查询、急停和故障清除控制层。
@@ -93,11 +93,11 @@ UI
 1. 启动软件：运行 `python launcher.py` 或打包后的 EXE。
 2. `launcher.py` 启动本地后端并打开浏览器页面。
 3. UI 加载 `/api/status`，获取依赖状态、默认保存根目录、当前样品会话、Model Studio 发布模型目录。
-4. 用户进行设备准备页面的连接检查、电机自检、光源自检、相机自检和标定检查：串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；相机自检、光源波段按钮和样品台控制仍主要是离线流程记录。
+4. 用户进行设备准备：顶栏显示由 `deriveSystemStatus()` 派生的全局状态；设备准备页提供“开始设备检查”普通入口，复用 `/api/device/status` 和 `/api/device/self-test` 读取 STM32、门、风扇、滤光轮、光源控制状态。RGB 相机和多光谱相机当前显示“尚未接入”，标定显示“需要人工确认”，不会标为真实通过。串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；相机自检、光源波段按钮和样品台控制仍主要是离线流程记录。
 5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
 6. 可在“样品采集”页设置样品台多角度旋转拍摄：启用/关闭、期望角度间隔、起始角度、CW/CCW、是否补拍闭合角度。该设置属于 `sample_rotation`，不等同于滤光片转轮角度。
 7. 完成设备准备并选择保存父目录后，前端弹出“图像目录名称设置”；用户确认 RGB 图像目录名和多光谱图像目录名后，点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json.image_directories`，并创建实际 RGB 子目录、实际多光谱子目录、`calibration/dark/`、`calibration/white/`。默认仍为 `rgb/` 和 `multispectral/`。
-8. 用户在 SSC/TA/pH 页面选择已发布且兼容果种/品种/指标的模型；也可自动使用默认模型。
+8. 样品采集页显示普通用户优先的“检测模型”摘要：按当前果种/品种展示 SSC、TA、pH 是否有 Default/Published 模型；若实际使用 `generic` 模型则明确显示“正在使用通用模型”；若无模型显示“暂无正式模型”。点击“更换模型”后才展开原有手动模型选择。
 9. 用户点击采集步骤：当前只更新 UI 进度与日志；采集开始后旋转计划锁定。
 10. 点击“进入分析”或完成采集：`POST /api/complete-capture` 调用 `create_offline_capture_dataset()`，按当前 session/metadata 中的实际目录名写入图片。未启用多角度时保持旧离线单层文件命名；启用多角度时写 `<rgbDirName>/rgb_view_000.png`、`<multispectralDirName>/view000_450.png` 等兼容命名文件，并写 `views.json` 和 metadata 中的 `capture_views`。
 11. 采集完成后样品旋转计划标记 `returned_home=true`、`home_status=HOME_OK`；当前只是模拟回 Home，不代表真实电机已接入。
@@ -182,6 +182,9 @@ UI
 | 样品多角度旋转拍摄计划 | DONE/MOCK | `rotation_plan.py` 计算视角、实际间隔、闭合 View 和 Home 状态；当前无真实样品台电机 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 选择父目录，再用 `/api/inspect-image-folders` 扫描一级子目录；用户确认 RGB/多光谱目录后由 `/api/sample-folder` 检查 |
 | 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
+| 全局系统状态 | DONE | `app.js deriveSystemStatus()` 基于设备、样品、离线验证、形态任务、SSC/TA/pH 分析和预测结果派生顶栏状态；不会显示假的真实采集状态 |
+| 一键设备检查 | DONE/PARTIAL | 设备准备页新增“开始设备检查”，复用 `/api/device/status` 和 `/api/device/self-test`；STM32/门/风扇/滤光轮为真实接口，相机为未接入，标定需人工确认 |
+| 模型普通/高级模式 | DONE | 样品采集页新增检测模型摘要，默认隐藏 model_id 等高级选择；更换模型后显示原有手动下拉框，继续复用 Default/generic/model_missing 逻辑 |
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
 | RGB + 多光谱目录检查 | DONE | `inspect_sample_folder()` 按启用波段检查 |
 | RGB 二维形态/表面分析 | DONE/PARTIAL | 可测面积、宽高、颜色、果粉；不是完整真实尺寸标定 |
@@ -209,6 +212,7 @@ UI
 - 主程序继续以 Python 上位机为核心。
 - 当前前端是静态 HTML/CSS/JS，后端是 Python 本地 HTTPServer；历史文档中的 Vue/FastAPI/Electron 是早期建议，不是当前实现。
 - 相机 SDK 预计通过厂家 C/C++ SDK 与 Python 对接；当前尚未接入。
+- 当前设备准备分为两层：`devicePrepared` 表示离线验证流程可用，`trueCapturePrepared` 表示未来真实采集就绪；在相机 SDK 未接入前不得显示真实采集已就绪。
 - 样品旋转角度和滤光片转轮角度必须完全独立：`sample_rotation` 控制样品台多视角，`filter_wheel_rotation` 控制多光谱波段切换，不能用同一字段或同一电机状态表示。
 - 多角度采集默认不拍 360°，因为 0° 与 360° 是同一位置；只有用户启用闭合补拍时才生成 `closure_view=true` 的额外 View。
 - 多 View 仍属于同一个水果 Sample，同一个 `sample_id`；后续如果展开为多行特征，训练/验证必须继续按 `sample_id` 分组，避免同一水果进入 train/test 两边。
@@ -231,7 +235,7 @@ UI
 - 真实采集闭环未接入：STM32 串口、滤光轮、门控、急停、部分光源命令已有控制层；相机 SDK、样品台真实旋转、温度和扩展报警仍未接入。
 - 样品旋转平台当前只有角度计划、UI、metadata 和离线模拟文件，缺少 `home_sample_stage()`、`move_sample_stage_to_angle()`、`wait_sample_stage_stable()` 等真实硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
-- 主 UI 的串口刷新/连接、硬件通信自检、滤光轮寻零自检、紧急停止已接后端设备 API；相机预览、相机自检、样品台正反转和光源波段按钮仍是离线日志/状态。
+- 主 UI 的串口刷新/连接、一键设备检查、硬件通信自检、滤光轮寻零自检、紧急停止已接后端设备 API；相机预览、相机自检、样品台正反转和光源波段按钮仍是离线日志/状态。
 - `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 明确抛出 `NotImplementedError`。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。

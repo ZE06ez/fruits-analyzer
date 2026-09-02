@@ -70,6 +70,29 @@ class BackendDataFlowTests(unittest.TestCase):
             "saveRootDir": str(self.root / "FruitData"),
         })["sample"]
 
+    def test_offline_device_preparation_allows_sample_without_camera_sdk(self):
+        prep = self.post_json("/api/device-preparation", {
+            "connect": True,
+            "motor": True,
+            "light": True,
+            "camera": False,
+            "calibration": False,
+        })
+        self.assertTrue(prep["devicePrepared"])
+        self.assertFalse(prep["trueCapturePrepared"])
+
+        status = self.get_json("/api/status")
+        self.assertTrue(status["devicePrepared"])
+        self.assertFalse(status["trueCapturePrepared"])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "OfflineReady",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+        self.assertTrue(sample["hasSample"])
+
     def make_dataset(self, name: str, rgb_dir_name: str = "rgb", spectral_dir_name: str = "multispectral") -> Path:
         dataset = self.root / name
         rgb = dataset / rgb_dir_name
