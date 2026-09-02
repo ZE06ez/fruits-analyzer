@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-01
+更新时间：2026-09-02
 
 ## 总体结构
 
@@ -43,15 +43,16 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
-| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，采集前置门槛 | 串口/滤光轮部分可走真实 API，相机和样品台仍为离线/待接入 |
+| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用，`trueCapturePrepared` 表示未来真实采集门槛 | 串口/滤光轮部分可走真实 API，相机和样品台仍为离线/待接入 |
+| 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()` | `state`、设备状态、样品状态、形态任务、预测任务 | 顶栏“当前状态” | 前端派生状态，不新增后端状态源 |
 | STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
 | 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
-| 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*` | HardwareController |
+| 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager`, `DeviceManager.self_test()` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*`，self-test `checks` | HardwareController |
 | 样品旋转计划 | `rotation_plan.py`, `backend_server.py`, `app.js` | `build_capture_rotation_plan()`, `mark_plan_completed()`, `renderRotationPlan()` | 期望角度间隔、起始角度、CW/CCW、闭合补拍 | `captureRotationPlan`、`sample_rotation` metadata、`views.json` | math/json |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
 | 主 UI | `index.html` | 页面结构 | 用户操作 | 显示工作站 | `app.js` |
-| 主 UI 状态机 | `app.js` | `state`, `api()`, `getModuleLayoutMode()`, `applyModuleLayout()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、采集/分析布局切换、报告 TXT | Browser APIs |
+| 主 UI 状态机 | `app.js` | `state`, `api()`, `deriveSystemStatus()`, `runUnifiedDeviceCheck()`, `renderModelOverview()`, `getModuleLayoutMode()`, `applyModuleLayout()`, `createNewSample()`, `runShapeAnalysis()`, `runSscAnalysis()`, `runAcidAnalysis()`, `updateTaste()` | 用户事件/API 响应 | DOM 更新、全局状态、设备检查摘要、采集/分析布局切换、报告 TXT | Browser APIs |
 | 图像子目录扫描 | `backend_server.py` | `inspect_image_folders()`, `validate_image_dir_name()`, `validate_direct_child_dir()` | 样品父目录、用户选择的一级子目录名 | 子目录列表、建议角色、目录名校验 | pathlib, pointcloud_service |
 | 目录检查 | `pointcloud_service.py` | `inspect_sample_folder()`, `_inspect_sample_folder_by_enabled_bands()` | 样品目录、RGB/多光谱子目录名 | 数据质量报告 | PIL, quality_algorithm |
 | 形态分析 | `pointcloud_service.py` | `analyze_rgbd_dataset()`, `analyze_rgb_multispectral_sample()` | 样品目录、输出目录、相机内参 | 形态/表面结果、预览图 | numpy, PIL |
@@ -96,13 +97,20 @@ app.js loadDevicePorts()/connectDevice()/runHardwareSelfTest()/emergencyStopDevi
   -> SerialService
   -> STM32 two-byte protocol
 
+app.js runUnifiedDeviceCheck()
+  -> GET /api/device/status
+  -> POST /api/device/self-test {includeMotion: true}
+  -> DeviceManager.self_test()
+  -> checks: controller/door/fan/filterWheel/rgbCamera/multispectralCamera/light/calibration
+
 app.js runDeviceTest()/confirmCalibrationCheck()
   -> POST /api/device-preparation
   -> SessionState.update_device_preparation()
-  -> SessionState.devicePrepared = all(connect, motor, light, camera, calibration)
+  -> SessionState.devicePrepared = all(connect, motor, light)
+  -> SessionState.trueCapturePrepared = all(connect, motor, light, camera, calibration)
 ```
 
-串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。相机 SDK、样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 在相机服务接入前返回 409。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成设备准备时开始样品采集。
+串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 和 `checks.multispectralCamera` 当前固定为 `not_connected`，标定为 `manual_required`。相机 SDK、样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 在相机服务接入前返回 409。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
 
 ### 样品创建
 
@@ -249,6 +257,20 @@ sample folder
 - 可选 PLY 点云指标
 
 ### 光谱特征和预测
+
+模型普通/高级展示：
+
+```text
+app.js loadQualityModels()
+  -> GET /api/quality-models?fruitType=<fruit>&variety=<variety>
+  -> ModelStudioService.model_catalog()
+  -> compatible + defaults
+  -> app.js renderModelOverview()
+  -> 普通模式显示 SSC/TA/pH 默认模型、通用模型或缺失模型
+  -> 高级模式显示原有 model select
+```
+
+该展示层只复用现有 Published/Default/generic 逻辑，不发布模型、不替换模型，也不生成假预测值。
 
 ```text
 POST /api/predict-ssc 或 /api/predict-acid

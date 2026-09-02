@@ -54,7 +54,18 @@ class FakeDeviceManager:
 
     def self_test(self, include_motion=False):
         self.self_test_motion = include_motion
-        return {"passed": True, "includeMotion": include_motion, "status": self._status()}
+        return {
+            "passed": True,
+            "includeMotion": include_motion,
+            "status": self._status(),
+            "checks": {
+                "controller": {"status": "passed", "label": "STM32 控制器", "message": "PING 通过"},
+                "filterWheel": {"status": "passed", "label": "滤光轮", "message": "位置: 0"},
+                "rgbCamera": {"status": "not_connected", "label": "RGB 相机", "message": "相机 SDK 尚未接入"},
+                "multispectralCamera": {"status": "not_connected", "label": "多光谱相机", "message": "相机 SDK 尚未接入"},
+                "calibration": {"status": "manual_required", "label": "标定状态", "message": "当前需要操作员人工确认"},
+            },
+        }
 
     def emergency_stop(self):
         self.emergency_stopped = True
@@ -130,6 +141,9 @@ class BackendDeviceApiTests(unittest.TestCase):
         self_test = self.post_json("/api/device/self-test", {"includeMotion": True})
         self.assertTrue(self_test["result"]["passed"])
         self.assertTrue(self.device.self_test_motion)
+        self.assertEqual(self_test["result"]["checks"]["controller"]["status"], "passed")
+        self.assertEqual(self_test["result"]["checks"]["rgbCamera"]["status"], "not_connected")
+        self.assertEqual(self_test["result"]["checks"]["calibration"]["status"], "manual_required")
 
     def test_capture_start_reports_camera_integration_gap(self):
         with self.assertRaises(urllib.error.HTTPError) as context:

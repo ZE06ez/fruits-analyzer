@@ -2,6 +2,25 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-02 P0 普通检测流程状态与设备检查优化
+
+- 修改内容：主界面顶栏新增统一“当前状态”，由前端集中函数按设备异常、正在执行任务、离线验证、分析任务、样品和设备准备状态派生；设备准备页新增“开始设备检查”普通入口，复用 `/api/device/status` 和 `/api/device/self-test`，并显示控制器、升降门、风扇、滤光轮、RGB 相机、多光谱相机、光源控制和标定状态；`DeviceManager.self_test()` 返回结构化 `checks`，相机明确为 `not_connected`，标定为 `manual_required`；样品采集页新增普通模式“检测模型”摘要，默认隐藏高级模型下拉框，点击“更换模型”后保留原有手动选择。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/styles.css`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/device_manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `host_software/static_ui_prototype_bin/tests/test_device_manager.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：降低普通检测用户的默认操作复杂度，把设备底层信息和模型细节收进详情/高级模式，同时继续保留科研调试能力。
+- 是否影响原有功能：不修改图像目录保存/读取工作流，不接入或伪造相机 SDK，不修改 Production/Default 发布规则，不实现 P1/P2 的采集协调器、检测历史或报告系统。`/api/capture/start` 在相机服务接入前仍返回 `CameraIntegrationRequired`。
+
 ## 2026-09-01 图像保存与读取目录名可配置
 
 - 修改内容：主程序保存父目录选择后新增“图像目录名称设置”模态框，允许设置 RGB 与多光谱子目录名；本次拍摄目录继续自动导入并优先使用 session/metadata 中的实际目录名；手动选择其他样品时新增父目录一级子目录扫描和子目录选择模态框，确认后再检查和分析。

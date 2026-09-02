@@ -8,6 +8,11 @@ const state = {
   shapeJobId: null,
   shapeTimer: null,
   shapeStartedAt: null,
+  shapeDone: false,
+  systemTask: "",
+  deviceCheckRunning: false,
+  deviceChecks: {},
+  deviceCheckDetail: null,
   shapeMode: "morphology2d",
   saveRootDir: "",
   currentCaptureDir: "",
@@ -52,6 +57,8 @@ const state = {
   selectedSscModelId: "",
   selectedTaModelId: "",
   selectedPhModelId: "",
+  modelAdvanced: false,
+  modelCatalog: null,
   sampleSession: {
     sampleId: "",
     sampleName: "",
@@ -142,6 +149,38 @@ const shapeStepMap = {
   measure: "measure",
   preview: "volume",
   done: "confirm",
+};
+
+const deviceCheckOrder = [
+  "controller",
+  "door",
+  "fan",
+  "filterWheel",
+  "rgbCamera",
+  "multispectralCamera",
+  "light",
+  "calibration",
+];
+
+const deviceCheckLabels = {
+  controller: "控制器",
+  door: "升降门",
+  fan: "风扇",
+  filterWheel: "滤光轮",
+  rgbCamera: "RGB 相机",
+  multispectralCamera: "多光谱相机",
+  light: "光源控制",
+  calibration: "标定",
+};
+
+const checkStatusText = {
+  pending: "待检查",
+  checking: "检查中",
+  passed: "正常",
+  warning: "需注意",
+  failed: "失败",
+  not_connected: "尚未接入",
+  manual_required: "需要确认",
 };
 
 function $(selector) {
@@ -406,14 +445,151 @@ function requireActiveSample(message = "请先创建当前样品。") {
   return false;
 }
 
-function isDevicePreparationReady() {
+function isOfflineValidationReady() {
   return Boolean(
     state.devicePrep.connect
     && state.devicePrep.motor
     && state.devicePrep.light
-    && state.devicePrep.camera
-    && state.devicePrep.calibration
   );
+}
+
+function isDevicePreparationReady() {
+  return isOfflineValidationReady();
+}
+
+function hasDeviceFault() {
+  const errorCode = Number(state.hardwareStatus?.errorCode);
+  return Boolean(
+    state.hardwareStatus?.emergencyStopped
+    || (Number.isFinite(errorCode) && errorCode !== 0)
+  );
+}
+
+function deriveSystemStatus() {
+  if (hasDeviceFault()) {
+    return {
+      key: "device-error",
+      label: "设备异常",
+      tone: "error",
+      detail: `故障码 ${state.hardwareStatus?.errorCode ?? "--"}，请先急停检查或清除故障。`,
+    };
+  }
+
+  if (state.deviceCheckRunning || state.systemTask === "device-check") {
+    return {
+      key: "device-checking",
+      label: "设备检查中",
+      tone: "running",
+      detail: "正在读取控制器和设备准备状态。",
+    };
+  }
+
+  if (state.systemTask === "shape" || state.shapeJobId) {
+    return {
+      key: "shape-running",
+      label: "形态分析中",
+      tone: "running",
+      detail: "正在执行本地形态与表面纹理分析。",
+    };
+  }
+
+  if (state.systemTask === "ssc") {
+    return {
+      key: "ssc-running",
+      label: "SSC 分析中",
+      tone: "running",
+      detail: "正在调用已选择的 SSC 模型。",
+    };
+  }
+
+  if (state.systemTask === "acid") {
+    return {
+      key: "acid-running",
+      label: "酸度分析中",
+      tone: "running",
+      detail: "正在调用已选择的 TA / pH 模型。",
+    };
+  }
+
+  if (state.captureCompleting || (state.captureStarted && state.captureStep > 0 && state.captureStep < 4)) {
+    return {
+      key: "offline-capture",
+      label: "离线验证中",
+      tone: "running",
+      detail: "当前流程由 create_offline_capture_dataset() 生成验证数据，不是真实相机采集。",
+    };
+  }
+
+  if (state.grade || (Number.isFinite(state.ssc) && (Number.isFinite(state.ta) || Number.isFinite(state.ph)))) {
+    return {
+      key: "complete",
+      label: "检测完成",
+      tone: "complete",
+      detail: "已有糖酸分析结果，可查看口感或报告区。",
+    };
+  }
+
+  if (state.analysisDataDir && state.dataCheck.status !== "empty") {
+    return {
+      key: "waiting-analysis",
+      label: "等待分析",
+      tone: "ready",
+      detail: "样品数据目录已载入，可以进行形态、SSC、TA 或 pH 分析。",
+    };
+  }
+
+  if (hasActiveSample() && !state.currentCaptureValid) {
+    return {
+      key: "waiting-capture",
+      label: "等待采集",
+      tone: "ready",
+      detail: "样品已创建，当前等待离线验证或未来真实采集。",
+    };
+  }
+
+  if (hasActiveSample()) {
+    return {
+      key: "sample-created",
+      label: "样品已创建",
+      tone: "ready",
+      detail: "当前样品会写入 metadata.json。",
+    };
+  }
+
+  if (state.devicePrep.connect && !isDevicePreparationReady()) {
+    return {
+      key: "device-not-ready",
+      label: "设备未就绪",
+      tone: "warning",
+      detail: "控制器或离线准备项尚未全部确认。",
+    };
+  }
+
+  if (isDevicePreparationReady()) {
+    return {
+      key: "waiting-sample",
+      label: "等待创建样品",
+      tone: "ready",
+      detail: "设备准备状态已满足当前离线流程，可以创建样品。",
+    };
+  }
+
+  return {
+    key: "waiting-device-check",
+    label: "等待设备检查",
+    tone: "waiting",
+    detail: "请先完成设备准备；真实相机当前尚未接入。",
+  };
+}
+
+function renderSystemStatus() {
+  const status = deriveSystemStatus();
+  const node = $("#systemStatus");
+  if (!node) return status;
+  node.textContent = `当前状态 · ${status.label}`;
+  node.dataset.status = status.tone;
+  node.title = status.detail || status.label;
+  return status;
 }
 
 function requireDevicePreparation(message = "请先完成设备准备：连接检查、电机、光源、相机和标定检查。") {
@@ -426,7 +602,7 @@ function requireDevicePreparation(message = "请先完成设备准备：连接�
 
 function updateDevicePreparationControls() {
   const ready = isDevicePreparationReady();
-  const hint = ready ? "" : "请先完成设备准备：连接检查、电机、光源、相机和标定检查。";
+  const hint = ready ? "离线验证可用；真实采集仍需接入相机 SDK。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
   $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
   $("#startWorkflow") && ($("#startWorkflow").title = hint);
   $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
@@ -438,7 +614,7 @@ function updateDevicePreparationControls() {
     button.disabled = !ready;
     button.title = hint;
   });
-  if (ready) setText("statusNote", "设备准备已完成，可以开始样品采集。");
+  if (ready) setText("statusNote", "设备检查已完成：离线验证可用，真实采集仍需等待相机 SDK 接入。");
 }
 
 function renderDevicePreparationStatus() {
@@ -470,6 +646,7 @@ function renderDevicePreparationStatus() {
     renderCalibrationStatus();
   }
   updateDevicePreparationControls();
+  renderSystemStatus();
 }
 
 function renderHardwareStatus() {
@@ -510,12 +687,100 @@ function renderHardwareStatus() {
   $("#hardwareMotionSelfTest") && ($("#hardwareMotionSelfTest").disabled = !connected);
 }
 
+function defaultDeviceChecks(status = "pending") {
+  return Object.fromEntries(deviceCheckOrder.map((key) => ([
+    key,
+    {
+      status,
+      label: deviceCheckLabels[key],
+      message: checkStatusText[status] || "待检查",
+    },
+  ])));
+}
+
+function checksFromHardwareStatus(device = state.hardwareStatus) {
+  const connected = Boolean(device.connected);
+  const checks = defaultDeviceChecks("pending");
+  checks.controller = {
+    status: connected ? "passed" : "not_connected",
+    label: "控制器",
+    message: connected ? `已连接 ${device.port || "STM32"}` : "STM32 尚未连接",
+  };
+  checks.door = {
+    status: connected ? (device.door === "error" ? "failed" : ["open", "closed"].includes(device.door) ? "passed" : "warning") : "not_connected",
+    label: "升降门",
+    message: connected ? `门状态: ${device.door || "unknown"}` : "需要连接 STM32",
+  };
+  checks.fan = {
+    status: connected ? (device.fanOn ? "passed" : "warning") : "not_connected",
+    label: "风扇",
+    message: connected ? (device.fanOn ? "风扇已开启" : "风扇未开启") : "需要连接 STM32",
+  };
+  checks.filterWheel = {
+    status: connected ? (device.wheelHomed ? "passed" : "manual_required") : "not_connected",
+    label: "滤光轮",
+    message: connected ? (device.wheelHomed ? `位置 ${device.wheelPosition}` : "尚未寻零") : "需要连接 STM32",
+  };
+  checks.rgbCamera = {
+    status: "not_connected",
+    label: "RGB 相机",
+    message: "相机 SDK 尚未接入",
+  };
+  checks.multispectralCamera = {
+    status: "not_connected",
+    label: "多光谱相机",
+    message: "相机 SDK 尚未接入",
+  };
+  checks.light = {
+    status: connected ? "manual_required" : "not_connected",
+    label: "光源控制",
+    message: connected ? "控制层可用，需人工确认输出" : "需要连接 STM32",
+  };
+  checks.calibration = {
+    status: state.calibrationStatus === "passed" ? "passed" : "manual_required",
+    label: "标定",
+    message: state.calibrationStatus === "passed" ? "已人工确认" : "需要人工确认",
+  };
+  return checks;
+}
+
+function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCheckDetail) {
+  const grid = $("#deviceCheckGrid");
+  const normalized = Object.keys(checks || {}).length ? checks : defaultDeviceChecks();
+  state.deviceChecks = normalized;
+  if (grid) {
+    grid.innerHTML = deviceCheckOrder.map((key) => {
+      const item = normalized[key] || { status: "pending", label: deviceCheckLabels[key], message: "待检查" };
+      const status = item.status || "pending";
+      return `<div class="device-check-item" data-status="${escapeHtml(status)}"><span>${escapeHtml(item.label || deviceCheckLabels[key])}</span><small>${escapeHtml(checkStatusText[status] || status)} · ${escapeHtml(item.message || "")}</small></div>`;
+    }).join("");
+  }
+
+  const values = Object.values(normalized);
+  const blocked = values.filter((item) => ["failed", "not_connected"].includes(item.status || "")).length;
+  const manual = values.filter((item) => item.status === "manual_required").length;
+  const controllerOk = normalized.controller?.status === "passed";
+  const offlineReady = controllerOk && normalized.fan?.status === "passed" && ["passed", "manual_required"].includes(normalized.filterWheel?.status);
+  const summary = state.deviceCheckRunning
+    ? "设备检查中，包含滤光轮归零/运动检查..."
+    : offlineReady
+      ? "离线验证可用；真实采集不可用，等待相机 SDK 接入。"
+      : controllerOk
+        ? `设备未完全就绪；${manual} 项需要确认，${blocked} 项不可用。`
+        : "未连接 STM32；请先选择串口并连接。";
+  setText("deviceCheckSummary", summary);
+  const text = detail ? JSON.stringify(detail, null, 2) : "暂无设备详情";
+  setText("deviceDetailText", text);
+}
+
 function applyHardwareStatus(device = {}) {
   state.hardwareStatus = { ...state.hardwareStatus, ...(device || {}) };
   if (state.hardwareStatus.connected) {
     state.devicePrep.connect = true;
   }
   renderHardwareStatus();
+  renderDeviceChecks(checksFromHardwareStatus());
+  renderSystemStatus();
 }
 
 function renderSerialPorts() {
@@ -607,6 +872,14 @@ async function runHardwareSelfTest(includeMotion = false) {
       body: JSON.stringify({ includeMotion }),
     });
     applyHardwareStatus(payload.result?.status || {});
+    if (payload.result?.checks) {
+      state.deviceCheckDetail = {
+        includeMotion,
+        device: payload.result.status || state.hardwareStatus,
+        checks: payload.result.checks,
+      };
+      renderDeviceChecks({ ...checksFromHardwareStatus(payload.result.status || state.hardwareStatus), ...payload.result.checks }, state.deviceCheckDetail);
+    }
     state.devicePrep.connect = true;
     if (includeMotion) state.devicePrep.motor = true;
     setStepStatus(includeMotion ? "motor" : "connect", "done");
@@ -615,6 +888,85 @@ async function runHardwareSelfTest(includeMotion = false) {
     await syncDevicePreparation();
   } catch (error) {
     addLog(error.message || "硬件自检失败。", "ERROR");
+  }
+}
+
+async function runUnifiedDeviceCheck() {
+  state.deviceCheckRunning = true;
+  state.systemTask = "device-check";
+  renderDeviceChecks(defaultDeviceChecks("checking"));
+  renderSystemStatus();
+  const startButton = $("#startDeviceCheck");
+  if (startButton) startButton.disabled = true;
+
+  try {
+    const statusPayload = await api("/api/device/status");
+    const device = statusPayload.device || {};
+    applyHardwareStatus(device);
+
+    if (!device.connected) {
+      state.devicePrep = {
+        ...state.devicePrep,
+        connect: false,
+        motor: false,
+        light: false,
+        camera: false,
+      };
+      state.deviceCheckDetail = { device };
+      renderDeviceChecks(checksFromHardwareStatus(device), state.deviceCheckDetail);
+      setText("statusNote", "STM32 尚未连接：离线界面可查看，样品采集前需要先完成设备检查。");
+      await syncDevicePreparation();
+      return;
+    }
+
+    const selfTestPayload = await api("/api/device/self-test", {
+      method: "POST",
+      body: JSON.stringify({ includeMotion: true }),
+    });
+    const result = selfTestPayload.result || {};
+    const checkedDevice = result.status || device;
+    applyHardwareStatus(checkedDevice);
+    const checks = { ...checksFromHardwareStatus(checkedDevice), ...(result.checks || {}) };
+    state.deviceCheckDetail = {
+      includeMotion: true,
+      device: checkedDevice,
+      checks,
+      trueCaptureReady: false,
+      offlineValidationReady: true,
+    };
+    renderDeviceChecks(checks, state.deviceCheckDetail);
+
+    state.devicePrep.connect = checks.controller?.status === "passed";
+    state.devicePrep.motor = ["passed", "manual_required"].includes(checks.filterWheel?.status);
+    state.devicePrep.light = ["passed", "manual_required"].includes(checks.light?.status);
+    state.devicePrep.camera = false;
+    state.devicePrep.calibration = state.calibrationStatus === "passed";
+    setStepStatus("connect", state.devicePrep.connect ? "done" : "warning");
+    setStepStatus("motor", state.devicePrep.motor ? "done" : "warning");
+    setStepStatus("light", state.devicePrep.light ? "done" : "warning");
+    setStepStatus("camera", "warning");
+    setText("statusNote", "设备检查完成：离线验证可用；RGB 和多光谱相机 SDK 尚未接入，真实采集不可用。");
+    addLog("一键设备检查完成：已复用 STM32 状态读取与硬件自检；相机仍为尚未接入。");
+    await syncDevicePreparation();
+  } catch (error) {
+    const checks = checksFromHardwareStatus(state.hardwareStatus);
+    checks.controller = {
+      status: state.hardwareStatus.connected ? "failed" : "not_connected",
+      label: "控制器",
+      message: error.message || "设备检查失败",
+    };
+    state.deviceCheckDetail = {
+      error: error.message || "设备检查失败",
+      device: state.hardwareStatus,
+    };
+    renderDeviceChecks(checks, state.deviceCheckDetail);
+    setText("statusNote", error.message || "设备检查失败。");
+    addLog(error.message || "设备检查失败。", "ERROR");
+  } finally {
+    state.deviceCheckRunning = false;
+    if (state.systemTask === "device-check") state.systemTask = "";
+    if (startButton) startButton.disabled = false;
+    renderSystemStatus();
   }
 }
 
@@ -689,6 +1041,7 @@ function renderCurrentSample() {
   updateDevicePreparationControls();
   updateAnalysisButtonStates();
   updateShapeMode();
+  renderSystemStatus();
 }
 
 function updateAnalysisButtonStates() {
@@ -700,6 +1053,7 @@ function updateAnalysisButtonStates() {
   if (acidButton) acidButton.disabled = !taAvailable;
   if (hasActiveSample() && !state.selectedSscModelId) setText("sscModelStatus", "无兼容模型");
   if (hasActiveSample() && !state.selectedTaModelId && !state.selectedPhModelId) setText("acidModelStatus", "无兼容模型");
+  renderModelOverview();
 }
 
 function clearSampleDependentState() {
@@ -741,6 +1095,7 @@ function clearSampleDependentState() {
   updateCurrentCaptureControls();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
+  renderSystemStatus();
 }
 
 function addLog(message, level = "INFO") {
@@ -1382,16 +1737,18 @@ async function runDeviceTest(type) {
     },
     camera: {
       pill: "cameraStatus",
-      text: "相机: 离线自检通过",
+      text: "相机: 尚未接入",
       step: "camera",
-      log: "相机检测完成：彩色相机与多光谱相机为模拟通过状态。",
+      status: "warning",
+      prepValue: false,
+      log: "相机检查完成：RGB 相机与多光谱相机 SDK 尚未接入，不能开始真实采集。",
     },
   };
   const item = map[type];
   if (!item) return;
-  setPill(item.pill, item.text, "ok");
-  setStepStatus(item.step, "done");
-  state.devicePrep[type] = true;
+  setPill(item.pill, item.text, item.status === "warning" ? "warn" : "ok");
+  setStepStatus(item.step, item.status === "warning" ? "warning" : "done");
+  state.devicePrep[type] = item.prepValue ?? true;
   setText("statusNote", "硬件通信尚未接入，当前自检结果来自离线模拟。");
   addLog(item.log);
   await syncDevicePreparation();
@@ -1432,6 +1789,7 @@ async function updateCaptureProgress(step) {
   state.captureStarted = true;
   lockRotationSettings();
   state.captureStep = Math.max(state.captureStep, step);
+  renderSystemStatus();
   const percent = Math.min(100, state.captureStep * 25);
   const progress = $("#captureProgress");
   if (progress) progress.style.width = `${percent}%`;
@@ -1450,6 +1808,7 @@ async function completeCurrentCapture() {
   if (state.captureCompleting) return;
   state.captureCompleting = true;
   state.captureStarted = true;
+  renderSystemStatus();
   const button = $("#enterAnalysisFromCapture");
   try {
     setText("captureSaveStatus", "正在保存本次拍摄数据...");
@@ -1498,6 +1857,7 @@ async function completeCurrentCapture() {
     addLog(error.message || "本次拍摄保存失败。", "ERROR");
   } finally {
     state.captureCompleting = false;
+    renderSystemStatus();
   }
 }
 
@@ -1657,6 +2017,68 @@ function fillModelSelect(selector, models, selectedId, defaultModel = null) {
   if (target && [...select.options].some((option) => option.value === target)) select.value = target;
 }
 
+function modelById(models = [], modelId = "") {
+  return (models || []).find((model) => model.model_id === modelId) || null;
+}
+
+function selectedModelFromCatalog(target, selectedId = "") {
+  const catalog = state.modelCatalog || {};
+  const models = catalog[target] || [];
+  return modelById(models, selectedId) || catalog.defaults?.[target] || models[0] || null;
+}
+
+function isGenericModelForCurrentVariety(model = null) {
+  const currentVariety = String(state.variety || "generic").trim().toLowerCase() || "generic";
+  const modelVariety = String(model?.variety || "generic").trim().toLowerCase() || "generic";
+  return currentVariety !== "generic" && modelVariety === "generic";
+}
+
+function renderModelSummaryRow(id, target, selectedId = "") {
+  const row = document.getElementById(id);
+  if (!row) return;
+  const model = selectedModelFromCatalog(target, selectedId);
+  const label = row.querySelector("strong");
+  if (!model) {
+    row.dataset.status = "missing";
+    if (label) label.textContent = "暂无正式模型";
+    return;
+  }
+  if (isGenericModelForCurrentVariety(model)) {
+    row.dataset.status = "generic";
+    if (label) label.textContent = "正在使用通用模型";
+    return;
+  }
+  const isDefault = model.status === "Default" || model.is_default;
+  row.dataset.status = "ready";
+  if (label) label.textContent = isDefault ? "默认模型已配置" : "已发布模型已配置";
+}
+
+function renderModelOverview() {
+  setText("modelOverviewScope", `${state.fruitType || "未选择水果"} / ${state.variety || "generic"}`);
+  renderModelSummaryRow("modelSummarySsc", "ssc", state.selectedSscModelId);
+  renderModelSummaryRow("modelSummaryTa", "ta", state.selectedTaModelId);
+  renderModelSummaryRow("modelSummaryPh", "ph", state.selectedPhModelId);
+  const missing = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
+    .some((id) => document.getElementById(id)?.dataset.status === "missing");
+  const generic = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
+    .some((id) => document.getElementById(id)?.dataset.status === "generic");
+  const modeText = state.modelAdvanced ? "高级模式已展开，可以手动更换已发布模型。" : "普通模式会优先使用 Default 模型。";
+  const suffix = missing
+    ? "缺失模型不会生成示例数值。"
+    : generic
+      ? "部分指标正在使用通用品种模型。"
+      : "当前指标已有正式模型。";
+  setText("modelOverviewHint", `${modeText} ${suffix}`);
+  const button = $("#toggleModelAdvanced");
+  if (button) button.textContent = state.modelAdvanced ? "隐藏高级" : "更换模型";
+  document.body.classList.toggle("model-advanced", state.modelAdvanced);
+}
+
+function toggleModelAdvanced() {
+  state.modelAdvanced = !state.modelAdvanced;
+  renderModelOverview();
+}
+
 async function loadSampleTypeCatalog() {
   const selectedFruit = $("#qualityFruitType")?.value.trim() || state.fruitType || "";
   const selectedVariety = $("#qualityVariety")?.value.trim() || state.variety || "generic";
@@ -1676,6 +2098,7 @@ async function loadQualityModels() {
     variety = catalog.varieties?.[0] || "generic";
   }
   const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(variety)}`);
+  state.modelCatalog = payload;
   if (!hasActiveSample()) {
     fillPlainSelect("#qualityFruitType", payload.fruitTypes || [], fruitType);
     fillPlainSelect("#qualityVariety", payload.varieties || ["generic"], variety, "generic");
@@ -1687,6 +2110,7 @@ async function loadQualityModels() {
   state.selectedTaModelId = $("#taModelSelect")?.value || "";
   state.selectedPhModelId = $("#phModelSelect")?.value || "";
   updateAnalysisButtonStates();
+  renderModelOverview();
   return payload;
 }
 
@@ -1852,6 +2276,7 @@ function renderSscResult(result = {}) {
   setText("sscModelVersion", [result.model_version, result.model_type, result.preprocessing].filter(Boolean).join(" · ") || "未接入");
   setText("sscModelStatus", ["ok", "success"].includes(result.status) ? "预测完成" : "模型预测待接入");
   setText("sscMessage", result.error_message || (hasValue ? "预测完成" : "暂无预测结果"));
+  renderSystemStatus();
 }
 
 function renderAcidResult(taResult = {}, phResult = {}) {
@@ -1869,6 +2294,7 @@ function renderAcidResult(taResult = {}, phResult = {}) {
   setText("acidModelVersion", [taResult.model_version || phResult.model_version, taResult.model_type || phResult.model_type, taResult.preprocessing || phResult.preprocessing].filter(Boolean).join(" · ") || "未接入");
   setText("acidModelStatus", ["ok", "success"].includes(taResult.status) || ["ok", "success"].includes(phResult.status) ? "预测完成" : "模型预测待接入");
   setText("acidMessage", taResult.error_message || phResult.error_message || (hasTa || hasPh ? "预测完成" : "暂无预测结果"));
+  renderSystemStatus();
 }
 
 function clearTasteResult() {
@@ -1882,6 +2308,7 @@ function clearTasteResult() {
   setText("tasteExplain", "等待糖度与酸度数据。");
   setStepStatus("ratio", "waiting");
   setStepStatus("rating", "waiting");
+  renderSystemStatus();
 }
 
 function clearSscPrediction() {
@@ -1919,6 +2346,8 @@ async function runSscAnalysis() {
   }
   const button = $("#startSscAnalysis");
   if (button) button.disabled = true;
+  state.systemTask = "ssc";
+  renderSystemStatus();
   try {
     await saveModelSelection();
     setText("sscModelStatus", "正在检查样品数据");
@@ -1938,7 +2367,9 @@ async function runSscAnalysis() {
     setStepStatus("sugar", "failed");
     addLog(error.message || "SSC 预测失败。", "ERROR");
   } finally {
+    if (state.systemTask === "ssc") state.systemTask = "";
     updateAnalysisButtonStates();
+    renderSystemStatus();
   }
 }
 
@@ -1957,6 +2388,8 @@ async function runAcidAnalysis() {
   }
   const button = $("#startAcidAnalysis");
   if (button) button.disabled = true;
+  state.systemTask = "acid";
+  renderSystemStatus();
   try {
     await saveModelSelection();
     setText("acidModelStatus", "正在检查样品数据");
@@ -1976,7 +2409,9 @@ async function runAcidAnalysis() {
     setStepStatus("acid", "failed");
     addLog(error.message || "酸度预测失败。", "ERROR");
   } finally {
+    if (state.systemTask === "acid") state.systemTask = "";
     updateAnalysisButtonStates();
+    renderSystemStatus();
   }
 }
 
@@ -1995,6 +2430,7 @@ function updateTaste(announce = true) {
   setText("resultSummary", `口感等级 ${state.grade}，糖酸比 ${ratio.toFixed(2)}。`);
   setStepStatus("ratio", "done");
   setStepStatus("rating", "done");
+  renderSystemStatus();
   if (announce) addLog(`口感分析完成：等级 ${state.grade}。`);
 }
 
@@ -2303,7 +2739,9 @@ async function runShapeAnalysis() {
   button.disabled = true;
   cancel.disabled = false;
   state.shapeStartedAt = performance.now();
+  state.systemTask = "shape";
   resetShapeStatus();
+  renderSystemStatus();
   setStepStatus("load-rgbd", "running");
   setCurrentStep("load-rgbd");
   setText("shapeStepLabel", "提交任务中");
@@ -2400,6 +2838,8 @@ function renderShapeResult(result) {
   setText("resultShape", hasPointcloud ? `二维形态 + 点云数值 ${result.pointCount} 点` : "二维形态与表面分析完成");
   setText("resultSummary", `形态分析成功，用时 ${result.elapsedSec}s。`);
   setStepStatus("confirm", "done");
+  state.shapeDone = true;
+  renderSystemStatus();
   if (result.inputPreviewUrl) setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${result.inputPreviewUrl}?t=${Date.now()}`);
   if (result.plyUrl) loadPointcloudViewer(result.plyUrl);
   addLog(hasPointcloud ? `形态分析成功：已读取点云模型 ${result.pointCount} 点。` : "形态分析成功：已完成 RGB 图像形态与表面分析。");
@@ -2408,6 +2848,7 @@ function renderShapeResult(result) {
 function resetShapeStatus() {
   clearPointcloudViewer();
   resetTextureResult();
+  state.shapeDone = false;
   ["load-rgbd", "preprocess", "image-review", "filter", "surface-texture", "measure", "volume", "confirm"].forEach((key) => {
     setStepStatus(key, "waiting");
   });
@@ -2476,9 +2917,11 @@ function finishShapeJob() {
   if (state.shapeTimer) window.clearInterval(state.shapeTimer);
   state.shapeTimer = null;
   state.shapeJobId = null;
+  if (state.systemTask === "shape") state.systemTask = "";
   updateShapeRunButtonState();
   if ($("#cancelShapeAnalysis")) $("#cancelShapeAnalysis").disabled = true;
   updateShapeMode();
+  renderSystemStatus();
 }
 
 function exportReport() {
@@ -2559,10 +3002,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   ["#qualityFruitType", "#qualityVariety"].forEach((selector) => {
-    $(selector)?.addEventListener("change", () => {
-      loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+    $(selector)?.addEventListener("change", async () => {
+      await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+      state.fruitType = $("#qualityFruitType")?.value || state.fruitType || "";
+      state.variety = $("#qualityVariety")?.value || state.variety || "generic";
+      await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
     });
   });
+  $("#toggleModelAdvanced")?.addEventListener("click", toggleModelAdvanced);
   $("#sscModelSelect")?.addEventListener("change", () => {
     if (hasActiveSample() && Number.isFinite(state.ssc)) {
       const ok = window.confirm("更换糖度模型将清空当前 SSC 预测结果和口感结果。");
@@ -2572,8 +3019,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       clearSscPrediction();
     }
+    state.selectedSscModelId = $("#sscModelSelect")?.value || "";
     if (hasActiveSample()) saveModelSelection().catch((error) => addLog(error.message, "WARN"));
     updateAnalysisButtonStates();
+    renderModelOverview();
   });
   ["#taModelSelect", "#phModelSelect"].forEach((selector) => {
     $(selector)?.addEventListener("change", () => {
@@ -2586,8 +3035,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         clearAcidPrediction();
       }
+      state.selectedTaModelId = $("#taModelSelect")?.value || "";
+      state.selectedPhModelId = $("#phModelSelect")?.value || "";
       if (hasActiveSample()) saveModelSelection().catch((error) => addLog(error.message, "WARN"));
       updateAnalysisButtonStates();
+      renderModelOverview();
     });
   });
   $("#createSampleInline")?.addEventListener("click", () => createNewSample().catch((error) => {
@@ -2635,6 +3087,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#disconnectDevice")?.addEventListener("click", () => disconnectDevice());
   $("#faultClearDevice")?.addEventListener("click", () => faultClearDevice());
   $("#refreshDeviceStatus")?.addEventListener("click", () => refreshHardwareStatus());
+  $("#startDeviceCheck")?.addEventListener("click", () => runUnifiedDeviceCheck());
   $("#hardwareSelfTest")?.addEventListener("click", () => runHardwareSelfTest(false));
   $("#hardwareMotionSelfTest")?.addEventListener("click", () => runHardwareSelfTest(true));
 
@@ -2690,6 +3143,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderCalibrationStatus();
   updateDevicePreparationControls();
   updateShapeMode();
+  renderDeviceChecks(checksFromHardwareStatus());
+  renderSystemStatus();
   await loadDevicePorts();
   await refreshHardwareStatus();
   try {

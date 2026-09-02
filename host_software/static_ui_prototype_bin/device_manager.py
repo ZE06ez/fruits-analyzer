@@ -144,6 +144,7 @@ class DeviceManager:
                 "passed": True,
                 "includeMotion": bool(include_motion),
                 "status": self.status(),
+                "checks": self._self_test_checks(include_motion=include_motion),
             }
 
     def emergency_stop(self) -> dict[str, Any]:
@@ -206,6 +207,65 @@ class DeviceManager:
             raise DeviceNotConnectedError("STM32F407 尚未连接")
 
         return self.controller
+
+    def _self_test_checks(self, include_motion: bool = False) -> dict[str, dict[str, Any]]:
+        status = self.status()
+        connected = bool(status.get("connected"))
+        wheel_homed = bool(status.get("wheelHomed"))
+        door = status.get("door") or "unknown"
+        error_code = status.get("errorCode")
+        has_fault = bool(status.get("emergencyStopped") or (error_code not in (None, 0)))
+
+        door_state = "passed" if door in {"open", "closed"} else "warning"
+        if door == "error":
+            door_state = "failed"
+
+        wheel_state = "passed" if include_motion and wheel_homed else "manual_required"
+        if include_motion and not wheel_homed:
+            wheel_state = "warning"
+
+        return {
+            "controller": {
+                "status": "failed" if has_fault else "passed" if connected else "not_connected",
+                "label": "STM32 控制器",
+                "message": "PING 通过" if connected and not has_fault else "控制器未连接或存在故障",
+            },
+            "door": {
+                "status": door_state if connected else "not_connected",
+                "label": "升降门",
+                "message": f"门状态: {door}",
+            },
+            "fan": {
+                "status": "passed" if status.get("fanOn") else "warning" if connected else "not_connected",
+                "label": "风扇",
+                "message": "风扇已开启" if status.get("fanOn") else "风扇未开启",
+            },
+            "filterWheel": {
+                "status": wheel_state if connected else "not_connected",
+                "label": "滤光轮",
+                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "尚未确认 HOME",
+            },
+            "rgbCamera": {
+                "status": "not_connected",
+                "label": "RGB 相机",
+                "message": "相机 SDK 尚未接入",
+            },
+            "multispectralCamera": {
+                "status": "not_connected",
+                "label": "多光谱相机",
+                "message": "相机 SDK 尚未接入",
+            },
+            "light": {
+                "status": "manual_required" if connected else "not_connected",
+                "label": "光源控制",
+                "message": "控制层已接入，需在光源检查页人工确认输出",
+            },
+            "calibration": {
+                "status": "manual_required",
+                "label": "标定状态",
+                "message": "当前需要操作员人工确认",
+            },
+        }
 
     @staticmethod
     def _not_ready_capture_status() -> dict[str, Any]:

@@ -18,6 +18,7 @@
         </div>
       </div>
       <div class="system-pills">
+        <span class="system-state" id="systemStatus" data-status="waiting">当前状态 · 等待设备检查</span>
         <span id="serialStatus">串口: 未连接</span>
         <span id="cameraStatus">相机: 待检测</span>
         <span id="lightStatus">光源: 待检测</span>
@@ -148,6 +149,20 @@
               <h3>电机检测 / Motor Check</h3>
               <span>单片机待接入</span>
             </div>
+            <section class="device-check-panel">
+              <div class="device-check-head">
+                <div>
+                  <strong>设备检查</strong>
+                  <small id="deviceCheckSummary">未检查；包含滤光轮归零/运动检查，真实相机当前尚未接入。</small>
+                </div>
+                <button class="primary-action" id="startDeviceCheck" type="button">开始设备检查</button>
+              </div>
+              <div class="device-check-grid" id="deviceCheckGrid" aria-label="设备检查结果"></div>
+              <details class="device-detail-block">
+                <summary>查看设备详情</summary>
+                <pre id="deviceDetailText">暂无设备详情</pre>
+              </details>
+            </section>
             <div class="control-grid">
               <button class="test-button" data-test="motor">运行电机自检</button>
               <button class="test-button secondary" data-log="旋转平台正转命令已加入待调试队列">平台正转</button>
@@ -279,6 +294,30 @@
                   <span>角度序列</span><strong id="rotationAngles">0°</strong>
                 </div>
                 <p class="hint">样品旋转用于水果多视角采集；滤光片转轮用于切换多光谱波段，两者是独立控制对象。</p>
+              </div>
+              <div class="model-overview-panel">
+                <div class="model-overview-head">
+                  <div>
+                    <strong>检测模型</strong>
+                    <small id="modelOverviewScope">请选择水果类型 / 品种</small>
+                  </div>
+                  <button id="toggleModelAdvanced" type="button">更换模型</button>
+                </div>
+                <div class="model-overview-grid">
+                  <div class="model-overview-row" id="modelSummarySsc" data-status="missing">
+                    <span>SSC</span>
+                    <strong>暂无正式模型</strong>
+                  </div>
+                  <div class="model-overview-row" id="modelSummaryTa" data-status="missing">
+                    <span>TA</span>
+                    <strong>暂无正式模型</strong>
+                  </div>
+                  <div class="model-overview-row" id="modelSummaryPh" data-status="missing">
+                    <span>pH</span>
+                    <strong>暂无正式模型</strong>
+                  </div>
+                </div>
+                <p class="hint" id="modelOverviewHint">普通模式自动使用 Default 模型；需要指定 model_id 时再进入高级模式。</p>
               </div>
               <div class="sample-create-actions">
                 <button class="primary-action" id="createSampleInline" type="button">新建样品</button>
@@ -419,7 +458,7 @@
                 <span>SSC 预测值</span>
                 <strong><b id="sscValue">--</b> <small>°Brix</small></strong>
                 <p id="sscMessage">暂无预测结果</p>
-                <label class="prediction-model-picker">糖度模型
+                <label class="prediction-model-picker advanced-model-control">糖度模型
                   <select id="sscModelSelect"><option value="">自动选择默认模型</option></select>
                 </label>
                 <button class="test-button" id="startSscAnalysis">开始糖度分析</button>
@@ -462,10 +501,10 @@
                   <strong><b id="phValue">--</b></strong>
                 </div>
                 <p id="acidMessage">暂无预测结果</p>
-                <label class="prediction-model-picker">酸度模型
+                <label class="prediction-model-picker advanced-model-control">酸度模型
                   <select id="taModelSelect"><option value="">自动选择默认模型</option></select>
                 </label>
-                <label class="prediction-model-picker">pH 模型
+                <label class="prediction-model-picker advanced-model-control">pH 模型
                   <select id="phModelSelect"><option value="">自动选择默认模型</option></select>
                 </label>
                 <button class="test-button" id="startAcidAnalysis">开始酸度分析</button>

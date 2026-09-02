@@ -115,6 +115,10 @@ class DeviceManagerTests(unittest.TestCase):
         result = manager.self_test(include_motion=False)
 
         self.assertTrue(result["passed"])
+        self.assertEqual(result["checks"]["controller"]["status"], "passed")
+        self.assertEqual(result["checks"]["rgbCamera"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["multispectralCamera"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["calibration"]["status"], "manual_required")
         self.assertEqual(manager.controller.fan_on_count, 1)
         self.assertEqual(manager.controller.wheel_home_count, 0)
 
@@ -122,8 +126,9 @@ class DeviceManagerTests(unittest.TestCase):
         manager, _ = self.make_manager()
         manager.connect("COM3")
 
-        manager.self_test(include_motion=True)
+        result = manager.self_test(include_motion=True)
 
+        self.assertEqual(result["checks"]["filterWheel"]["status"], "passed")
         self.assertEqual(manager.controller.wheel_home_count, 1)
 
     def test_start_capture_is_rejected_until_camera_service_exists(self):
