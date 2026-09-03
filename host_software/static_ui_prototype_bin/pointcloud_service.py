@@ -427,6 +427,8 @@ def analyze_rgb_multispectral_sample(
     area_px = morphology["areaPixels"]
     diameter_px = morphology["diameterPx"]
     height_px = morphology["heightPx"]
+    diameter_mm = ply_metrics["diameterMm"] if ply_metrics else None
+    height_mm = ply_metrics["heightMm"] if ply_metrics else None
     volume_mm3 = ply_metrics["volumeMm3"] if ply_metrics else 0.0
     weight_g = ply_metrics["weightG"] if ply_metrics else 0.0
 
@@ -441,8 +443,10 @@ def analyze_rgb_multispectral_sample(
         "pairCount": len(rgb_files),
         "pointCount": ply_metrics["pointCount"] if ply_metrics else 0,
         "averageDepthMm": ply_metrics["averageDepthMm"] if ply_metrics else 0.0,
-        "diameterMm": ply_metrics["diameterMm"] if ply_metrics else round(diameter_px, 2),
-        "heightMm": ply_metrics["heightMm"] if ply_metrics else round(height_px, 2),
+        "diameterMm": diameter_mm,
+        "heightMm": height_mm,
+        "diameterPx": round(diameter_px, 2),
+        "heightPx": round(height_px, 2),
         "volumeMm3": volume_mm3,
         "weightG": weight_g,
         "densityGCm3": options.density_g_cm3,
@@ -558,87 +562,6 @@ def analyze_rgbd_dataset(
         started=started,
         emit=emit,
     )
-
-    emit("preprocess", 10, f"读取并配对 {pair_count} 组 RGB-D 图像")
-    points_list: list[np.ndarray] = []
-    colors_list: list[np.ndarray] = []
-    detail_rows: list[dict] = []
-    first_input_preview: Path | None = None
-
-    for index in range(pair_count):
-        emit("preprocess", 10 + int(index / pair_count * 28), f"预处理第 {index + 1}/{pair_count} 组图像")
-        rgb = read_color_image(color_files[index])
-        depth = read_depth_image(depth_files[index])
-        if rgb.shape[:2] != depth.shape[:2]:
-            rgb = resize_color_to_depth(rgb, depth.shape)
-
-        mask = build_fruit_mask(rgb, depth)
-        if np.count_nonzero(mask) < 20:
-            raise AnalysisError("EMPTY_MASK", f"第 {index + 1} 张图像未分割到有效果实区域。")
-
-        depth_clean, mask_clean = clean_depth(depth, mask)
-        pts, cols = depth_to_points(depth_clean, rgb, mask_clean, opts.camera, stride=2)
-        if pts.size:
-            points_list.append(pts)
-            colors_list.append(cols)
-        detail_rows.append(measure_depth_frame(depth_clean, mask_clean, opts.camera, depth_files[index].name))
-
-        if first_input_preview is None:
-            first_input_preview = output_dir / "input_preview.png"
-            save_input_preview(rgb, mask_clean, first_input_preview)
-
-    if not points_list:
-        raise AnalysisError("EMPTY_POINT_CLOUD", "点云为空，可能是深度图无有效数据或分割失败。")
-
-    emit("reconstruct", 45, "生成点云")
-    aligned = align_pointclouds(points_list)
-    merged_points = np.vstack(aligned)
-    merged_colors = np.vstack(colors_list[: len(aligned)])
-    if merged_points.size == 0:
-        raise AnalysisError("EMPTY_POINT_CLOUD", "融合后的点云为空。")
-
-    emit("filter", 58, "去除背景和噪声")
-    filtered_points, filtered_colors = remove_point_outliers(merged_points, merged_colors)
-    if filtered_points.size == 0:
-        raise AnalysisError("EMPTY_POINT_CLOUD", "去噪后的点云为空。")
-
-    emit("fusion", 70, "点云配准与体素融合")
-    sampled_points, sampled_colors = voxel_downsample(filtered_points, filtered_colors, opts.voxel_size_mm)
-    ply_path = output_dir / "reconstructed_sfm_fruit_color.ply"
-    write_ply(ply_path, sampled_points, sampled_colors)
-
-    emit("measure", 78, "尺寸、体积与重量估算")
-    volume_mm3 = pointcloud_volume(sampled_points, opts.voxel_size_mm)
-    weight_g = volume_mm3 / 1000.0 * opts.density_g_cm3
-    averages = average_measurements(detail_rows)
-
-    emit("preview", 88, "生成点云预览图")
-    preview_path = output_dir / "pointcloud_preview.png"
-    save_pointcloud_preview(sampled_points, sampled_colors, preview_path)
-
-    elapsed = time.perf_counter() - started
-    emit("done", 100, "分析成功")
-    return {
-        "ok": True,
-        "datasetDir": str(Path(dataset_dir)),
-        "colorDir": str(color_path),
-        "depthDir": str(depth_path),
-        "pairCount": pair_count,
-        "pointCount": int(len(sampled_points)),
-        "averageDepthMm": round(averages["depth"], 2),
-        "diameterMm": round(averages["diameter"], 2),
-        "heightMm": round(averages["height"], 2),
-        "volumeMm3": round(volume_mm3, 2),
-        "weightG": round(weight_g, 2),
-        "densityGCm3": opts.density_g_cm3,
-        "voxelSizeMm": opts.voxel_size_mm,
-        "elapsedSec": round(elapsed, 2),
-        "previewUrl": f"/outputs/{output_dir.name}/{preview_path.name}",
-        "inputPreviewUrl": f"/outputs/{output_dir.name}/{first_input_preview.name}" if first_input_preview else "",
-        "plyUrl": f"/outputs/{output_dir.name}/{ply_path.name}",
-        "details": detail_rows,
-        "dependencies": deps,
-    }
 
 
 def analyze_cached_pointcloud(

@@ -3,9 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
-from pointcloud_service import AnalysisError, analyze_rgbd_dataset, inspect_sample_folder
+from pointcloud_service import AnalysisError, analyze_rgbd_dataset, inspect_sample_folder, write_ply
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,10 +15,69 @@ POINTCLOUD_MODEL = ROOT / "sample_data" / "pointcloud_model"
 
 
 class PointcloudServiceTests(unittest.TestCase):
+    def make_rgb_multispectral_dataset(self, *, with_ply: bool = False) -> Path:
+        dataset = Path(tempfile.mkdtemp(prefix="fta_rgb_multispectral_units_"))
+        rgb = dataset / "rgb"
+        spectral = dataset / "multispectral"
+        rgb.mkdir()
+        spectral.mkdir()
+
+        image = Image.new("RGB", (80, 60), (18, 22, 28))
+        for x in range(22, 58):
+            for y in range(14, 46):
+                image.putpixel((x, y), (70, 150, 58))
+        image.save(rgb / "rgb_001.png")
+        for band in (450, 560, 670):
+            Image.new("L", (80, 60), 128).save(spectral / f"{band}.png")
+
+        if with_ply:
+            points = np.array(
+                [
+                    [0.0, 0.0, 10.0],
+                    [12.0, 0.0, 12.0],
+                    [0.0, 24.0, 16.0],
+                    [12.0, 24.0, 32.0],
+                ],
+                dtype=np.float32,
+            )
+            colors = np.full((len(points), 3), [80, 160, 90], dtype=np.float32)
+            write_ply(dataset / "reconstructed_sfm_fruit_color.ply", points, colors)
+
+        return dataset
+
     def test_missing_dataset_reports_clear_error(self):
         with self.assertRaises(AnalysisError) as ctx:
             analyze_rgbd_dataset(ROOT / "missing-data", Path(tempfile.mkdtemp()))
         self.assertEqual(ctx.exception.code, "NO_DATASET")
+
+    def test_rgb_multispectral_without_ply_reports_pixels_not_fake_mm(self):
+        dataset = self.make_rgb_multispectral_dataset()
+        out_dir = Path(tempfile.mkdtemp(prefix="fta_rgb_multispectral_units_out_"))
+
+        result = analyze_rgbd_dataset(dataset, out_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["algorithm"], "rgb_multispectral_morphology")
+        self.assertGreater(result["diameterPx"], 0)
+        self.assertGreater(result["heightPx"], 0)
+        self.assertIsNone(result["diameterMm"])
+        self.assertIsNone(result["heightMm"])
+        self.assertGreater(result["details"][0]["diameterPx"], 0)
+        self.assertGreater(result["details"][0]["heightPx"], 0)
+
+    def test_rgb_multispectral_with_ply_keeps_mm_and_pixel_fields(self):
+        dataset = self.make_rgb_multispectral_dataset(with_ply=True)
+        out_dir = Path(tempfile.mkdtemp(prefix="fta_rgb_multispectral_ply_units_out_"))
+
+        result = analyze_rgbd_dataset(dataset, out_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["algorithm"], "rgb_multispectral_morphology")
+        self.assertGreater(result["diameterPx"], 0)
+        self.assertGreater(result["heightPx"], 0)
+        self.assertEqual(result["diameterMm"], 24.0)
+        self.assertEqual(result["heightMm"], 22.0)
+        self.assertGreater(result["pointCount"], 0)
 
     def test_sample_dataset_runs_real_analysis(self):
         if not SAMPLE.exists():
@@ -26,8 +86,8 @@ class PointcloudServiceTests(unittest.TestCase):
         result = analyze_rgbd_dataset(SAMPLE, out_dir)
         self.assertTrue(result["ok"])
         self.assertEqual(result["algorithm"], "rgb_multispectral_morphology")
-        self.assertGreater(result["diameterMm"], 0)
-        self.assertGreater(result["heightMm"], 0)
+        self.assertGreater(result["diameterPx"], 0)
+        self.assertGreater(result["heightPx"], 0)
         self.assertGreater(result["details"][0]["areaPixels"], 0)
         self.assertTrue((out_dir / "input_preview.png").exists())
 

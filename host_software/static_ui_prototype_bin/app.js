@@ -3449,9 +3449,19 @@ function renderShapeResult(result) {
   if (!result) return;
   const detail = result.details?.[0] || {};
   const hasPointcloud = Number(result.pointCount || 0) > 0;
+  const formatLength = (mmValue, pxValue) => {
+    const mm = Number(mmValue);
+    const px = Number(pxValue);
+    const hasMm = Number.isFinite(mm) && mm > 0;
+    const hasPx = Number.isFinite(px) && px > 0;
+    if (hasMm && hasPx) return `${mm.toFixed(2)} mm（${px.toFixed(2)} px）`;
+    if (hasMm) return `${mm.toFixed(2)} mm`;
+    if (hasPx) return `${px.toFixed(2)} px`;
+    return "--";
+  };
   setText("metricDepth", detail.areaPixels ? `${detail.areaPixels} px` : "--");
-  setText("metricDiameter", detail.diameterPx ? `${Number(detail.diameterPx).toFixed(2)} px` : `${Number(result.diameterMm || 0).toFixed(2)} mm`);
-  setText("metricHeight", detail.heightPx ? `${Number(detail.heightPx).toFixed(2)} px` : `${Number(result.heightMm || 0).toFixed(2)} mm`);
+  setText("metricDiameter", formatLength(result.diameterMm, result.diameterPx ?? detail.diameterPx));
+  setText("metricHeight", formatLength(result.heightMm, result.heightPx ?? detail.heightPx));
   setText("metricVolume", hasPointcloud ? `${Number(result.volumeMm3).toFixed(2)} mm³` : "待三维方案");
   setText("metricWeight", hasPointcloud ? `${Number(result.weightG).toFixed(2)} g` : "待三维方案");
   renderTextureResult(result.texture);
