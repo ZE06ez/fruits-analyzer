@@ -2,6 +2,48 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-04 P1A-2B DVP2 多光谱网页预览与参数控制
+
+- 修改内容：在既有 DVP2 `ctypes` binding 和 `Dvp2MonoCamera` 基础上完成多光谱黑白相机网页预览链路；新增 `/api/camera/multispectral/apply-settings`，支持曝光时间和增益通过 UI -> Backend -> `CameraManager` -> `Dvp2MonoCamera` -> DVP2 SDK 下发并回读实际值；`/api/camera/multispectral/preview/start` 保持同一个 DVP2 实例 open/streaming，`preview-frame` 只读取当前流并输出 960x540 JPEG；预览转换只用于浏览器显示，底层 `CameraFrame` 保留原始 `uint8/uint16` dtype；状态字段拆分 `detected/available/opened/streaming`，`connected` 仅作为 detected 兼容别名；修正相机 IP 严格解析、MAC 显示、`streamFps` 与 `linkSpeedMbps` 分离、当前 `pixelFormat/frameDtype` 与 `supportedPixelFormats` 分离；已发现但无法打开时提示关闭 BasedCam3 或其他相机程序。
+- 实机验证：用户已确认在完全退出 BasedCam3 后，`manual_camera_test.py --multispectral --sdk-dir "D:\Netease\DVP2 SDK CN" --serial GP23400004963 --frames 30 --save` 能完成打开、参数读取、开始取流、30 帧取图和 PNG 保存，实际帧为 `2048x1200`、`Mono8`、`uint8`、曝光 `10000.0 us`、增益 `1.0`。本轮 Codex 复测时当前运行环境 `dvpRefresh/dvpEnum` 返回 0，因此网页实时预览的现场可视化在本轮未再次验证通过；代码不能据此伪造成功状态。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/manual_camera_test.py`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+  - `AGENTS.md`
+- 为什么修改：把多光谱黑白相机从“可枚举/可手动验证”推进到普通用户能在相机设置页完成重新检测、打开预览、调整曝光/增益、查看真实设备信息和错误提示的闭环，同时继续保护原始科学帧数据。
+- 是否影响原有功能：不修改 RGB 正常链路、STM32/滤光轮/光源/样品台逻辑、`CameraIntegrationRequired`、`trueCapturePrepared`、`create_offline_capture_dataset()`、图像目录工作流或模型逻辑；不开放 PixelFormat 切换，不进入 CaptureCoordinator，不推送或合并代码。
+
+## 2026-09-03 P1A-2 DVP2 多光谱相机真实枚举层
+
+- 修改内容：新增 `camera_service/dvp2_binding.py`，按真实 `DVPCamera.h` 和官方示例绑定 `dvpRefresh`、`dvpEnum`、`dvpOpenByName`、`dvpOpenByUserId`、`dvpStart`、`dvpGetFrame`、ROI、曝光、增益、触发和帧计数等 DVP2 C API；`Dvp2MonoCamera` 改为真实 SDK 发现 + 枚举 + serial/user_id 选择目标设备 + mono `uint8/uint16` 帧转换边界；`CameraManager` 增加多光谱 probe 和 JPEG 预览链路；后端新增 `/api/camera/multispectral/probe`、`/api/camera/multispectral/preview/start`、`/api/camera/multispectral/preview-frame`、`/api/camera/multispectral/preview/stop`；相机设置页的多光谱面板增加重新检测、预览和只读 DVP2 状态显示；手动相机测试脚本增加 `--multispectral`。
+- 实机验证：Python 3.12 `ctypes` 可加载 `D:\Netease\DVP2 SDK CN\library\Visual C++\bin\x64\DVPCamera64.dll`，`dvpRefresh/dvpEnum` 真实枚举到 1 台 `MGV231M-H2`，IP/link `169.254.25.110`，`UserID=GP23400004963`，SDK serial `DSGP23400004963`；`dvpOpenByName` 和 `dvpOpenByUserId` 当前超过 8s 不返回，`dvpOpen(index=0)` 返回 `DVP_STATUS_NO_DEVICE_FOUND`，所以参数查询、开始取流、首帧、30 帧稳定性和正式保存仍未完成。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/index.html`
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/camera_service/dvp2_binding.py`
+  - `host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/manual_camera_test.py`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+- 为什么修改：把 DVP2 从“只能发现 DLL 的骨架”推进到基于真实 SDK/header 的 Python 绑定和枚举层，同时用 probe 子进程超时保护避免厂商 DLL open 阻塞主后端。
+- 是否影响原有功能：不修改 RGB 正常链路、STM32/滤光轮/光源/样品台逻辑、`CameraIntegrationRequired`、`trueCapturePrepared`、`create_offline_capture_dataset()`、图像目录工作流或模型逻辑；不提交厂商 SDK 二进制。
+
 ## 2026-09-03 RGB 相机探测状态修正
 
 - 修改内容：新增 `/api/camera/rgb/probe`，让相机设置页“重新检测”执行真实 OpenCV DirectShow 打开、请求 MJPG/3840x2160/25fps、取一帧、释放句柄的 probe；`CameraStatus` 增加 `detected` 和 `opened`，并明确区分 `detected`、`available`、`opened`、`streaming`；`RgbUvcCamera` 记录最近一次真实 probe/capture 成功状态，`close()` 和预览停止不再清空 `detected/available`；同一配置 `device_index` 下兼容 `VideoCapture(index, CAP_DSHOW)` 和 `VideoCapture(index + CAP_DSHOW)` 两种 DirectShow 打开形式，不扫描或 fallback 到内置摄像头；`CameraManager` 统一 self-test、probe、preview 对同一个 RGB adapter 的状态更新；前端 `testRgbCamera` 改为调用 probe API，预览请求继续使用相对 URL，并将 `Failed to fetch` 解释为本地后端连接问题而不是硬件断开。

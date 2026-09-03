@@ -30,13 +30,23 @@ class CameraManager:
             "fps": 12,
             "format": "image/jpeg",
         }
+        self._multispectral_preview = {
+            "running": False,
+            "width": 960,
+            "height": 540,
+            "fps": 8,
+            "format": "image/jpeg",
+        }
 
     def status(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "rgb": self._status_dict(self.rgb),
                 "multispectral": self._status_dict(self.multispectral),
-                "preview": {"rgb": dict(self._rgb_preview)},
+                "preview": {
+                    "rgb": dict(self._rgb_preview),
+                    "multispectral": dict(self._multispectral_preview),
+                },
             }
 
     def checks(self, *, probe_rgb: bool = False) -> dict[str, dict[str, Any]]:
@@ -56,8 +66,39 @@ class CameraManager:
             return {
                 "passed": bool(result["status"].get("available")),
                 "status": result["status"],
-                "preview": {"rgb": dict(self._rgb_preview)},
+                "preview": self._preview_status(),
             }
+
+    def probe_multispectral(self) -> dict[str, Any]:
+        with self._lock:
+            if self._multispectral_preview.get("running") and getattr(self.multispectral, "is_open", False):
+                try:
+                    self.multispectral.capture_frame()
+                except CameraError as exc:
+                    status = self._status_dict(self.multispectral)
+                    status.update({
+                        "detected": False,
+                        "available": False,
+                        "connected": False,
+                        "opened": False,
+                        "streaming": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    })
+                    self._multispectral_preview["running"] = False
+                    self.multispectral.stop_stream()
+                    self.multispectral.close()
+                    return {"passed": False, "status": status, "preview": self._preview_status()}
+                status = self._status_dict(self.multispectral)
+                return {"passed": True, "status": status, "preview": self._preview_status()}
+            ok = bool(self.multispectral.probe_available()) if hasattr(self.multispectral, "probe_available") else False
+            status = self._status_dict(self.multispectral)
+            status.update({
+                "detected": bool(ok or status.get("detected")),
+                "available": bool(ok),
+                "connected": bool(status.get("detected")),
+            })
+            return {"passed": bool(ok), "status": status, "preview": self._preview_status()}
 
     def apply_rgb_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = RgbCameraConfig.from_dict(payload)
@@ -76,7 +117,34 @@ class CameraManager:
                 "settingResults": result.get("settingResults") or {},
                 "status": status,
                 "summary": self._requested_actual_summary(status),
-                "preview": {"rgb": dict(self._rgb_preview)},
+                "preview": self._preview_status(),
+            }
+
+    def apply_multispectral_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        setting_results: dict[str, Any] = {}
+        with self._lock:
+            if "exposure" in payload and payload.get("exposure") not in (None, ""):
+                requested = float(payload.get("exposure"))
+                actual = self.multispectral.set_exposure(requested)
+                setting_results["exposure"] = {
+                    "requested": requested,
+                    "actual": actual,
+                    "accepted": True,
+                }
+            if "gain" in payload and payload.get("gain") not in (None, ""):
+                requested = float(payload.get("gain"))
+                actual = self.multispectral.set_gain(requested)
+                setting_results["gain"] = {
+                    "requested": requested,
+                    "actual": actual,
+                    "accepted": True,
+                }
+            status = self._status_dict(self.multispectral)
+            return {
+                "settingResults": setting_results,
+                "status": status,
+                "summary": self._multispectral_requested_actual_summary(status, setting_results),
+                "preview": self._preview_status(),
             }
 
     def start_rgb_preview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -100,7 +168,7 @@ class CameraManager:
             status = self._status_dict(self.rgb)
             return {
                 "status": status,
-                "preview": {"rgb": dict(self._rgb_preview)},
+                "preview": self._preview_status(),
             }
 
     def stop_rgb_preview(self) -> dict[str, Any]:
@@ -111,7 +179,7 @@ class CameraManager:
             print("[camera.rgb] preview stopped", flush=True)
             return {
                 "status": self._status_dict(self.rgb),
-                "preview": {"rgb": dict(self._rgb_preview)},
+                "preview": self._preview_status(),
             }
 
     def rgb_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
@@ -140,6 +208,88 @@ class CameraManager:
                 self._rgb_preview["running"] = False
                 self.rgb.stop_stream()
                 self.rgb.close()
+                raise
+
+    def start_multispectral_preview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        with self._lock:
+            width = int(payload.get("width") or self._multispectral_preview["width"])
+            height = int(payload.get("height") or self._multispectral_preview["height"])
+            fps = float(payload.get("fps") or self._multispectral_preview["fps"])
+            print(
+                f"[camera.multispectral] preview start requested: width={width}; height={height}; fps={fps}",
+                flush=True,
+            )
+            if self._multispectral_preview.get("running") and getattr(self.multispectral, "is_open", False):
+                self._multispectral_preview.update({
+                    "width": max(160, min(width, 1920)),
+                    "height": max(90, min(height, 1080)),
+                    "fps": max(1, min(fps, 12)),
+                    "format": "image/jpeg",
+                })
+                return {
+                    "status": self._status_dict(self.multispectral),
+                    "preview": self._preview_status(),
+                }
+            if hasattr(self.multispectral, "probe_available") and not self.multispectral.probe_available():
+                status = self._status_dict(self.multispectral)
+                raise CameraError(
+                    status.get("error") or "多光谱相机不可用",
+                    status.get("technicalError") or "DVP2 probe failed before preview start",
+                )
+            self.multispectral.start_stream()
+            self._multispectral_preview.update({
+                "running": True,
+                "width": max(160, min(width, 1920)),
+                "height": max(90, min(height, 1080)),
+                "fps": max(1, min(fps, 12)),
+                "format": "image/jpeg",
+            })
+            return {
+                "status": self._status_dict(self.multispectral),
+                "preview": self._preview_status(),
+            }
+
+    def stop_multispectral_preview(self) -> dict[str, Any]:
+        with self._lock:
+            self._multispectral_preview["running"] = False
+            self.multispectral.stop_stream()
+            self.multispectral.close()
+            print("[camera.multispectral] preview stopped", flush=True)
+            return {
+                "status": self._status_dict(self.multispectral),
+                "preview": self._preview_status(),
+            }
+
+    def multispectral_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
+        with self._lock:
+            if not self._multispectral_preview.get("running"):
+                raise CameraError("多光谱预览未启动", "Call /api/camera/multispectral/preview/start first")
+            try:
+                frame = self.multispectral.capture_frame()
+                image = self._preview_image_from_frame(frame.data)
+                target = (int(self._multispectral_preview["width"]), int(self._multispectral_preview["height"]))
+                if image.size != target:
+                    from PIL import Image
+
+                    resampling = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+                    image = image.resize(target, resampling)
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=82, optimize=True)
+                return buffer.getvalue(), {
+                    "sourceShape": frame.shape,
+                    "sourceDtype": frame.dtype,
+                    "previewWidth": target[0],
+                    "previewHeight": target[1],
+                    "fps": self._multispectral_preview["fps"],
+                    "contentType": "image/jpeg",
+                    "pixelFormat": frame.metadata.get("pixelFormat", ""),
+                    **self._frame_stats(frame.data),
+                }
+            except CameraError:
+                self._multispectral_preview["running"] = False
+                self.multispectral.stop_stream()
+                self.multispectral.close()
                 raise
 
     def _probe_rgb_locked(self) -> dict[str, Any]:
@@ -179,6 +329,12 @@ class CameraManager:
             "opened": bool(rgb_status.get("opened")),
         })
         return {"status": rgb_status}
+
+    def _preview_status(self) -> dict[str, dict[str, Any]]:
+        return {
+            "rgb": dict(self._rgb_preview),
+            "multispectral": dict(self._multispectral_preview),
+        }
 
     @staticmethod
     def _rgb_restart_required(current: RgbCameraConfig, requested: RgbCameraConfig) -> bool:
@@ -234,9 +390,12 @@ class CameraManager:
         if not status.get("sdkAvailable"):
             check_status = "sdk_missing"
             message = status.get("error") or "多光谱 GigE 相机 DVP2 SDK 尚未安装"
-        elif status.get("connected") or status.get("available"):
+        elif status.get("available") or status.get("opened") or status.get("streaming"):
             check_status = "passed"
             message = self._resolution_message(status)
+        elif status.get("detected") or status.get("connected"):
+            check_status = "warning"
+            message = status.get("error") or "DVP2 已枚举到相机，尚未完成打开取帧检查"
         else:
             check_status = "warning"
             message = status.get("error") or "DVP2 SDK 已发现，设备/API 待实机确认"
@@ -248,6 +407,26 @@ class CameraManager:
         }
 
     @staticmethod
+    def _preview_image_from_frame(data: Any):
+        from PIL import Image
+        import numpy as np
+
+        array = np.asarray(data)
+        if array.ndim == 3 and array.shape[2] >= 3:
+            array = array[:, :, :3]
+        if array.dtype != np.uint8:
+            minimum = float(np.min(array)) if array.size else 0.0
+            maximum = float(np.max(array)) if array.size else 0.0
+            if maximum > minimum:
+                array = ((array.astype(np.float32) - minimum) * (255.0 / (maximum - minimum))).clip(0, 255)
+            else:
+                array = np.zeros(array.shape, dtype=np.float32)
+            array = array.astype(np.uint8)
+        if array.ndim == 2:
+            return Image.fromarray(array, mode="L")
+        return Image.fromarray(array)
+
+    @staticmethod
     def _resolution_message(status: dict[str, Any]) -> str:
         resolution = status.get("resolution") or {}
         actual = status.get("actual") or {}
@@ -256,6 +435,8 @@ class CameraManager:
         width = resolution.get("width")
         height = resolution.get("height")
         fps = actual.get("fps")
+        if fps is None:
+            fps = actual.get("streamFps")
         fourcc = actual.get("fourcc")
         if width and height:
             suffix = " ".join(str(value) for value in (f"{fps:g}fps" if isinstance(fps, (int, float)) else "", fourcc or "") if value)
@@ -289,3 +470,35 @@ class CameraManager:
             "actualWhiteBalance": actual.get("whiteBalance"),
             "matchesRequested": bool(actual.get("matchesRequested")),
         }
+
+    @staticmethod
+    def _multispectral_requested_actual_summary(status: dict[str, Any], setting_results: dict[str, Any]) -> dict[str, Any]:
+        actual = status.get("actual") or {}
+        exposure = setting_results.get("exposure") or {}
+        gain = setting_results.get("gain") or {}
+        return {
+            "requestedExposure": exposure.get("requested"),
+            "actualExposure": actual.get("exposure") if actual.get("exposure") is not None else exposure.get("actual"),
+            "requestedGain": gain.get("requested"),
+            "actualGain": actual.get("gain") if actual.get("gain") is not None else gain.get("actual"),
+            "pixelFormat": actual.get("pixelFormat") or status.get("pixelFormat") or "",
+            "frameDtype": actual.get("frameDtype") or status.get("frameDtype") or "",
+            "streamFps": actual.get("streamFps"),
+            "matchesRequested": all(result.get("accepted") for result in setting_results.values()) if setting_results else False,
+        }
+
+    @staticmethod
+    def _frame_stats(data: Any) -> dict[str, Any]:
+        try:
+            import numpy as np
+
+            array = np.asarray(data)
+            if array.size == 0:
+                return {"frameMin": None, "frameMax": None, "frameMean": None}
+            return {
+                "frameMin": float(np.min(array)),
+                "frameMax": float(np.max(array)),
+                "frameMean": float(np.mean(array)),
+            }
+        except Exception:
+            return {"frameMin": None, "frameMax": None, "frameMean": None}

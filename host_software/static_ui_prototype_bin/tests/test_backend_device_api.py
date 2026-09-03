@@ -16,7 +16,9 @@ from device_manager import CameraIntegrationRequired
 class FakeCameraManager:
     def __init__(self):
         self.applied_payload = None
+        self.multispectral_applied_payload = None
         self.preview_running = False
+        self.multispectral_preview_running = False
 
     def status(self):
         return {
@@ -32,14 +34,39 @@ class FakeCameraManager:
                 "capabilities": {"exposure": {"supported": True, "settable": True, "current": -5}},
             },
             "multispectral": {
-                "sdkAvailable": False,
-                "available": False,
-                "connected": False,
+                "sdkAvailable": True,
+                "detected": True,
+                "available": True,
+                "connected": True,
+                "opened": self.multispectral_preview_running,
+                "streaming": self.multispectral_preview_running,
                 "transport": "GigE/DVP2",
-                "error": "多光谱 GigE 相机 DVP2 SDK 尚未安装",
+                "pixelFormat": "Mono16",
+                "frameDtype": "uint16",
+                "actual": {
+                    "cameraIp": "169.254.25.110",
+                    "cameraMac": "B4-61-D3-14-6E-18",
+                    "cameraSerial": "GP23400004963",
+                    "width": 2048,
+                    "height": 1200,
+                    "pixelFormat": "Mono16",
+                    "frameDtype": "uint16",
+                    "exposure": 10000.0,
+                    "gain": 1.0,
+                    "streamFps": 25.0,
+                    "linkSpeedMbps": None,
+                    "linkSpeed": "",
+                },
+                "capabilities": {
+                    "triggerMode": "continuous",
+                    "exposure": {"min": 1.0, "max": 1000000.0, "step": 1.0, "default": 10000.0},
+                    "gain": {"min": 1.0, "max": 16.0, "step": 0.1, "default": 1.0},
+                    "supportedPixelFormats": ["Mono8"],
+                },
             },
             "preview": {
                 "rgb": {"running": self.preview_running, "width": 960, "height": 540, "fps": 12},
+                "multispectral": {"running": self.multispectral_preview_running, "width": 960, "height": 540, "fps": 8},
             },
         }
 
@@ -83,6 +110,54 @@ class FakeCameraManager:
             "previewWidth": 960,
             "previewHeight": 540,
             "sourceShape": (2160, 3840, 3),
+        }
+
+    def probe_multispectral(self):
+        return {
+            "passed": True,
+            "status": self.status()["multispectral"],
+            "preview": self.status()["preview"],
+        }
+
+    def apply_multispectral_settings(self, payload):
+        self.multispectral_applied_payload = dict(payload)
+        return {
+            "settingResults": {
+                "exposure": {"requested": payload.get("exposure"), "actual": payload.get("exposure"), "accepted": True},
+                "gain": {"requested": payload.get("gain"), "actual": payload.get("gain"), "accepted": True},
+            },
+            "status": self.status()["multispectral"],
+            "summary": {
+                "requestedExposure": payload.get("exposure"),
+                "actualExposure": payload.get("exposure"),
+                "requestedGain": payload.get("gain"),
+                "actualGain": payload.get("gain"),
+                "pixelFormat": "Mono16",
+                "frameDtype": "uint16",
+                "matchesRequested": True,
+            },
+            "preview": self.status()["preview"],
+        }
+
+    def start_multispectral_preview(self, payload=None):
+        self.multispectral_preview_running = True
+        return {"status": self.status()["multispectral"], "preview": self.status()["preview"]}
+
+    def stop_multispectral_preview(self):
+        self.multispectral_preview_running = False
+        return {"status": self.status()["multispectral"], "preview": self.status()["preview"]}
+
+    def multispectral_preview_jpeg(self):
+        return b"\xff\xd8fake-mono-jpeg\xff\xd9", {
+            "contentType": "image/jpeg",
+            "previewWidth": 960,
+            "previewHeight": 540,
+            "sourceShape": (1200, 2048),
+            "sourceDtype": "uint16",
+            "pixelFormat": "Mono16",
+            "frameMin": 0.0,
+            "frameMax": 4095.0,
+            "frameMean": 32.5,
         }
 
 
@@ -137,7 +212,7 @@ class FakeDeviceManager:
                 "controller": {"status": "passed", "label": "STM32 控制器", "message": "PING 通过"},
                 "filterWheel": {"status": "passed", "label": "滤光轮", "message": "位置: 0"},
                 "rgbCamera": {"status": "not_connected", "label": "RGB 相机", "message": "RGB 相机未连接"},
-                "multispectralCamera": {"status": "sdk_missing", "label": "多光谱相机", "message": "多光谱 GigE 相机 DVP2 SDK 尚未安装"},
+                "multispectralCamera": {"status": "passed", "label": "多光谱相机", "message": "已连接 2048x1200"},
                 "calibration": {"status": "manual_required", "label": "标定状态", "message": "当前需要操作员人工确认"},
             },
         }
@@ -224,7 +299,7 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertTrue(self.device.self_test_motion)
         self.assertEqual(self_test["result"]["checks"]["controller"]["status"], "passed")
         self.assertEqual(self_test["result"]["checks"]["rgbCamera"]["status"], "not_connected")
-        self.assertEqual(self_test["result"]["checks"]["multispectralCamera"]["status"], "sdk_missing")
+        self.assertEqual(self_test["result"]["checks"]["multispectralCamera"]["status"], "passed")
         self.assertEqual(self_test["result"]["checks"]["calibration"]["status"], "manual_required")
 
     def test_capture_start_reports_camera_integration_gap(self):
@@ -267,16 +342,39 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertTrue(stopped["result"]["status"]["available"])
         self.assertFalse(stopped["result"]["status"]["opened"])
 
+        multi_probed = self.post_json("/api/camera/multispectral/probe")
+        self.assertTrue(multi_probed["result"]["passed"])
+        multi_applied = self.post_json("/api/camera/multispectral/apply-settings", {
+            "exposure": 12000,
+            "gain": 1.5,
+        })
+        self.assertTrue(multi_applied["result"]["summary"]["matchesRequested"])
+        self.assertEqual(self.device.camera_manager.multispectral_applied_payload["exposure"], 12000)
+        self.assertEqual(self.device.camera_manager.multispectral_applied_payload["gain"], 1.5)
+        multi_started = self.post_json("/api/camera/multispectral/preview/start", {"width": 960, "height": 540, "fps": 8})
+        self.assertTrue(multi_started["result"]["preview"]["multispectral"]["running"])
+        with self.get_response("/api/camera/multispectral/preview-frame") as response:
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(response.headers["X-Source-Dtype"], "uint16")
+            self.assertEqual(response.headers["X-Frame-Mean"], "32.5")
+            self.assertTrue(response.read().startswith(b"\xff\xd8"))
+        multi_stopped = self.post_json("/api/camera/multispectral/preview/stop")
+        self.assertFalse(multi_stopped["result"]["preview"]["multispectral"]["running"])
+
     def test_camera_settings_ui_separates_rgb_and_multispectral_controls(self):
         html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
         self.assertIn("data-camera-settings-tab=\"rgb\"", html)
         self.assertIn("data-camera-settings-tab=\"multispectral\"", html)
         self.assertIn("id=\"rgbLivePreview\"", html)
+        self.assertIn("id=\"multispectralLivePreview\"", html)
         self.assertIn("标定与几何参数", html)
         multispectral_section = html.split('id="multispectralCameraSettingsPanel"', 1)[1].split("</article>", 1)[0]
         self.assertIn("GigE / RJ45", multispectral_section)
         self.assertIn("DVP2", multispectral_section)
         self.assertIn("PixelFormat", multispectral_section)
+        self.assertIn("id=\"applyMultispectralCameraSettings\"", multispectral_section)
+        self.assertIn("id=\"multispectralExposureInput\"", multispectral_section)
+        self.assertIn("id=\"multispectralGainInput\"", multispectral_section)
         self.assertNotIn("White Balance", multispectral_section)
         self.assertNotIn("白平衡", multispectral_section)
 
@@ -284,7 +382,12 @@ class BackendDeviceApiTests(unittest.TestCase):
         app_js = (Path(__file__).parents[1] / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("/api/camera/rgb/probe", app_js)
+        self.assertIn("/api/camera/multispectral/probe", app_js)
+        self.assertIn("/api/camera/multispectral/apply-settings", app_js)
+        self.assertIn("/api/camera/multispectral/preview-frame", app_js)
         self.assertIn('addEventListener("click", probeRgbCamera)', app_js)
+        self.assertIn('addEventListener("click", probeMultispectralCamera)', app_js)
+        self.assertIn('addEventListener("click", applyMultispectralCameraSettings)', app_js)
         self.assertNotIn("http://127.0.0.1", app_js)
         self.assertNotIn("http://localhost", app_js)
 
