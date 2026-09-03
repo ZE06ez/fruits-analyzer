@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any
 
 from .base import CameraDeviceInfo, CameraFrame, CameraStatus
@@ -47,6 +48,10 @@ class RgbUvcCamera:
         self._streaming = False
         self._last_error = ""
         self._last_technical_error = ""
+        self._detected = False
+        self._available = False
+        self._last_probe_at: float | None = None
+        self._last_frame_shape: tuple[int, ...] | None = None
         self._actual: dict[str, Any] = {}
         self._capabilities: dict[str, Any] = {}
         self._setting_results: dict[str, Any] = {}
@@ -73,25 +78,39 @@ class RgbUvcCamera:
     def open(self) -> None:
         if self.is_open:
             return
+        self._log(f"RGB open start: device_index={self.device_index}")
         capture = self._make_capture(self.device_index)
         if capture is None or not capture.isOpened():
+            self._detected = False
+            self._available = False
             self._last_error = "RGB 相机未连接或当前被其他程序占用。请关闭 AMCAP、Windows 相机等程序后重试。"
             self._last_technical_error = f"OpenCV CAP_DSHOW open failed; device_index={self.device_index}"
             if capture is not None:
                 capture.release()
+            self._log(f"RGB open failed: device_index={self.device_index}; {self._last_technical_error}")
             raise CameraOpenError(self._last_error, self._last_technical_error)
         self._capture = capture
         self._setting_results = self._apply_requested_stream_config()
         self._read_actual_stream_config()
         self._probe_capabilities()
+        self._detected = True
+        self._available = True
+        self._last_probe_at = time.time()
         self._last_error = ""
         self._last_technical_error = ""
+        self._log(
+            "RGB open success: "
+            f"device_index={self.device_index}; "
+            f"actual={self._actual.get('width')}x{self._actual.get('height')} "
+            f"{self._actual.get('fps')}fps {self._actual.get('fourcc')}"
+        )
 
     def close(self) -> None:
         self._streaming = False
         if self._capture is not None:
             self._capture.release()
             self._capture = None
+            self._log(f"RGB close: device_index={self.device_index}")
 
     @property
     def is_open(self) -> bool:
@@ -100,8 +119,10 @@ class RgbUvcCamera:
     def get_status(self) -> CameraStatus:
         status = CameraStatus(
             role=self.role,
-            available=False,
-            connected=self.is_open,
+            detected=bool(self._detected),
+            available=bool(self._available or self.is_open),
+            connected=bool(self._detected or self._available or self.is_open),
+            opened=self.is_open,
             streaming=self._streaming and self.is_open,
             sdk_available=self._cv2_available(),
             backend="opencv-dshow",
@@ -112,7 +133,11 @@ class RgbUvcCamera:
             color_space="RGB",
             frame_dtype="uint8",
             requested=self.config.to_dict(),
-            actual=dict(self._actual),
+            actual={
+                **dict(self._actual),
+                **({"lastProbeAt": self._last_probe_at} if self._last_probe_at else {}),
+                **({"lastFrameShape": self._last_frame_shape} if self._last_frame_shape else {}),
+            },
             capabilities={
                 **dict(self._capabilities),
                 "lastApply": dict(self._setting_results),
@@ -122,18 +147,27 @@ class RgbUvcCamera:
         )
         if self.is_open:
             status.available = True
+            status.detected = True
+            status.connected = True
+            status.opened = True
             status.resolution = self.get_resolution()
             status.exposure = self._read_property("CAP_PROP_EXPOSURE")
             status.gain = self._read_property("CAP_PROP_GAIN")
-            status.actual = self._read_actual_stream_config()
+            status.actual = {
+                **self._read_actual_stream_config(),
+                **({"lastProbeAt": self._last_probe_at} if self._last_probe_at else {}),
+                **({"lastFrameShape": self._last_frame_shape} if self._last_frame_shape else {}),
+            }
             status.capabilities = {
                 **self._probe_capabilities(),
                 "lastApply": dict(self._setting_results),
             }
             return status
+        if self._available or self._detected:
+            return status
         if self._cv2_available():
-            status.error = "RGB 相机未连接"
-            status.technical_error = "Camera is not open; run device check to probe OpenCV DirectShow"
+            status.error = "RGB 相机尚未检测，请点击重新检测。"
+            status.technical_error = "Camera has not been probed in this session"
         else:
             status.error = "OpenCV 未安装，RGB 相机不可用"
             status.technical_error = "cv2 module not found"
@@ -150,16 +184,24 @@ class RgbUvcCamera:
         self.open()
         ok, frame = self._capture.read()
         if not ok or frame is None:
+            self._available = False
             self._last_error = "RGB 相机取帧失败"
             self._last_technical_error = "VideoCapture.read returned false"
+            self._log(f"RGB capture failed: device_index={self.device_index}; {self._last_technical_error}")
             raise CameraCaptureError(self._last_error, self._last_technical_error)
         cv2 = self._require_cv2()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self._detected = True
+        self._available = True
+        self._last_probe_at = time.time()
+        self._last_frame_shape = tuple(int(value) for value in rgb.shape)
+        self._last_error = ""
+        self._last_technical_error = ""
         return CameraFrame(
             data=rgb,
             color_space="RGB",
             dtype=str(rgb.dtype),
-            shape=tuple(int(value) for value in rgb.shape),
+            shape=self._last_frame_shape,
             metadata={"sourceColorSpace": "BGR", "deviceIndex": self.device_index},
         )
 
@@ -197,9 +239,13 @@ class RgbUvcCamera:
 
     def configure(self, config: RgbCameraConfig | dict[str, Any]) -> None:
         rgb_config = RgbCameraConfig.from_dict(config) if isinstance(config, dict) else config
+        previous_index = self.device_index
         self.config = rgb_config
         self.device_index = int(rgb_config.device_index)
         self.max_probe_index = int(rgb_config.max_probe_index)
+        if self.device_index != previous_index:
+            self._detected = False
+            self._available = False
 
     def apply_config(self, config: RgbCameraConfig | dict[str, Any], *, restart: bool = False) -> dict[str, Any]:
         if restart and self.is_open:
@@ -217,13 +263,32 @@ class RgbUvcCamera:
         }
 
     def probe_available(self) -> bool:
+        self._log(f"RGB probe start: device_index={self.device_index}")
         try:
             self.open()
             frame = self.capture_frame()
-            return len(frame.shape) == 3 and frame.shape[2] == 3
+            ok = len(frame.shape) == 3 and frame.shape[2] == 3
+            self._detected = ok
+            self._available = ok
+            if ok:
+                self._log(
+                    "RGB probe success: "
+                    f"device_index={self.device_index}; "
+                    f"frame_shape={frame.shape}; "
+                    f"actual={self._actual.get('width')}x{self._actual.get('height')} "
+                    f"{self._actual.get('fps')}fps {self._actual.get('fourcc')}"
+                )
+            else:
+                self._last_error = "RGB 相机取帧格式异常"
+                self._last_technical_error = f"Unexpected RGB frame shape: {frame.shape}"
+                self._log(f"RGB probe failed: {self._last_technical_error}")
+            return ok
         except Exception as exc:
-            self._last_error = "RGB 相机未连接"
+            self._detected = False
+            self._available = False
+            self._last_error = "RGB 相机未连接或当前被其他程序占用"
             self._last_technical_error = str(exc)
+            self._log(f"RGB probe failed: device_index={self.device_index}; {self._last_technical_error}")
             return False
         finally:
             self.close()
@@ -313,7 +378,14 @@ class RgbUvcCamera:
         cv2 = self._require_cv2()
         if self._capture_factory is not None:
             return self._capture_factory(index)
-        return cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if capture is not None and capture.isOpened():
+            return capture
+        if capture is not None:
+            capture.release()
+        encoded_index = int(index) + int(cv2.CAP_DSHOW)
+        self._log(f"RGB open retry: logical_index={index}; encoded_dshow_index={encoded_index}")
+        return cv2.VideoCapture(encoded_index)
 
     def _cv2_available(self) -> bool:
         try:
@@ -377,6 +449,10 @@ class RgbUvcCamera:
         if hasattr(cv2, "VideoWriter_fourcc"):
             return float(cv2.VideoWriter_fourcc(*fourcc))
         return float(sum(ord(fourcc[index]) << (8 * index) for index in range(len(fourcc))))
+
+    @staticmethod
+    def _log(message: str) -> None:
+        print(f"[camera.rgb] {message}", flush=True)
 
 
 def _float_or_none(value: Any) -> float | None:

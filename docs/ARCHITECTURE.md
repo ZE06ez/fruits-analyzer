@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 ## 总体结构
 
@@ -49,10 +49,10 @@ launcher.py
 | STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
 | 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
 | 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager`, `DeviceManager.self_test()` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*`，self-test `checks` | HardwareController |
-| 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；frame 不绑定样品目录 | Python dataclass/protocol |
-| RGB UVC 相机 | `camera_service/config.py`, `camera_service/rgb_uvc.py` | `RgbCameraConfig`, `RgbUvcCamera` | OpenCV device_index、DirectShow capture、请求 width/height/fps/fourcc/exposure/gain/white balance | RGB `uint8` H×W×3 numpy 帧；status 同时返回 `requested`、`actual`、`capabilities` 和 `transport=UVC/DirectShow`；支持 apply config | `cv2`, numpy |
+| 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；`CameraStatus` 区分 `detected`、`available`、`opened`、`streaming`；frame 不绑定样品目录 | Python dataclass/protocol |
+| RGB UVC 相机 | `camera_service/config.py`, `camera_service/rgb_uvc.py` | `RgbCameraConfig`, `RgbUvcCamera` | OpenCV device_index、DirectShow capture、请求 width/height/fps/fourcc/exposure/gain/white balance | RGB `uint8` H×W×3 numpy 帧；probe 成功后释放句柄仍保留 `detected/available`；status 同时返回 `requested`、`actual`、`capabilities` 和 `transport=UVC/DirectShow`；支持 apply config | `cv2`, numpy |
 | DVP2 多光谱相机骨架 | `camera_service/dvp2_mono.py` | `find_dvp2_sdk()`, `Dvp2MonoCamera` | `DVP2_SDK_DIR`、配置路径、Program Files 候选目录、未来 GigE/DVP2 设备信息 | SDK/DLL 发现状态；`transport=GigE/DVP2`；未确认 API 前抛 unavailable/unsupported | `ctypes`, pathlib |
-| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `apply_rgb_settings()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `stop_rgb_preview()` | RGB adapter、多光谱 adapter、RGB 参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB requested/actual、JPEG 预览帧 | RgbUvcCamera, Dvp2MonoCamera, PIL |
+| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `probe_rgb()`, `apply_rgb_settings()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `stop_rgb_preview()` | RGB adapter、多光谱 adapter、RGB 参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB probe 结果、RGB requested/actual、JPEG 预览帧 | RgbUvcCamera, Dvp2MonoCamera, PIL |
 | 样品旋转计划 | `rotation_plan.py`, `backend_server.py`, `app.js` | `build_capture_rotation_plan()`, `mark_plan_completed()`, `renderRotationPlan()` | 期望角度间隔、起始角度、CW/CCW、闭合补拍 | `captureRotationPlan`、`sample_rotation` metadata、`views.json` | math/json |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
@@ -118,7 +118,7 @@ app.js runDeviceTest()/confirmCalibrationCheck()
   -> SessionState.trueCapturePrepared = false until real cameras and CaptureCoordinator are complete
 ```
 
-串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。未插 RGB 相机时为 `not_connected`。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK 发现状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，不能由普通网卡 link 推断为相机已连接。标定仍为 `manual_required`。样品台旋转电机、DVP2 真实取帧和完整真实采集编排仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
+串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。RGB probe 成功后会释放 `VideoCapture` 句柄，此时 `opened=false`、`streaming=false`，但 `detected=true`、`available=true` 会保留到下一次失败 probe 或配置设备索引变化。未插 RGB 相机或设备被占用时为 `not_connected`。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK 发现状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，不能由普通网卡 link 推断为相机已连接。标定仍为 `manual_required`。样品台旋转电机、DVP2 真实取帧和完整真实采集编排仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
 
 ### Camera Service 数据边界
 
@@ -126,8 +126,10 @@ app.js runDeviceTest()/confirmCalibrationCheck()
 CameraManager
   -> RgbUvcCamera
      -> cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+        or cv2.VideoCapture(device_index + cv2.CAP_DSHOW) for the same logical index
      -> set FOURCC MJPG, width 3840, height 2160, fps 25 by RgbCameraConfig
      -> read actual width/height/fps/fourcc and probe exposure/gain/white balance capability
+     -> probe_available(): read one frame, persist detected/available, then release capture handle
      -> capture_frame()
      -> CameraFrame(data=<RGB uint8 HxWx3>, color_space="RGB")
      -> CameraManager.rgb_preview_jpeg()
@@ -141,7 +143,7 @@ CameraManager
      -> API 未由真实 header/examples 确认前，不执行 open/capture/setting
 ```
 
-Camera adapter 只负责设备状态和帧，不负责 Sample Folder、文件命名或 `metadata.json.image_directories`。`CameraManager` 是 RGB 相机的单实例所有者：self-test、preview、参数应用都共用同一个 `RgbUvcCamera`，不会各自新建 `cv2.VideoCapture(1)`。真实采集保存路径仍应由后续 CaptureCoordinator/Sample 层根据 `rgbDirName`、`multispectralDirName`、`colorDir`、`depthDir` 决定。
+Camera adapter 只负责设备状态和帧，不负责 Sample Folder、文件命名或 `metadata.json.image_directories`。`CameraManager` 是 RGB 相机的单实例所有者：self-test、probe、preview、参数应用都共用同一个 `RgbUvcCamera`，不会各自新建 `cv2.VideoCapture(1)`。真实采集保存路径仍应由后续 CaptureCoordinator/Sample 层根据 `rgbDirName`、`multispectralDirName`、`colorDir`、`depthDir` 决定。
 
 ### 相机设置 API
 
@@ -149,6 +151,12 @@ Camera adapter 只负责设备状态和帧，不负责 Sample Folder、文件命
 GET /api/camera/status
   -> DeviceManager.camera_manager.status()
   -> cameras.rgb / cameras.multispectral / preview.rgb
+
+POST /api/camera/rgb/probe
+  -> CameraManager.probe_rgb()
+  -> RgbUvcCamera.probe_available()
+  -> open configured device_index only, read one frame, close handle
+  -> status.detected/status.available remain true after close when probe succeeds
 
 POST /api/camera/rgb/apply-settings
   -> CameraManager.apply_rgb_settings()

@@ -699,6 +699,21 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=400)
                 return
+            if parsed.path == "/api/camera/rgb/probe":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.probe_rgb(),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if parsed.path == "/api/camera/rgb/preview/start":
                 payload = self.read_json()
                 try:
