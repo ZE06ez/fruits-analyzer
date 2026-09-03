@@ -690,46 +690,87 @@
                 </div>
                 <div class="camera-summary-metrics">
                   <span>DO3THINK / 度申</span>
-                  <span>GigE / RJ45</span>
-                  <span>DVP2 SDK</span>
-                  <span>Realtek PCIe GbE</span>
+                  <span id="multispectralCameraTransportText">GigE / RJ45</span>
+                  <span id="multispectralCameraPixelFormatText">DVP2 SDK</span>
+                  <span id="multispectralCameraResolutionText">2048 x 1200</span>
+                </div>
+                <div class="button-row compact">
+                  <button id="testMultispectralCamera" type="button">重新检测</button>
+                  <button id="startMultispectralPreview" type="button">打开预览</button>
+                  <button id="stopMultispectralPreview" type="button" class="secondary">停止预览</button>
                 </div>
               </div>
 
               <div class="camera-settings-workspace multispectral-only">
-                <section class="camera-setting-section">
-                  <h4>黑白相机连接</h4>
-                  <div class="settings-grid compact">
-                    <label>厂商<input value="DO3THINK / 度申" readonly /></label>
-                    <label>连接方式<input value="GigE / RJ45" readonly /></label>
-                    <label>SDK<input value="DVP2" readonly /></label>
-                    <label>网络适配器<input value="Realtek PCIe GbE Family Controller" readonly /></label>
-                    <label>相机 IP<input id="multispectralCameraIp" value="等待设备" readonly /></label>
-                    <label>MAC<input id="multispectralCameraMac" value="等待设备" readonly /></label>
-                    <label>Serial<input id="multispectralCameraSerial" value="等待设备" readonly /></label>
-                    <label>Link Speed<input id="multispectralLinkSpeed" value="等待设备" readonly /></label>
+                <div class="camera-live-panel">
+                  <div class="camera-live-frame">
+                    <img id="multispectralLivePreview" alt="多光谱黑白相机实时预览" />
+                    <span class="empty-preview" id="multispectralLivePreviewEmpty">多光谱预览未启动</span>
                   </div>
-                  <p class="hint">不能根据 Realtek 网卡存在判断相机在线；必须等待 DVP2 枚举到真实相机。</p>
-                </section>
+                  <p class="hint" id="multispectralPreviewMeta">预览会把 mono uint8/uint16 帧转换为 JPEG 显示；底层相机帧不会被强制改成 uint8。</p>
+                </div>
 
-                <section class="camera-setting-section">
-                  <h4>采集参数</h4>
-                  <div class="settings-grid compact">
-                    <label>PixelFormat<select disabled><option>待设备接入</option></select></label>
-                    <label>Exposure<input value="待设备接入" readonly /></label>
-                    <label>Gain<input value="待设备接入" readonly /></label>
-                    <label>Trigger Mode<select disabled><option>Software Trigger 待接入</option></select></label>
-                  </div>
-                </section>
+                <div class="camera-control-panel">
+                  <section class="camera-setting-section">
+                    <h4>黑白相机连接</h4>
+                    <div class="settings-grid compact">
+                      <label>厂商<input value="DO3THINK / 度申" readonly /></label>
+                      <label>连接方式<input value="GigE / RJ45" readonly /></label>
+                      <label>SDK<input value="DVP2" readonly /></label>
+                      <label>网络适配器<input value="Realtek PCIe GbE Family Controller" readonly /></label>
+                      <label>相机 IP<input id="multispectralCameraIp" value="等待设备" readonly /></label>
+                      <label>MAC<input id="multispectralCameraMac" value="等待设备" readonly /></label>
+                      <label>Serial<input id="multispectralCameraSerial" value="等待设备" readonly /></label>
+                      <label>实时帧率<input id="multispectralStreamFps" value="等待设备" readonly /></label>
+                    </div>
+                    <p class="hint">不能根据 Realtek 网卡存在判断相机在线；必须等待 DVP2 枚举到真实相机。</p>
+                  </section>
 
-                <details class="camera-advanced" open>
-                  <summary>多光谱曝光方案</summary>
-                  <div class="spectral-exposure-table">
-                    <span>450 nm</span><strong>--</strong>
-                    <span>560 nm</span><strong>--</strong>
-                    <span>670 nm</span><strong>--</strong>
+                  <section class="camera-setting-section">
+                    <h4>采集参数</h4>
+                    <div class="settings-grid compact">
+                      <label>PixelFormat<input id="multispectralPixelFormat" value="等待设备" readonly /></label>
+                      <label>Frame Dtype<input id="multispectralFrameDtype" value="等待设备" readonly /></label>
+                      <label>实际曝光 μs<input id="multispectralExposure" value="等待设备" readonly /></label>
+                      <label>实际增益<input id="multispectralGain" value="等待设备" readonly /></label>
+                      <label>Trigger Mode<input id="multispectralTriggerMode" value="等待设备" readonly /></label>
+                    </div>
+                  </section>
+
+                  <section class="camera-setting-section">
+                    <h4>图像参数</h4>
+                    <div class="settings-grid compact">
+                      <label>曝光时间 μs<input id="multispectralExposureInput" type="number" step="1" value="10000" /></label>
+                      <label>增益<input id="multispectralGainInput" type="number" step="0.1" value="1" /></label>
+                    </div>
+                    <p class="hint">范围来自 DVP2 SDK 真实能力回读；预览中可直接应用，底层原始帧数据不因网页显示被降位。</p>
+                  </section>
+
+                  <div class="camera-apply-summary" id="multispectralApplySummary">
+                    <span>曝光 / 增益应用后会显示 DVP2 回读值。</span>
                   </div>
-                </details>
+
+                  <div class="button-row">
+                    <button id="applyMultispectralCameraSettings" type="button">应用到相机</button>
+                  </div>
+
+                  <details class="camera-advanced">
+                    <summary>设备详情</summary>
+                    <section class="camera-setting-section">
+                      <h4>DVP2 技术状态</h4>
+                      <pre id="multispectralCameraCapabilityText">等待检测</pre>
+                    </section>
+                  </details>
+
+                  <details class="camera-advanced" open>
+                    <summary>多光谱曝光方案</summary>
+                    <div class="spectral-exposure-table">
+                      <span>450 nm</span><strong>--</strong>
+                      <span>560 nm</span><strong>--</strong>
+                      <span>670 nm</span><strong>--</strong>
+                    </div>
+                  </details>
+                </div>
               </div>
             </section>
           </article>

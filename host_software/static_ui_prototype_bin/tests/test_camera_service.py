@@ -19,6 +19,7 @@ from camera_service import (
     RgbUvcCamera,
     find_dvp2_sdk,
 )
+from camera_service.dvp2_binding import Dvp2ApiError, Dvp2DeviceInfo, dvpFrame
 
 
 class FakeCv2:
@@ -95,6 +96,126 @@ class FakeCapture:
 
     def get(self, prop):
         return self.properties.get(prop, 0.0)
+
+
+class FakeDvp2Binding:
+    def __init__(self, devices=None, frame_array=None, target_format=None):
+        self.devices = devices or [
+            Dvp2DeviceInfo(
+                index=0,
+                vendor="DO3THINK",
+                manufacturer="DO3THINK",
+                model="MGV231M-H2",
+                friendly_name="MGV231M-H2-169.254.25.110",
+                link_name="p234-169.254.25.110",
+                port_info="169.254.25.110",
+                serial_number="DSGP23400004963",
+                camera_info="MAC B4-61-D3-14-6E-18",
+                user_id="GP23400004963",
+            )
+        ]
+        self.frame_array = frame_array if frame_array is not None else np.arange(6, dtype=np.uint16).reshape(2, 3)
+        self.target_format = target_format
+        self.opened_name = ""
+        self.opened_index = None
+        self.opened_user_id = ""
+        self.closed = False
+        self.started = False
+        self.trigger_state = False
+        self.exposure = 10000.0
+        self.gain = 1.0
+
+    def enum_devices(self):
+        return list(self.devices)
+
+    def open_by_name(self, friendly_name, auto_ip=False):
+        self.opened_name = friendly_name
+        return 101
+
+    def open_by_user_id(self, user_id, auto_ip=False):
+        self.opened_user_id = user_id
+        return 103
+
+    def open_by_index(self, index, auto_ip=False):
+        self.opened_index = index
+        return 102
+
+    def close(self, handle):
+        self.closed = True
+
+    def start(self, handle):
+        self.started = True
+
+    def stop(self, handle):
+        self.started = False
+
+    def get_frame(self, handle, timeout_ms=3000):
+        frame = dvpFrame()
+        frame.format = 0
+        frame.bits = 4 if self.frame_array.dtype == np.uint16 else 0
+        frame.uBytes = self.frame_array.nbytes
+        frame.iWidth = self.frame_array.shape[1]
+        frame.iHeight = self.frame_array.shape[0]
+        frame.uFrameID = 7
+        frame.uTimestamp = 123456
+        frame.fExposure = self.exposure
+        frame.fAGain = self.gain
+        return frame, self.frame_array.ctypes.data
+
+    def get_camera_info(self, handle):
+        return self.devices[0]
+
+    def get_frame_count(self, handle):
+        return {"frameCount": 1, "frameDrop": 0, "frameError": 0, "frameOk": 1, "frameRate": 25.0}
+
+    def get_roi(self, handle):
+        return 0, 0, 2048, 1200
+
+    def get_exposure(self, handle):
+        return self.exposure
+
+    def set_exposure(self, handle, value):
+        self.exposure = float(value)
+
+    def get_exposure_descr(self, handle):
+        return {"min": 1.0, "max": 1000000.0, "step": 1.0, "default": 10000.0}
+
+    def get_analog_gain(self, handle):
+        return self.gain
+
+    def set_analog_gain(self, handle, value):
+        self.gain = float(value)
+
+    def get_analog_gain_descr(self, handle):
+        return {"min": 1.0, "max": 16.0, "step": 0.1, "default": 1.0}
+
+    def get_trigger_state(self, handle):
+        return self.trigger_state
+
+    def set_trigger_state(self, handle, enabled):
+        self.trigger_state = bool(enabled)
+
+    def set_trigger_source(self, handle, source=0):
+        return None
+
+    def trigger_fire(self, handle):
+        return None
+
+    def get_source_format(self, handle):
+        return 34
+
+    def get_target_format(self, handle):
+        if self.target_format is not None:
+            return self.target_format
+        return 34 if self.frame_array.dtype == np.uint16 else 30
+
+
+class OccupiedDvp2Binding(FakeDvp2Binding):
+    def open_by_user_id(self, user_id, auto_ip=False):
+        raise Dvp2ApiError("dvpOpenByUserId", -1105)
+
+    def open_by_name(self, friendly_name, auto_ip=False):
+        raise Dvp2ApiError("dvpOpenByName", -1105)
 
 
 class CameraServiceTests(unittest.TestCase):
@@ -284,14 +405,115 @@ class CameraServiceTests(unittest.TestCase):
             with self.assertRaises(CameraSdkUnavailableError):
                 camera.list_devices()
 
-    def test_dvp2_unconfirmed_api_does_not_guess_function_names(self):
+    def test_dvp2_invalid_dll_symbols_are_reported(self):
         with tempfile.TemporaryDirectory(prefix="dvp2_stub_") as tmp:
             dll = Path(tmp) / "DVPCamera64.dll"
             dll.write_bytes(b"stub")
             camera = Dvp2MonoCamera(sdk_dir=tmp, loader=lambda path: object())
 
-            with self.assertRaises(CameraSettingUnsupported):
+            with self.assertRaises(CameraSdkUnavailableError):
                 camera.open()
+
+    def test_dvp2_lists_devices_from_confirmed_binding(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding()
+            camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+            devices = camera.list_devices()
+            status = camera.get_status().to_dict()
+
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0].stable_id, "DSGP23400004963")
+            self.assertEqual(devices[0].backend, "dvp2")
+            self.assertTrue(status["detected"])
+            self.assertTrue(status["connected"])
+            self.assertEqual(status["actual"]["cameraSerial"], "DSGP23400004963")
+            self.assertEqual(status["actual"]["cameraIp"], "169.254.25.110")
+            self.assertEqual(status["actual"]["cameraMac"], "B4-61-D3-14-6E-18")
+
+    def test_dvp2_open_prefers_configured_serial_over_index(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            first = Dvp2DeviceInfo(index=0, model="Other", friendly_name="OTHER", serial_number="OTHER001")
+            second = Dvp2DeviceInfo(index=1, model="MGV231M-H2", friendly_name="TARGET", serial_number="GP23400004963")
+            binding = FakeDvp2Binding(devices=[first, second])
+            camera = Dvp2MonoCamera(sdk_dir=tmp, serial_number="GP23400004963", device_index=0, binding_factory=lambda path: binding)
+
+            camera.open()
+
+            self.assertEqual(binding.opened_name, "TARGET")
+            self.assertIsNone(binding.opened_index)
+            self.assertTrue(camera.get_status().available)
+
+    def test_dvp2_capture_returns_uint16_mono_without_downcasting(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.array([[0, 512, 1024], [2048, 4095, 65535]], dtype=np.uint16)
+            binding = FakeDvp2Binding(frame_array=mono)
+            camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+            camera.set_exposure(10000)
+            camera.set_gain(1.0)
+            frame = camera.capture_frame()
+            status = camera.get_status().to_dict()
+
+            self.assertEqual(frame.color_space, "MONO")
+            self.assertEqual(frame.dtype, "uint16")
+            self.assertEqual(frame.shape, (2, 3))
+            self.assertEqual(frame.data.dtype, np.uint16)
+            self.assertEqual(int(frame.data.max()), 65535)
+            self.assertEqual(status["actual"]["width"], 3)
+            self.assertEqual(status["actual"]["height"], 2)
+            self.assertEqual(status["actual"]["pixelFormat"], "Mono16")
+            self.assertEqual(status["actual"]["exposure"], 10000.0)
+            self.assertEqual(status["actual"]["gain"], 1.0)
+
+    def test_dvp2_capture_reports_verified_mono8_without_generic_pixel_placeholder(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.array([[0, 10], [20, 30]], dtype=np.uint8)
+            binding = FakeDvp2Binding(frame_array=mono, target_format=30)
+            camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+            frame = camera.capture_frame()
+            status = camera.get_status().to_dict()
+
+            self.assertEqual(frame.dtype, "uint8")
+            self.assertEqual(frame.metadata["pixelFormat"], "Mono8")
+            self.assertEqual(status["actual"]["pixelFormat"], "Mono8")
+            self.assertEqual(status["actual"]["frameDtype"], "uint8")
+            self.assertNotIn("/", status["actual"]["pixelFormat"])
+            self.assertEqual(status["capabilities"]["supportedPixelFormats"], ["Mono8"])
+
+    def test_dvp2_status_splits_stream_fps_from_ethernet_link_speed(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding()
+            camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+            camera.open()
+            status = camera.get_status().to_dict()
+
+            self.assertEqual(status["actual"]["streamFps"], 25.0)
+            self.assertIsNone(status["actual"]["linkSpeedMbps"])
+            self.assertEqual(status["actual"]["linkSpeed"], "")
+            self.assertNotIn("fps", status["actual"]["linkSpeed"])
+
+    def test_dvp2_open_failure_after_enum_reports_occupied_hint(self):
+        with tempfile.TemporaryDirectory(prefix="dvp2_fake_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = OccupiedDvp2Binding()
+            camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+            with self.assertRaises(CameraOpenError) as context:
+                camera.open()
+
+            self.assertIn("BasedCam3", context.exception.user_message)
+            status = camera.get_status().to_dict()
+            self.assertTrue(status["detected"])
+            self.assertFalse(status["available"])
+            self.assertIn("BasedCam3", status["error"])
 
     def test_find_dvp2_sdk_uses_configured_directory(self):
         with tempfile.TemporaryDirectory(prefix="dvp2_find_") as tmp:
@@ -423,6 +645,72 @@ class CameraServiceTests(unittest.TestCase):
                 manager.start_rgb_preview()
 
             self.assertIn("AMCAP", context.exception.user_message)
+
+    def test_camera_manager_multispectral_preview_uses_jpeg_without_downcasting_capture(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.array([[0, 1000], [4000, 65535]], dtype=np.uint16)
+            binding = FakeDvp2Binding(frame_array=mono)
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            probed = manager.probe_multispectral()
+            started = manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
+            data, meta = manager.multispectral_preview_jpeg()
+            raw_frame = multispectral.capture_frame()
+            stopped = manager.stop_multispectral_preview()
+
+            self.assertTrue(probed["passed"])
+            self.assertTrue(started["preview"]["multispectral"]["running"])
+            self.assertTrue(data.startswith(b"\xff\xd8"))
+            self.assertEqual(meta["previewWidth"], 320)
+            self.assertEqual(meta["sourceDtype"], "uint16")
+            self.assertEqual(raw_frame.dtype, "uint16")
+            self.assertEqual(raw_frame.data.dtype, np.uint16)
+            self.assertFalse(stopped["preview"]["multispectral"]["running"])
+
+    def test_camera_manager_multispectral_apply_settings_reads_back_actual_values(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding(frame_array=np.zeros((2, 2), dtype=np.uint8), target_format=30)
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
+            result = manager.apply_multispectral_settings({"exposure": 12000, "gain": 1.5})
+
+            self.assertEqual(result["settingResults"]["exposure"]["actual"], 12000.0)
+            self.assertEqual(result["settingResults"]["gain"]["actual"], 1.5)
+            self.assertEqual(result["status"]["actual"]["exposure"], 12000.0)
+            self.assertEqual(result["status"]["actual"]["gain"], 1.5)
+            self.assertTrue(result["preview"]["multispectral"]["running"])
+
+    def test_camera_manager_multispectral_preview_can_restart_without_new_adapter_instance(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        calls = 0
+
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding(frame_array=np.zeros((2, 2), dtype=np.uint8), target_format=30)
+
+            def factory(path):
+                nonlocal calls
+                calls += 1
+                return binding
+
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=factory)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            first = manager.start_multispectral_preview()
+            stopped = manager.stop_multispectral_preview()
+            second = manager.start_multispectral_preview()
+
+            self.assertTrue(first["preview"]["multispectral"]["running"])
+            self.assertFalse(stopped["preview"]["multispectral"]["running"])
+            self.assertTrue(second["preview"]["multispectral"]["running"])
+            self.assertEqual(calls, 1)
 
     def test_camera_frame_allows_uint16_mono_data(self):
         mono = np.zeros((2, 3), dtype=np.uint16)

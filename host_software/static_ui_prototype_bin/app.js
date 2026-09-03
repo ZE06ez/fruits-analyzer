@@ -53,6 +53,10 @@ const state = {
   rgbPreviewFetching: false,
   rgbPreviewTimer: null,
   rgbPreviewFrameUrl: "",
+  multispectralPreviewRunning: false,
+  multispectralPreviewFetching: false,
+  multispectralPreviewTimer: null,
+  multispectralPreviewFrameUrl: "",
   serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
@@ -211,6 +215,12 @@ function $(selector) {
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) node.textContent = value;
+}
+
+function setInputValueUnlessFocused(id, value) {
+  const node = document.getElementById(id);
+  if (!node || document.activeElement === node) return;
+  node.value = value;
 }
 
 function setPreviewImage(imageSelector, emptySelector, src = "") {
@@ -532,6 +542,9 @@ function setCameraSettingsTab(tab) {
   if (state.cameraSettingsTab !== "rgb" && state.rgbPreviewRunning) {
     stopRgbPreview();
   }
+  if (state.cameraSettingsTab !== "multispectral" && state.multispectralPreviewRunning) {
+    stopMultispectralPreview();
+  }
   renderCameraSettingsStatus();
 }
 
@@ -567,18 +580,56 @@ function renderCameraSettingsStatus() {
   setText("rgbCameraCapabilityText", JSON.stringify(capabilityText, null, 2));
 
   const multispectral = state.cameraStatus?.multispectral || {};
-  const multiConnected = Boolean(multispectral.connected || multispectral.available);
+  const multiActual = multispectral.actual || {};
+  const multiConnected = Boolean(multispectral.detected || multispectral.connected || multispectral.available);
+  const multiStreaming = Boolean(multispectral.streaming || state.cameraStatus?.preview?.multispectral?.running);
   const multiDot = $("#multispectralCameraStatusDot");
-  if (multiDot) multiDot.dataset.status = multiConnected ? "connected" : "waiting";
+  if (multiDot) multiDot.dataset.status = multiStreaming ? "connected" : multiConnected ? "waiting" : multispectral.error ? "error" : "idle";
   setText(
     "multispectralCameraStatusText",
-    multiConnected ? "已连接" : (multispectral.error || "等待相机供电 / 尚未完成真实连接验证")
+    multiStreaming
+      ? "预览中"
+      : multiConnected
+        ? (multispectral.available ? "已检测 / 预览已停止" : (multispectral.error || "已枚举 / 待打开"))
+        : (multispectral.error || "等待相机供电 / 尚未完成真实连接验证")
   );
-  const multiActual = multispectral.actual || {};
-  if ($("#multispectralCameraIp")) $("#multispectralCameraIp").value = multiActual.cameraIp || "等待设备";
-  if ($("#multispectralCameraMac")) $("#multispectralCameraMac").value = multiActual.cameraMac || "等待设备";
-  if ($("#multispectralCameraSerial")) $("#multispectralCameraSerial").value = multiActual.cameraSerial || "等待设备";
-  if ($("#multispectralLinkSpeed")) $("#multispectralLinkSpeed").value = multiActual.linkSpeed || "等待设备";
+  setText("multispectralCameraTransportText", multispectral.transport || "GigE / RJ45");
+  setText("multispectralCameraPixelFormatText", multiActual.pixelFormat || multispectral.pixelFormat || "DVP2 SDK");
+  setText("multispectralCameraResolutionText", formatCameraResolution(multiActual.width || multispectral.resolution?.width, multiActual.height || multispectral.resolution?.height));
+  setInputValueUnlessFocused("multispectralCameraIp", multiActual.cameraIp || "等待设备");
+  setInputValueUnlessFocused("multispectralCameraMac", multiActual.cameraMac || "等待设备");
+  setInputValueUnlessFocused("multispectralCameraSerial", multiActual.cameraSerial || multispectral.stableId || "等待设备");
+  setInputValueUnlessFocused(
+    "multispectralStreamFps",
+    Number.isFinite(Number(multiActual.streamFps)) ? `${Number(multiActual.streamFps).toFixed(2)} FPS` : "等待设备"
+  );
+  setInputValueUnlessFocused("multispectralPixelFormat", multiActual.pixelFormat || multispectral.pixelFormat || "等待设备");
+  setInputValueUnlessFocused("multispectralFrameDtype", multiActual.frameDtype || multispectral.frameDtype || "等待设备");
+  setInputValueUnlessFocused("multispectralExposure", multiActual.exposure ?? multispectral.exposure ?? "等待设备");
+  setInputValueUnlessFocused("multispectralGain", multiActual.gain ?? multispectral.gain ?? "等待设备");
+  setInputValueUnlessFocused("multispectralTriggerMode", multispectral.capabilities?.triggerMode || "等待设备");
+  setMultispectralNumericControl("multispectralExposureInput", multiActual.exposure ?? multispectral.exposure, multispectral.capabilities?.exposure);
+  setMultispectralNumericControl("multispectralGainInput", multiActual.gain ?? multispectral.gain, multispectral.capabilities?.gain);
+  const multiCapabilityText = {
+    requested: multispectral.requested || {},
+    actual: multiActual,
+    capabilities: multispectral.capabilities || {},
+    sdkPath: multispectral.sdkPath || "",
+    dllPath: multispectral.dllPath || "",
+    technicalError: multispectral.technicalError || "",
+  };
+  setText("multispectralCameraCapabilityText", JSON.stringify(multiCapabilityText, null, 2));
+}
+
+function setMultispectralNumericControl(id, value, capability = {}) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  if (Number.isFinite(Number(capability.min))) input.min = capability.min;
+  if (Number.isFinite(Number(capability.max))) input.max = capability.max;
+  if (Number.isFinite(Number(capability.step)) && Number(capability.step) > 0) input.step = capability.step;
+  if (value !== null && value !== undefined && value !== "等待设备" && document.activeElement !== input) {
+    input.value = value;
+  }
 }
 
 function renderRgbApplySummary(result = null, error = null) {
@@ -606,6 +657,38 @@ function renderRgbApplySummary(result = null, error = null) {
     `<span>曝光：请求 ${escapeHtml(summary.requestedExposure ?? "Auto")} / 实际 ${escapeHtml(summary.actualExposure ?? "--")}</span>`,
     `<span>增益：请求 ${escapeHtml(summary.requestedGain ?? "默认")} / 实际 ${escapeHtml(summary.actualGain ?? "--")}</span>`,
     `<span>白平衡：请求 ${escapeHtml(summary.requestedWhiteBalance ?? "Auto")} / 实际 ${escapeHtml(summary.actualWhiteBalance ?? "--")}</span>`,
+  ].join("");
+}
+
+function collectMultispectralCameraSettingsFromForm() {
+  const payload = {};
+  const exposure = $("#multispectralExposureInput")?.value;
+  const gain = $("#multispectralGainInput")?.value;
+  if (exposure !== undefined && exposure !== "") payload.exposure = Number(exposure);
+  if (gain !== undefined && gain !== "") payload.gain = Number(gain);
+  return payload;
+}
+
+function renderMultispectralApplySummary(result = null, error = null) {
+  const node = $("#multispectralApplySummary");
+  if (!node) return;
+  if (error) {
+    node.dataset.status = "error";
+    node.innerHTML = `<span>${escapeHtml(error.message || "多光谱参数应用失败")}</span>`;
+    return;
+  }
+  if (!result) {
+    node.dataset.status = "";
+    node.innerHTML = "<span>曝光 / 增益应用后会显示 DVP2 回读值。</span>";
+    return;
+  }
+  const summary = result.summary || {};
+  node.dataset.status = summary.matchesRequested ? "ok" : "warning";
+  node.innerHTML = [
+    "<span>DVP2 参数已下发并回读。</span>",
+    `<span>曝光：请求 ${escapeHtml(summary.requestedExposure ?? "--")} μs / 实际 ${escapeHtml(summary.actualExposure ?? "--")} μs</span>`,
+    `<span>增益：请求 ${escapeHtml(summary.requestedGain ?? "--")} / 实际 ${escapeHtml(summary.actualGain ?? "--")}</span>`,
+    `<span>帧格式：${escapeHtml(summary.pixelFormat || "--")}，${escapeHtml(summary.frameDtype || "--")}</span>`,
   ].join("");
 }
 
@@ -756,6 +839,157 @@ async function fetchRgbPreviewFrame() {
     addLog(message, "WARN");
   } finally {
     state.rgbPreviewFetching = false;
+  }
+}
+
+async function probeMultispectralCamera() {
+  setText("cameraSettingsStatus", "正在重新检测多光谱相机");
+  try {
+    const payload = await api("/api/camera/multispectral/probe", {
+      method: "POST",
+      body: "{}",
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { multispectral: result.status } : {}), preview: result.preview });
+    renderCameraSettingsStatus();
+    setText("cameraSettingsStatus", result.passed ? "多光谱相机已检测" : "多光谱相机检测失败");
+    addLog(result.passed ? "多光谱相机重新检测完成，已通过 DVP2 打开。" : "多光谱相机重新检测失败。", result.passed ? "INFO" : "WARN");
+  } catch (error) {
+    setText("cameraSettingsStatus", "多光谱相机检测失败");
+    addLog(error.message || "多光谱相机重新检测失败。", "ERROR");
+  }
+}
+
+async function applyMultispectralCameraSettings() {
+  const settings = collectMultispectralCameraSettingsFromForm();
+  setText("cameraSettingsStatus", "正在应用多光谱相机参数");
+  renderMultispectralApplySummary(null);
+  try {
+    const payload = await api("/api/camera/multispectral/apply-settings", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), multispectral: result.status, preview: result.preview });
+    renderCameraSettingsStatus();
+    renderMultispectralApplySummary(result);
+    setText("cameraSettingsStatus", "多光谱参数已回读");
+    addLog("多光谱相机曝光 / 增益已通过 DVP2 应用并回读。");
+  } catch (error) {
+    renderMultispectralApplySummary(null, error);
+    setText("cameraSettingsStatus", "多光谱参数应用失败");
+    addLog(error.message || "多光谱相机参数应用失败。", "ERROR");
+  }
+}
+
+async function startMultispectralPreview() {
+  try {
+    const payload = await api("/api/camera/multispectral/preview/start", {
+      method: "POST",
+      body: JSON.stringify({ width: 960, height: 540, fps: 8 }),
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { multispectral: result.status } : {}), preview: result.preview });
+    state.multispectralPreviewRunning = true;
+    renderCameraSettingsStatus();
+    scheduleMultispectralPreviewFrames();
+    setText("multispectralLivePreviewEmpty", "正在读取多光谱预览");
+    addLog("多光谱实时预览已启动：960x540，最高 8 FPS。");
+  } catch (error) {
+    state.multispectralPreviewRunning = false;
+    setText("multispectralLivePreviewEmpty", error.message || "多光谱预览启动失败");
+    addLog(error.message || "多光谱预览启动失败。", "ERROR");
+  }
+}
+
+async function stopMultispectralPreview() {
+  clearMultispectralPreviewTimer();
+  releaseMultispectralPreviewUrl();
+  state.multispectralPreviewRunning = false;
+  const image = $("#multispectralLivePreview");
+  if (image) {
+    image.classList.remove("active");
+    image.removeAttribute("src");
+  }
+  setText("multispectralLivePreviewEmpty", "多光谱预览未启动");
+  try {
+    const payload = await api("/api/camera/multispectral/preview/stop", {
+      method: "POST",
+      body: "{}",
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { multispectral: result.status } : {}), preview: result.preview });
+    renderCameraSettingsStatus();
+  } catch (error) {
+    addLog(error.message || "停止多光谱预览失败。", "WARN");
+  }
+}
+
+function scheduleMultispectralPreviewFrames() {
+  clearMultispectralPreviewTimer();
+  fetchMultispectralPreviewFrame();
+  state.multispectralPreviewTimer = window.setInterval(fetchMultispectralPreviewFrame, 1000 / 8);
+}
+
+function clearMultispectralPreviewTimer() {
+  if (state.multispectralPreviewTimer) {
+    window.clearInterval(state.multispectralPreviewTimer);
+    state.multispectralPreviewTimer = null;
+  }
+}
+
+function releaseMultispectralPreviewUrl() {
+  if (state.multispectralPreviewFrameUrl) {
+    URL.revokeObjectURL(state.multispectralPreviewFrameUrl);
+    state.multispectralPreviewFrameUrl = "";
+  }
+}
+
+async function fetchMultispectralPreviewFrame() {
+  if (!state.multispectralPreviewRunning) return;
+  if (state.multispectralPreviewFetching) return;
+  state.multispectralPreviewFetching = true;
+  try {
+    const response = await fetch(`/api/camera/multispectral/preview-frame?t=${Date.now()}`);
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const payload = await response.json();
+        message = payload.error || message;
+      } catch {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    releaseMultispectralPreviewUrl();
+    state.multispectralPreviewFrameUrl = URL.createObjectURL(blob);
+    const image = $("#multispectralLivePreview");
+    if (image) {
+      image.src = state.multispectralPreviewFrameUrl;
+      image.classList.add("active");
+    }
+    setText("multispectralLivePreviewEmpty", "");
+    const frameMin = response.headers.get("X-Frame-Min");
+    const frameMax = response.headers.get("X-Frame-Max");
+    const frameMean = response.headers.get("X-Frame-Mean");
+    const meanValue = Number(frameMean);
+    const maxValue = Number(frameMax);
+    const brightnessHint = Number.isFinite(meanValue) && Number.isFinite(maxValue) && meanValue < 2 && maxValue < 10
+      ? " 画面亮度很低，请检查光源或曝光。"
+      : "";
+    setText(
+      "multispectralPreviewMeta",
+      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""} ${response.headers.get("X-Pixel-Format") || ""}；亮度 min=${frameMin || "--"} max=${frameMax || "--"} mean=${frameMean || "--"}。${brightnessHint}`
+    );
+  } catch (error) {
+    const message = cameraFetchErrorMessage(error, "多光谱预览已停止");
+    clearMultispectralPreviewTimer();
+    state.multispectralPreviewRunning = false;
+    const image = $("#multispectralLivePreview");
+    if (image) image.classList.remove("active");
+    setText("multispectralLivePreviewEmpty", message);
+    addLog(message, "WARN");
+  } finally {
+    state.multispectralPreviewFetching = false;
   }
 }
 
@@ -3500,6 +3734,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#applyRgbCameraSettings")?.addEventListener("click", applyRgbCameraSettings);
   $("#startRgbPreview")?.addEventListener("click", startRgbPreview);
   $("#stopRgbPreview")?.addEventListener("click", stopRgbPreview);
+  $("#testMultispectralCamera")?.addEventListener("click", probeMultispectralCamera);
+  $("#applyMultispectralCameraSettings")?.addEventListener("click", applyMultispectralCameraSettings);
+  $("#startMultispectralPreview")?.addEventListener("click", startMultispectralPreview);
+  $("#stopMultispectralPreview")?.addEventListener("click", stopMultispectralPreview);
   $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
   $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));

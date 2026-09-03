@@ -577,6 +577,32 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
+            if path == "/api/camera/multispectral/preview-frame":
+                try:
+                    data, meta = device_manager.camera_manager.multispectral_preview_jpeg()
+                    self.binary_response(
+                        data,
+                        meta.get("contentType") or "image/jpeg",
+                        headers={
+                            "X-Preview-Width": str(meta.get("previewWidth") or ""),
+                            "X-Preview-Height": str(meta.get("previewHeight") or ""),
+                            "X-Source-Shape": "x".join(str(value) for value in meta.get("sourceShape") or ()),
+                            "X-Source-Dtype": str(meta.get("sourceDtype") or ""),
+                            "X-Pixel-Format": str(meta.get("pixelFormat") or ""),
+                            "X-Frame-Min": str(meta.get("frameMin") if meta.get("frameMin") is not None else ""),
+                            "X-Frame-Max": str(meta.get("frameMax") if meta.get("frameMax") is not None else ""),
+                            "X-Frame-Mean": str(meta.get("frameMean") if meta.get("frameMean") is not None else ""),
+                        },
+                    )
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if path == "/api/capture/status":
                 try:
                     self.json_response({
@@ -699,11 +725,42 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=400)
                 return
+            if parsed.path == "/api/camera/multispectral/apply-settings":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.apply_multispectral_settings(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
             if parsed.path == "/api/camera/rgb/probe":
                 try:
                     self.json_response({
                         "ok": True,
                         "result": device_manager.camera_manager.probe_rgb(),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/camera/multispectral/probe":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.probe_multispectral(),
                     })
                 except CameraError as exc:
                     self.json_response({
@@ -730,11 +787,42 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
+            if parsed.path == "/api/camera/multispectral/preview/start":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.start_multispectral_preview(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if parsed.path == "/api/camera/rgb/preview/stop":
                 try:
                     self.json_response({
                         "ok": True,
                         "result": device_manager.camera_manager.stop_rgb_preview(),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/camera/multispectral/preview/stop":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.stop_multispectral_preview(),
                     })
                 except CameraError as exc:
                     self.json_response({
