@@ -2,6 +2,25 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-03 RGB 相机探测状态修正
+
+- 修改内容：新增 `/api/camera/rgb/probe`，让相机设置页“重新检测”执行真实 OpenCV DirectShow 打开、请求 MJPG/3840x2160/25fps、取一帧、释放句柄的 probe；`CameraStatus` 增加 `detected` 和 `opened`，并明确区分 `detected`、`available`、`opened`、`streaming`；`RgbUvcCamera` 记录最近一次真实 probe/capture 成功状态，`close()` 和预览停止不再清空 `detected/available`；同一配置 `device_index` 下兼容 `VideoCapture(index, CAP_DSHOW)` 和 `VideoCapture(index + CAP_DSHOW)` 两种 DirectShow 打开形式，不扫描或 fallback 到内置摄像头；`CameraManager` 统一 self-test、probe、preview 对同一个 RGB adapter 的状态更新；前端 `testRgbCamera` 改为调用 probe API，预览请求继续使用相对 URL，并将 `Failed to fetch` 解释为本地后端连接问题而不是硬件断开。
+- 修改文件：
+  - `host_software/static_ui_prototype_bin/app.js`
+  - `host_software/static_ui_prototype_bin/backend_server.py`
+  - `host_software/static_ui_prototype_bin/camera_service/base.py`
+  - `host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`
+  - `host_software/static_ui_prototype_bin/camera_service/manager.py`
+  - `host_software/static_ui_prototype_bin/tests/test_camera_service.py`
+  - `host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`
+  - `docs/PROJECT_CONTEXT.md`
+  - `docs/REQUIREMENTS.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/CHANGELOG.md`
+  - `AGENTS.md`
+- 为什么修改：手动 OpenCV 测试已确认当前 RGB 相机可用，但主程序把“句柄已释放”误显示为“未连接”；本次修正软件状态语义和 API 调用链，避免把已验证相机误判为断开。
+- 是否影响原有功能：不修改 DVP2、多光谱、STM32、CaptureCoordinator、`CameraIntegrationRequired`、`trueCapturePrepared`、`create_offline_capture_dataset()` 或图像目录工作流；不放行正式真实采集。
+
 ## 2026-09-03 Camera Settings UX + RGB Preview
 
 - 修改内容：重整主程序相机设置页，增加 RGB 彩色相机 / 多光谱黑白相机分段切换；RGB 页面分为设备连接、采集参数、图像参数、实时预览、requested/actual 应用结果、高级标定参数和标定状态；`fx/fy/cx/cy` 移到高级设置；“保存参数”拆分为“应用到相机”和“保存为默认配置”；新增 `/api/camera/status`、`/api/camera/rgb/apply-settings`、`/api/camera/rgb/preview/start`、`/api/camera/rgb/preview-frame`、`/api/camera/rgb/preview/stop`；`CameraManager` 用单实例和锁统一 RGB self-test、preview、参数应用，预览帧从真实 RGB 取帧后降采样为 960x540 JPEG；多光谱页改为 DO3THINK/度申 GigE/RJ45 + DVP2 待接入结构，PixelFormat/Exposure/Gain/Trigger 和波段曝光表均禁用/预留，不显示白平衡。

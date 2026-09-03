@@ -19,6 +19,8 @@
 - 不允许虚构已经接入的硬件、相机 SDK、STM32 串口、光源、电机或生产模型。
 - 根目录 `camera/` 是厂商资料目录，不要改名、移动、自动解压或当成 Python package；相机接入代码放在 `host_software/static_ui_prototype_bin/camera_service/`。
 - P1A-RGB Finalize 后 RGB 相机已有 OpenCV/DirectShow `RgbUvcCamera` adapter，并已在当前电脑验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`、RGB `uint8` 取帧；该 index 只能作为配置默认值，不要在 adapter 内硬编码为跨电脑身份。
+- RGB 相机状态语义固定为：`detected`=最近一次真实 probe 找到当前配置设备，`available`=当前配置可打开并取帧，`opened`=当前 `VideoCapture` 句柄保持打开，`streaming`=预览正在运行；probe/preview stop 释放句柄后 `opened=false`，但不能把已验证的 `detected/available` 清成 false。
+- `RgbUvcCamera` 可以为同一个逻辑 `device_index` 兼容 `VideoCapture(index, CAP_DSHOW)` 和 `VideoCapture(index + CAP_DSHOW)` 两种 OpenCV DirectShow 打开形式；这不是 fallback 到其他摄像头，禁止自动扫描或静默改用 index=0。
 - Camera Settings UX 阶段后，相机设置页已有 `/api/camera/rgb/apply-settings` 真实参数应用和 `/api/camera/rgb/preview-*` 960x540 JPEG 预览；这仍不等于正式采集，`trueCapturePrepared` 必须保持 false，`DeviceManager.start_capture()` 的 `CameraIntegrationRequired` 保护不能移除。
 - DVP2 多光谱相机是 DO3THINK/度申 GigE/RJ45 工业黑白相机，只有 SDK/DLL 发现和 unavailable/unsupported 骨架；黑白相机供电/网口发现/SDK header/examples 未完成前，不要猜函数名、不要用 OpenCV VideoCapture、不要根据 Wi-Fi 或普通网卡 link 伪造连接/帧。
 - 真实优先级固定为：当前代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。

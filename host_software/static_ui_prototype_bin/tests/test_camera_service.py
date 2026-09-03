@@ -15,6 +15,7 @@ from camera_service import (
     CameraSdkUnavailableError,
     CameraSettingUnsupported,
     Dvp2MonoCamera,
+    RgbCameraConfig,
     RgbUvcCamera,
     find_dvp2_sdk,
 )
@@ -42,6 +43,15 @@ class FakeCv2:
         if code != FakeCv2.COLOR_BGR2RGB:
             raise ValueError("unexpected conversion")
         return frame[:, :, ::-1].copy()
+
+
+class FakeCv2DirectShowEncoded(FakeCv2):
+    calls: list[tuple[int, int | None]] = []
+
+    @classmethod
+    def VideoCapture(cls, index, api_preference=None):
+        cls.calls.append((index, api_preference))
+        return FakeCapture(opened=api_preference is None and index == cls.CAP_DSHOW + 1)
 
 
 class FakeCapture:
@@ -147,6 +157,74 @@ class CameraServiceTests(unittest.TestCase):
         status = camera.get_status()
         self.assertFalse(status.connected)
         self.assertIn("RGB 相机", status.error)
+
+    def test_rgb_probe_success_then_close_still_reports_available(self):
+        frame = np.zeros((2160, 3840, 3), dtype=np.uint8)
+        camera = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(frame=frame))
+
+        self.assertTrue(camera.probe_available())
+        status = camera.get_status().to_dict()
+
+        self.assertFalse(camera.is_open)
+        self.assertTrue(status["detected"])
+        self.assertTrue(status["available"])
+        self.assertTrue(status["connected"])
+        self.assertFalse(status["opened"])
+        self.assertFalse(status["streaming"])
+        self.assertEqual(status["actual"]["lastFrameShape"], (2160, 3840, 3))
+
+    def test_rgb_probe_failure_clears_available_state(self):
+        camera = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(opened=False))
+
+        self.assertFalse(camera.probe_available())
+        status = camera.get_status().to_dict()
+
+        self.assertFalse(status["detected"])
+        self.assertFalse(status["available"])
+        self.assertFalse(status["connected"])
+        self.assertFalse(status["opened"])
+        self.assertIn("RGB 相机", status["error"])
+
+    def test_rgb_probe_respects_configured_device_index_without_fallback(self):
+        opened_indexes: list[int] = []
+
+        def factory(index):
+            opened_indexes.append(index)
+            return FakeCapture(opened=index == 1)
+
+        camera = RgbUvcCamera(
+            config=RgbCameraConfig(device_index=1),
+            cv2_module=FakeCv2,
+            capture_factory=factory,
+        )
+
+        self.assertTrue(camera.probe_available())
+        self.assertEqual(opened_indexes, [1])
+
+    def test_rgb_probe_does_not_fallback_to_integrated_camera(self):
+        opened_indexes: list[int] = []
+
+        def factory(index):
+            opened_indexes.append(index)
+            return FakeCapture(opened=index == 0)
+
+        camera = RgbUvcCamera(
+            config=RgbCameraConfig(device_index=2),
+            cv2_module=FakeCv2,
+            capture_factory=factory,
+        )
+
+        self.assertFalse(camera.probe_available())
+        self.assertEqual(opened_indexes, [2])
+
+    def test_rgb_open_retries_directshow_encoded_index_without_scanning_other_cameras(self):
+        FakeCv2DirectShowEncoded.calls = []
+        camera = RgbUvcCamera(config=RgbCameraConfig(device_index=1), cv2_module=FakeCv2DirectShowEncoded)
+
+        camera.open()
+
+        self.assertTrue(camera.is_open)
+        self.assertEqual(FakeCv2DirectShowEncoded.calls, [(1, FakeCv2.CAP_DSHOW), (701, None)])
 
     def test_rgb_capture_returns_rgb_uint8_frame(self):
         bgr = np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8)
@@ -300,17 +378,41 @@ class CameraServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
             manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
 
+            probed = manager.probe_rgb()
             started = manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
             data, meta = manager.rgb_preview_jpeg()
             stopped = manager.stop_rgb_preview()
 
+            self.assertTrue(probed["passed"])
+            self.assertTrue(probed["status"]["available"])
             self.assertTrue(started["preview"]["rgb"]["running"])
+            self.assertTrue(started["status"]["opened"])
+            self.assertTrue(started["status"]["streaming"])
             self.assertTrue(data.startswith(b"\xff\xd8"))
             self.assertEqual(meta["previewWidth"], 320)
             self.assertEqual(meta["previewHeight"], 180)
             self.assertFalse(stopped["preview"]["rgb"]["running"])
+            self.assertTrue(stopped["status"]["detected"])
+            self.assertTrue(stopped["status"]["available"])
+            self.assertFalse(stopped["status"]["opened"])
             with self.assertRaises(CameraError):
                 manager.rgb_preview_jpeg()
+
+    def test_camera_manager_rgb_preview_can_restart_after_stop(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+
+            manager.probe_rgb()
+            first = manager.start_rgb_preview()
+            stopped = manager.stop_rgb_preview()
+            second = manager.start_rgb_preview()
+
+            self.assertTrue(first["preview"]["rgb"]["running"])
+            self.assertFalse(stopped["preview"]["rgb"]["running"])
+            self.assertTrue(stopped["status"]["available"])
+            self.assertTrue(second["preview"]["rgb"]["running"])
+            self.assertTrue(second["status"]["opened"])
 
     def test_camera_manager_rgb_preview_reports_unavailable_camera(self):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(opened=False))

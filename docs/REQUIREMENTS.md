@@ -14,7 +14,7 @@
 | 需求 | 状态 | 说明 |
 | --- | --- | --- |
 | 软件应是水果/果实口感多光谱无损检测系统 | 部分实现 | 主界面、样品流程、形态、模型入口、STM32 硬件控制层和 RGB UVC adapter 已存在；完整真实采集闭环未接入 |
-| 使用 RGB 彩色相机采集外观图像 | 部分实现/实机验证 | UI 和目录支持默认 `rgb/`，并支持用户自定义 RGB 子目录名；`RgbUvcCamera` 已在当前电脑通过 OpenCV DirectShow/UVC 验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，可返回 RGB `uint8` 帧；相机设置页已支持真实参数应用和 960x540 JPEG 预览；正式保存/采集协调器仍未接入 |
+| 使用 RGB 彩色相机采集外观图像 | 部分实现/实机验证 | UI 和目录支持默认 `rgb/`，并支持用户自定义 RGB 子目录名；`RgbUvcCamera` 已在当前电脑通过 OpenCV DirectShow/UVC 验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，可返回 RGB `uint8` 帧；相机设置页已支持 `/api/camera/rgb/probe` 真实重新检测、真实参数应用和 960x540 JPEG 预览；正式保存/采集协调器仍未接入 |
 | 使用黑白相机 + 滤光片转轮采集多光谱图像 | 部分实现/模拟 | 目录和算法支持默认 `multispectral/`，并支持用户自定义多光谱子目录名；滤光轮已有 STM32 HOME/相对旋转控制层；目标黑白相机是 DO3THINK/度申 GigE/RJ45 工业相机，`Dvp2MonoCamera` 仅做 DVP2 SDK/DLL 发现和 unavailable 状态，尚未绑定真实 DVP2 API |
 | 使用封闭暗箱和稳定光源 | 部分实现 | 升降门、RGB LED 两路、钨灯两路、风扇已有 STM32 控制命令；亮度闭环和真实采集同步未实现 |
 | 支持暗场和白板校正 | 部分实现 | 算法有反射率校正；采集流程真实硬件未接入 |
@@ -23,6 +23,7 @@
 | 设备准备页应提供普通用户的一键设备检查 | 已实现/部分真实 | “开始设备检查”复用 `/api/device/status` 和 `/api/device/self-test`；RGB 状态来自 OpenCV/DirectShow adapter probe，多光谱显示 DVP2 SDK 状态，标定显示需要确认 |
 | 相机服务层应与样品保存目录解耦 | 已实现 | `camera_service` adapter 返回 numpy 帧和状态，不决定 Sample Folder、文件名或 `rgbDirName/multispectralDirName` |
 | RGB 相机帧色彩格式必须明确 | 已实现 | `RgbUvcCamera.capture_frame()` 把 OpenCV BGR 转为 RGB，返回 RGB `uint8` H×W×3 |
+| RGB 相机状态必须区分检测、可用、打开、预览 | 已实现 | `CameraStatus` 暴露 `detected/available/opened/streaming`；probe 成功后释放句柄或停止预览不清空 `detected/available`；重新检测只使用当前配置的 device index，可兼容同 index 的两种 DirectShow 打开形式，不自动 fallback 到内置摄像头 |
 | RGB 相机设置应区分保存配置和应用到真实相机 | 已实现 | 相机设置页提供“应用到相机”和“保存为默认配置”；`/api/camera/rgb/apply-settings` 下发参数并回读 actual 状态 |
 | RGB 预览应与正式采集分离 | 已实现/部分真实 | `/api/camera/rgb/preview/start` 使用同一个 `RgbUvcCamera` 实例启动预览，`/api/camera/rgb/preview-frame` 返回 960x540 JPEG；正式采集仍保持 3840x2160 设置且未放行 |
 | 多光谱相机接口必须支持未来 16-bit mono | 已实现/接口准备 | `CameraFrame` 不强制 `uint8`，允许 `uint16` H×W 单通道；DVP2 真实取帧仍待 P1A-2 |

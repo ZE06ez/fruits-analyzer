@@ -543,10 +543,17 @@ function renderCameraSettingsStatus() {
   const rgb = state.cameraStatus?.rgb || {};
   const actual = rgb.actual || {};
   const requested = rgb.requested || {};
-  const rgbReady = Boolean(rgb.connected || rgb.available);
+  const rgbDetected = Boolean(rgb.detected || rgb.available || rgb.connected);
+  const rgbOpened = Boolean(rgb.opened || (rgb.connected && !rgb.detected));
+  const rgbStreaming = Boolean(rgb.streaming || state.cameraStatus?.preview?.rgb?.running);
   const statusDot = $("#rgbCameraStatusDot");
-  if (statusDot) statusDot.dataset.status = rgbReady ? "connected" : rgb.error ? "error" : "idle";
-  setText("rgbCameraStatusText", rgbReady ? "已连接" : (rgb.error || "未检测到 RGB 相机"));
+  if (statusDot) statusDot.dataset.status = rgbStreaming || rgbOpened ? "connected" : rgbDetected ? "waiting" : rgb.error ? "error" : "idle";
+  const rgbStatusText = rgbStreaming
+    ? "预览中"
+    : rgbDetected
+      ? "已检测 / 预览已停止"
+      : (rgb.error || "未检测到 RGB 相机");
+  setText("rgbCameraStatusText", rgbStatusText);
   setText("rgbCameraTransportText", rgb.transport || "UVC / DirectShow");
   setText("rgbCameraActualResolutionText", formatCameraResolution(actual.width || rgb.resolution?.width || requested.width, actual.height || rgb.resolution?.height || requested.height));
   setText("rgbCameraActualFpsText", Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")} FPS` : `${requested.fps || 25} FPS`);
@@ -609,6 +616,24 @@ async function refreshCameraSettingsStatus() {
     renderCameraSettingsStatus();
   } catch (error) {
     addLog(error.message || "相机状态读取失败。", "WARN");
+  }
+}
+
+async function probeRgbCamera() {
+  setText("cameraSettingsStatus", "正在重新检测 RGB 相机");
+  try {
+    const payload = await api("/api/camera/rgb/probe", {
+      method: "POST",
+      body: "{}",
+    });
+    const result = payload.result || {};
+    applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { rgb: result.status } : {}), preview: result.preview });
+    renderCameraSettingsStatus();
+    setText("cameraSettingsStatus", result.passed ? "RGB 相机已检测" : "RGB 相机检测失败");
+    addLog(result.passed ? "RGB 相机重新检测完成，已通过 DirectShow 打开并取帧。" : "RGB 相机重新检测失败。", result.passed ? "INFO" : "WARN");
+  } catch (error) {
+    setText("cameraSettingsStatus", "RGB 相机检测失败");
+    addLog(error.message || "RGB 相机重新检测失败。", "ERROR");
   }
 }
 
@@ -722,12 +747,13 @@ async function fetchRgbPreviewFrame() {
     setText("rgbLivePreviewEmpty", "");
     setText("rgbPreviewMeta", `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"}；正式拍照配置仍保持 3840 x 2160。`);
   } catch (error) {
+    const message = cameraFetchErrorMessage(error, "RGB 预览已停止");
     clearRgbPreviewTimer();
     state.rgbPreviewRunning = false;
     const image = $("#rgbLivePreview");
     if (image) image.classList.remove("active");
-    setText("rgbLivePreviewEmpty", error.message || "RGB 预览已停止");
-    addLog(error.message || "RGB 预览已停止。", "WARN");
+    setText("rgbLivePreviewEmpty", message);
+    addLog(message, "WARN");
   } finally {
     state.rgbPreviewFetching = false;
   }
@@ -1449,10 +1475,15 @@ function addLog(message, level = "INFO") {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (error) {
+    throw cameraFetchError(error, "无法连接本地后端，请确认软件后端仍在运行。");
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
     const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
@@ -1460,6 +1491,19 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload;
+}
+
+function cameraFetchError(error, fallback) {
+  const message = error?.message === "Failed to fetch" ? fallback : (error?.message || fallback);
+  const wrapped = new Error(message);
+  wrapped.originalError = error;
+  return wrapped;
+}
+
+function cameraFetchErrorMessage(error, fallback) {
+  return error?.message === "Failed to fetch"
+    ? "无法连接本地后端，请确认软件后端仍在运行。"
+    : (error?.message || fallback);
 }
 
 async function selectFolderPath({ purpose = "folder", initial = "" } = {}) {
@@ -3452,7 +3496,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   ["#cameraAutoExposureEnabled", "#cameraGainAuto", "#cameraAutoWhiteBalanceEnabled"].forEach((selector) => {
     $(selector)?.addEventListener("change", updateCameraParameterControlState);
   });
-  $("#testRgbCamera")?.addEventListener("click", refreshCameraSettingsStatus);
+  $("#testRgbCamera")?.addEventListener("click", probeRgbCamera);
   $("#applyRgbCameraSettings")?.addEventListener("click", applyRgbCameraSettings);
   $("#startRgbPreview")?.addEventListener("click", startRgbPreview);
   $("#stopRgbPreview")?.addEventListener("click", stopRgbPreview);

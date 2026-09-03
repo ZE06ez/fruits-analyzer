@@ -43,28 +43,20 @@ class CameraManager:
         with self._lock:
             rgb_status = self._status_dict(self.rgb)
             if probe_rgb and hasattr(self.rgb, "probe_available"):
-                if self._rgb_preview.get("running") and getattr(self.rgb, "is_open", False):
-                    try:
-                        self.rgb.capture_frame()
-                        rgb_status = self._status_dict(self.rgb)
-                        rgb_status["available"] = True
-                        rgb_status["connected"] = True
-                    except CameraError as exc:
-                        rgb_status = self._status_dict(self.rgb)
-                        rgb_status["available"] = False
-                        rgb_status["connected"] = False
-                        rgb_status["error"] = exc.user_message
-                        rgb_status["technicalError"] = exc.technical_message
-                        self._rgb_preview["running"] = False
-                else:
-                    rgb_ok = bool(self.rgb.probe_available())
-                    rgb_status = self._status_dict(self.rgb)
-                    rgb_status["available"] = rgb_ok
-                    rgb_status["connected"] = rgb_ok
+                rgb_status = self._probe_rgb_locked()["status"]
             multispectral_status = self._status_dict(self.multispectral)
             return {
                 "rgbCamera": self._rgb_check(rgb_status),
                 "multispectralCamera": self._multispectral_check(multispectral_status),
+            }
+
+    def probe_rgb(self) -> dict[str, Any]:
+        with self._lock:
+            result = self._probe_rgb_locked()
+            return {
+                "passed": bool(result["status"].get("available")),
+                "status": result["status"],
+                "preview": {"rgb": dict(self._rgb_preview)},
             }
 
     def apply_rgb_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -93,6 +85,10 @@ class CameraManager:
             width = int(payload.get("width") or self._rgb_preview["width"])
             height = int(payload.get("height") or self._rgb_preview["height"])
             fps = float(payload.get("fps") or self._rgb_preview["fps"])
+            print(
+                f"[camera.rgb] preview start requested: width={width}; height={height}; fps={fps}",
+                flush=True,
+            )
             self.rgb.start_stream()
             self._rgb_preview.update({
                 "running": True,
@@ -112,6 +108,7 @@ class CameraManager:
             self._rgb_preview["running"] = False
             self.rgb.stop_stream()
             self.rgb.close()
+            print("[camera.rgb] preview stopped", flush=True)
             return {
                 "status": self._status_dict(self.rgb),
                 "preview": {"rgb": dict(self._rgb_preview)},
@@ -144,6 +141,44 @@ class CameraManager:
                 self.rgb.stop_stream()
                 self.rgb.close()
                 raise
+
+    def _probe_rgb_locked(self) -> dict[str, Any]:
+        if self._rgb_preview.get("running") and getattr(self.rgb, "is_open", False):
+            try:
+                self.rgb.capture_frame()
+            except CameraError as exc:
+                rgb_status = self._status_dict(self.rgb)
+                rgb_status.update({
+                    "detected": False,
+                    "available": False,
+                    "connected": False,
+                    "opened": False,
+                    "streaming": False,
+                    "error": exc.user_message,
+                    "technicalError": exc.technical_message,
+                })
+                self._rgb_preview["running"] = False
+                self.rgb.stop_stream()
+                self.rgb.close()
+                return {"status": rgb_status}
+            rgb_status = self._status_dict(self.rgb)
+            rgb_status.update({
+                "detected": True,
+                "available": True,
+                "connected": True,
+                "opened": True,
+                "streaming": True,
+            })
+            return {"status": rgb_status}
+        rgb_ok = bool(self.rgb.probe_available())
+        rgb_status = self._status_dict(self.rgb)
+        rgb_status.update({
+            "detected": rgb_ok,
+            "available": rgb_ok,
+            "connected": bool(rgb_ok or rgb_status.get("connected")),
+            "opened": bool(rgb_status.get("opened")),
+        })
+        return {"status": rgb_status}
 
     @staticmethod
     def _rgb_restart_required(current: RgbCameraConfig, requested: RgbCameraConfig) -> bool:

@@ -21,8 +21,11 @@ class FakeCameraManager:
     def status(self):
         return {
             "rgb": {
+                "detected": True,
                 "available": True,
-                "connected": self.preview_running,
+                "connected": True,
+                "opened": self.preview_running,
+                "streaming": self.preview_running,
                 "transport": "UVC/DirectShow",
                 "requested": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
                 "actual": {"width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG", "matchesRequested": True},
@@ -38,6 +41,13 @@ class FakeCameraManager:
             "preview": {
                 "rgb": {"running": self.preview_running, "width": 960, "height": 540, "fps": 12},
             },
+        }
+
+    def probe_rgb(self):
+        return {
+            "passed": True,
+            "status": self.status()["rgb"],
+            "preview": {"rgb": self.status()["preview"]["rgb"]},
         }
 
     def apply_rgb_settings(self, payload):
@@ -227,6 +237,12 @@ class BackendDeviceApiTests(unittest.TestCase):
         status = self.get_json("/api/camera/status")
         self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
         self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
+        self.assertTrue(status["cameras"]["rgb"]["detected"])
+        self.assertFalse(status["cameras"]["rgb"]["opened"])
+
+        probed = self.post_json("/api/camera/rgb/probe")
+        self.assertTrue(probed["result"]["passed"])
+        self.assertTrue(probed["result"]["status"]["available"])
 
         applied = self.post_json("/api/camera/rgb/apply-settings", {
             "deviceIndex": 1,
@@ -247,6 +263,9 @@ class BackendDeviceApiTests(unittest.TestCase):
             self.assertTrue(response.read().startswith(b"\xff\xd8"))
         stopped = self.post_json("/api/camera/rgb/preview/stop")
         self.assertFalse(stopped["result"]["preview"]["rgb"]["running"])
+        self.assertTrue(stopped["result"]["status"]["detected"])
+        self.assertTrue(stopped["result"]["status"]["available"])
+        self.assertFalse(stopped["result"]["status"]["opened"])
 
     def test_camera_settings_ui_separates_rgb_and_multispectral_controls(self):
         html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
@@ -260,6 +279,14 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("PixelFormat", multispectral_section)
         self.assertNotIn("White Balance", multispectral_section)
         self.assertNotIn("白平衡", multispectral_section)
+
+    def test_camera_settings_ui_uses_probe_endpoint_and_relative_camera_urls(self):
+        app_js = (Path(__file__).parents[1] / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("/api/camera/rgb/probe", app_js)
+        self.assertIn('addEventListener("click", probeRgbCamera)', app_js)
+        self.assertNotIn("http://127.0.0.1", app_js)
+        self.assertNotIn("http://localhost", app_js)
 
 
 if __name__ == "__main__":

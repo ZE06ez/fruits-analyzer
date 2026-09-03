@@ -36,8 +36,10 @@ class CameraFrame:
 @dataclass
 class CameraStatus:
     role: str
+    detected: bool = False
     available: bool = False
     connected: bool = False
+    opened: bool = False
     streaming: bool = False
     sdk_available: bool | None = None
     backend: str = ""
@@ -62,8 +64,10 @@ class CameraStatus:
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            "detected": self.detected,
             "available": self.available,
             "connected": self.connected,
+            "opened": self.opened,
             "streaming": self.streaming,
             "sdkAvailable": self.sdk_available,
             "backend": self.backend,
