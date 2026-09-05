@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from camera_service import CameraError
+from device_discovery import DeviceRegistry
 from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
 from rotation_plan import build_capture_rotation_plan, mark_plan_completed
@@ -252,6 +253,7 @@ class SessionState:
             "rgbDirName": rgb_dir_name,
             "multispectralDirName": multispectral_dir_name,
             "colorDir": rgb_dir_name,
+            "multispectralDir": multispectral_dir_name,
             "depthDir": multispectral_dir_name,
             "otherImageDirs": other_image_dir_names,
             "captureStarted": capture_started,
@@ -271,9 +273,10 @@ class SessionState:
         return all(bool(self.device_prep.get(key)) for key in self.OFFLINE_PREP_KEYS)
 
     def _true_capture_prepared(self) -> bool:
-        # RGB can be verified independently, but the real-capture gate also
-        # needs the multispectral SDK and CaptureCoordinator. Keep this false
-        # until the complete hardware capture path owns the readiness contract.
+        # RGB/DVP2 preview and parameter checks can be verified independently,
+        # but the real-capture gate needs the full CaptureCoordinator and
+        # synchronized save pipeline. Keep this false until that path owns the
+        # readiness contract.
         return False
 
     def set_capture_started(self, value: bool = True) -> None:
@@ -462,7 +465,10 @@ def create_handler(
     static_dir = static_dir.resolve()
     outputs_dir = outputs_dir.resolve()
     app_dir = app_dir.resolve()
-    device_manager = device_manager or DeviceManager()
+    if device_manager is None:
+        device_manager = DeviceManager(
+            registry=DeviceRegistry(app_dir / "runtime" / "hardware_profile.json")
+        )
     model_studio_static = app_dir / "model_studio" / "static"
     try:
         from model_studio.service import ModelStudioService
@@ -543,6 +549,27 @@ def create_handler(
                     self.json_response({
                         "ok": True,
                         "device": device_manager.status(),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/devices/discover":
+                try:
+                    discover = device_manager.discover_devices()
+                    bindings = device_manager.device_bindings(discover) if hasattr(device_manager, "device_bindings") else {}
+                    self.json_response({
+                        "ok": True,
+                        "discovery": discover,
+                        "bindings": bindings,
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/devices/bindings":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "bindings": device_manager.device_bindings(),
                     })
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
@@ -708,6 +735,16 @@ def create_handler(
                     })
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/devices/bind":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.bind_device(payload),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
                 return
             if parsed.path == "/api/camera/rgb/apply-settings":
                 payload = self.read_json()
@@ -918,7 +955,7 @@ def create_handler(
                 self.json_response({
                     "ok": False,
                     "code": "DEVICE_PREPARATION_REQUIRED",
-                    "error": "请先完成设备准备：连接检查、电机、光源、相机和标定检查。",
+                    "error": "请先完成当前离线设备准备检查：连接、电机和光源。相机真实采集与完整标定将在真实采集流程中单独检查。",
                 }, status=400)
                 return None
             return info
@@ -1285,7 +1322,12 @@ def create_handler(
             params = parse_qs(query)
             dataset_dir = params.get("datasetDir", [""])[0]
             color_dir = params.get("rgbDirName", [""])[0] or params.get("colorDir", [""])[0] or None
-            depth_dir = params.get("multispectralDirName", [""])[0] or params.get("depthDir", [""])[0] or None
+            multispectral_dir = (
+                params.get("multispectralDirName", [""])[0]
+                or params.get("multispectralDir", [""])[0]
+                or params.get("depthDir", [""])[0]
+                or None
+            )
             other_dirs_raw = params.get("otherDirs", [""])[0] or params.get("otherImageDirs", [""])[0] or ""
             strict_dirs = params.get("strictImageDirs", ["0"])[0] in {"1", "true", "True", "yes"}
             source = params.get("source", [""])[0]
@@ -1301,6 +1343,7 @@ def create_handler(
                         "status": "missing",
                         "datasetDir": "",
                         "colorDir": "",
+                        "multispectralDir": "",
                         "depthDir": "",
                         "rgbCount": 0,
                         "spectralCount": 0,
@@ -1318,20 +1361,20 @@ def create_handler(
                 if source == "current":
                     session_dirs = session.snapshot()
                     color_dir = color_dir or session_dirs.get("rgbDirName") or image_directory_names_from_metadata(metadata)["rgb"]
-                    depth_dir = depth_dir or session_dirs.get("multispectralDirName") or image_directory_names_from_metadata(metadata)["multispectral"]
-                elif metadata and not color_dir and not depth_dir:
+                    multispectral_dir = multispectral_dir or session_dirs.get("multispectralDirName") or image_directory_names_from_metadata(metadata)["multispectral"]
+                elif metadata and not color_dir and not multispectral_dir:
                     image_dirs = image_directory_names_from_metadata(metadata)
                     color_dir = image_dirs["rgb"]
-                    depth_dir = image_dirs["multispectral"]
+                    multispectral_dir = image_dirs["multispectral"]
                 if strict_dirs:
-                    if not color_dir or not depth_dir:
+                    if not color_dir or not multispectral_dir:
                         raise ValueError("RGB 和多光谱目录必须选择")
                     validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
-                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
-                    if color_dir.lower() == depth_dir.lower():
+                    validate_direct_child_dir(resolved_dataset, multispectral_dir, field="多光谱图像目录")
+                    if color_dir.lower() == multispectral_dir.lower():
                         raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
                 other_dirs = normalize_other_dir_names(resolved_dataset, other_dirs_raw)
-                report = inspect_sample_folder(resolved_dataset, color_dir, depth_dir)
+                report = inspect_sample_folder(resolved_dataset, color_dir, multispectral_dir)
                 if metadata:
                     report["sampleMetadata"] = metadata
                     if session.snapshot().get("hasSample"):
@@ -1340,11 +1383,11 @@ def create_handler(
                     session.set_analysis_data_dir(report["datasetDir"])
                     session.set_image_directories(
                         rgb_dir_name=directory_name_from_report(report.get("colorDir"), color_dir),
-                        multispectral_dir_name=directory_name_from_report(report.get("depthDir"), depth_dir),
+                        multispectral_dir_name=directory_name_from_report(report.get("multispectralDir") or report.get("depthDir"), multispectral_dir),
                         other_dir_names=other_dirs,
                     )
                 report["rgbDirName"] = directory_name_from_report(report.get("colorDir"), color_dir)
-                report["multispectralDirName"] = directory_name_from_report(report.get("depthDir"), depth_dir)
+                report["multispectralDirName"] = directory_name_from_report(report.get("multispectralDir") or report.get("depthDir"), multispectral_dir)
                 report["otherImageDirs"] = other_dirs
                 self.json_response(report)
             except Exception as exc:
@@ -1355,6 +1398,7 @@ def create_handler(
                     "status": "invalid",
                     "datasetDir": dataset_dir,
                     "colorDir": "",
+                    "multispectralDir": "",
                     "depthDir": "",
                     "rgbCount": 0,
                     "spectralCount": 0,
@@ -1382,11 +1426,17 @@ def create_handler(
             params = parse_qs(query)
             dataset_dir = params.get("datasetDir", [""])[0] or str(default_sample_dataset(app_dir))
             color_dir = params.get("rgbDirName", [""])[0] or params.get("colorDir", [""])[0] or None
-            depth_dir = params.get("multispectralDirName", [""])[0] or params.get("depthDir", [""])[0] or None
+            multispectral_dir = (
+                params.get("multispectralDirName", [""])[0]
+                or params.get("multispectralDir", [""])[0]
+                or params.get("depthDir", [""])[0]
+                or None
+            )
             if not dataset_dir:
                 self.json_response({
                     "ok": True,
                     "colorDir": "",
+                    "multispectralDir": "",
                     "depthDir": "",
                     "images": [],
                 })
@@ -1396,19 +1446,19 @@ def create_handler(
 
                 resolved_dataset = resolve_user_path(dataset_dir, app_dir)
                 metadata = read_sample_metadata(resolved_dataset)
-                if metadata and not color_dir and not depth_dir:
+                if metadata and not color_dir and not multispectral_dir:
                     image_dirs = image_directory_names_from_metadata(metadata)
                     color_dir = image_dirs["rgb"]
-                    depth_dir = image_dirs["multispectral"]
+                    multispectral_dir = image_dirs["multispectral"]
                 if color_dir:
                     validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
-                if depth_dir:
-                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
-                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                if multispectral_dir:
+                    validate_direct_child_dir(resolved_dataset, multispectral_dir, field="多光谱图像目录")
+                if color_dir and multispectral_dir and color_dir.lower() == multispectral_dir.lower():
                     raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
-                color_path, depth_path = resolve_image_analysis_dirs(resolved_dataset, color_dir, depth_dir)
+                color_path, spectral_path = resolve_image_analysis_dirs(resolved_dataset, color_dir, multispectral_dir)
                 color_files = list_images(color_path)
-                spectral_files = list_images(depth_path) if depth_path else []
+                spectral_files = list_images(spectral_path) if spectral_path else []
                 pair_count = min(max(len(color_files), len(spectral_files)), 60) if spectral_files else min(len(color_files), 60)
 
                 def row(path: Path) -> dict:
@@ -1420,13 +1470,15 @@ def create_handler(
                 self.json_response({
                     "ok": True,
                     "colorDir": str(color_path),
-                    "depthDir": str(depth_path) if depth_path else "",
+                    "multispectralDir": str(spectral_path) if spectral_path else "",
+                    "depthDir": str(spectral_path) if spectral_path else "",
                     "rgbDirName": color_path.name,
-                    "multispectralDirName": depth_path.name if depth_path else "",
+                    "multispectralDirName": spectral_path.name if spectral_path else "",
                     "images": [
                         {
                             "index": index,
                             "color": row(color_files[index % len(color_files)]),
+                            "multispectral": row(spectral_files[index % len(spectral_files)]) if spectral_files else None,
                             "depth": row(spectral_files[index % len(spectral_files)]) if spectral_files else None,
                         }
                         for index in range(pair_count)
@@ -1548,6 +1600,7 @@ def create_handler(
                     "rgbDirName": image_dirs["rgb"],
                     "multispectralDirName": image_dirs["multispectral"],
                     "colorDir": image_dirs["rgb"],
+                    "multispectralDir": image_dirs["multispectral"],
                     "depthDir": image_dirs["multispectral"],
                     "captureRotationPlan": metadata.get("sample_rotation") if isinstance(metadata.get("sample_rotation"), dict) else info.get("captureRotationPlan"),
                     "message": "本次拍摄数据已保存",
@@ -1560,7 +1613,7 @@ def create_handler(
             session_info = session.snapshot()
             dataset_dir = payload.get("datasetDir") or str(default_sample_dataset(app_dir))
             color_dir = payload.get("rgbDirName") or payload.get("colorDir") or session_info.get("rgbDirName") or None
-            depth_dir = payload.get("multispectralDirName") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
+            multispectral_dir = payload.get("multispectralDirName") or payload.get("multispectralDir") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
             if not dataset_dir:
                 self.json_response({"ok": False, "error": "请先选择本次拍摄的样品文件夹。"}, status=400)
                 return
@@ -1568,16 +1621,16 @@ def create_handler(
                 resolved_for_validation = resolve_user_path(dataset_dir, app_dir)
                 if color_dir:
                     validate_direct_child_dir(resolved_for_validation, color_dir, field="RGB 图像目录")
-                if depth_dir:
-                    validate_direct_child_dir(resolved_for_validation, depth_dir, field="多光谱图像目录")
-                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                if multispectral_dir:
+                    validate_direct_child_dir(resolved_for_validation, multispectral_dir, field="多光谱图像目录")
+                if color_dir and multispectral_dir and color_dir.lower() == multispectral_dir.lower():
                     raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
             except Exception as exc:
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
                 return
             session.set_analysis_data_dir(dataset_dir)
-            if color_dir and depth_dir:
-                session.set_image_directories(rgb_dir_name=color_dir, multispectral_dir_name=depth_dir)
+            if color_dir and multispectral_dir:
+                session.set_image_directories(rgb_dir_name=color_dir, multispectral_dir_name=multispectral_dir)
             density = _float(payload.get("densityGCm3"), 1.08)
             voxel = _float(payload.get("voxelSizeMm"), 2.0)
             max_pairs = int(_float(payload.get("maxPairs"), 10))
@@ -1610,7 +1663,7 @@ def create_handler(
                         dataset_dir,
                         output_dir,
                         color_dir=color_dir,
-                        depth_dir=depth_dir,
+                        depth_dir=multispectral_dir,
                         options=options,
                         progress=progress,
                         cancel_flag=cancel.is_set,
@@ -1687,19 +1740,19 @@ def create_handler(
                 self.json_response({"ok": False, "error": "请先在形态分析页面加载当前样品数据。"}, status=400)
                 return None
             color_dir = payload.get("rgbDirName") or payload.get("colorDir") or session_info.get("rgbDirName") or None
-            depth_dir = payload.get("multispectralDirName") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
+            multispectral_dir = payload.get("multispectralDirName") or payload.get("multispectralDir") or payload.get("depthDir") or session_info.get("multispectralDirName") or None
             try:
                 resolved_dataset = resolve_user_path(dataset_dir, app_dir)
                 metadata = read_sample_metadata(resolved_dataset)
-                if metadata and (not color_dir or not depth_dir):
+                if metadata and (not color_dir or not multispectral_dir):
                     image_dirs = image_directory_names_from_metadata(metadata)
                     color_dir = color_dir or image_dirs["rgb"]
-                    depth_dir = depth_dir or image_dirs["multispectral"]
+                    multispectral_dir = multispectral_dir or image_dirs["multispectral"]
                 if color_dir:
                     validate_direct_child_dir(resolved_dataset, color_dir, field="RGB 图像目录")
-                if depth_dir:
-                    validate_direct_child_dir(resolved_dataset, depth_dir, field="多光谱图像目录")
-                if color_dir and depth_dir and color_dir.lower() == depth_dir.lower():
+                if multispectral_dir:
+                    validate_direct_child_dir(resolved_dataset, multispectral_dir, field="多光谱图像目录")
+                if color_dir and multispectral_dir and color_dir.lower() == multispectral_dir.lower():
                     raise ValueError("RGB 图像目录和多光谱图像目录不能相同")
                 sample_id = str(session_info.get("sampleId") or payload.get("sampleId") or metadata.get("sample_id") or metadata.get("sampleId") or "").strip()
                 fruit_type = session_info.get("fruitType") or payload.get("fruitType") or metadata.get("fruit_type") or metadata.get("fruitType") or ""
@@ -1711,7 +1764,7 @@ def create_handler(
                     sample_id=sample_id,
                     sample_name=session_info.get("sampleName") or metadata.get("sample_name") or metadata.get("sampleName") or "",
                     rgb_dir=color_dir,
-                    spectral_dir=depth_dir,
+                    spectral_dir=multispectral_dir,
                     capture_time=metadata.get("captured_at") or metadata.get("capturedAt") or metadata.get("created_at") or "",
                     fruit_type=fruit_type,
                     variety=variety,
@@ -1741,9 +1794,11 @@ def create_handler(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            self.wfile.flush()
 
         def binary_response(self, data: bytes, content_type: str, headers: dict[str, str] | None = None, status: int = 200) -> None:
             self.send_response(status)
@@ -1751,9 +1806,11 @@ def create_handler(
             self.send_header("Cache-Control", "no-store")
             for key, value in (headers or {}).items():
                 self.send_header(key, value)
+            self.send_header("Connection", "close")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            self.wfile.flush()
 
         def serve_file(self, root: Path, relative: str) -> None:
             relative = unquote(relative).replace("\\", "/")

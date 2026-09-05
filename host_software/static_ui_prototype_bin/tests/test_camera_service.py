@@ -636,6 +636,44 @@ class CameraServiceTests(unittest.TestCase):
             self.assertTrue(second["preview"]["rgb"]["running"])
             self.assertTrue(second["status"]["opened"])
 
+    def test_camera_manager_capture_rgb_frame_temporarily_opens_and_closes_when_preview_stopped(self):
+        capture = FakeCapture(frame=np.zeros((12, 16, 3), dtype=np.uint8))
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: capture)
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+
+            frame, meta = manager.capture_rgb_frame()
+
+            self.assertEqual(frame.shape, (12, 16, 3))
+            self.assertFalse(rgb.is_open)
+            self.assertTrue(capture.released)
+            self.assertTrue(meta["openedForCapture"])
+            self.assertFalse(meta["previewWasRunning"])
+            self.assertEqual(meta["device"]["deviceIndex"], 1)
+            self.assertEqual(meta["requestedSettings"]["width"], 3840)
+
+    def test_camera_manager_capture_rgb_frame_reuses_running_preview_handle(self):
+        captures: list[FakeCapture] = []
+
+        def factory(index):
+            capture = FakeCapture(frame=np.zeros((10, 11, 3), dtype=np.uint8))
+            captures.append(capture)
+            return capture
+
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=factory)
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+
+            frame, meta = manager.capture_rgb_frame()
+
+            self.assertEqual(frame.shape, (10, 11, 3))
+            self.assertEqual(len(captures), 1)
+            self.assertTrue(rgb.is_open)
+            self.assertFalse(captures[0].released)
+            self.assertTrue(meta["previewWasRunning"])
+            self.assertFalse(meta["openedForCapture"])
+
     def test_camera_manager_rgb_preview_reports_unavailable_camera(self):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(opened=False))
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:

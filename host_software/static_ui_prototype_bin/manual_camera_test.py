@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import time
 from pathlib import Path
 
-from camera_service import CameraError, Dvp2MonoCamera, RgbCameraConfig, RgbUvcCamera
+from camera_service import CameraError, CameraManager, Dvp2MonoCamera, RgbCameraConfig, RgbUvcCamera
+from capture_coordinator import CaptureCoordinator
 
 
 def run_rgb_test(config: RgbCameraConfig, save: bool, frames: int) -> int:
@@ -119,6 +121,244 @@ def run_multispectral_test(
         camera.close()
 
 
+class CameraOnlyValidationHardware:
+    """Manual-test controller that marks hardware safety as intentionally bypassed."""
+
+    hardware_safety_bypassed_for_manual_camera_validation = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object | None]] = []
+        self.safe_stop_count = 0
+        self.rgb_mask = 0x00
+        self.tungsten_mask = 0x00
+        self.fan_on_state = False
+        self.door_closed = False
+
+    def _record(self, name: str, value: object | None = None) -> None:
+        self.calls.append((name, value))
+
+    def ping(self) -> bool:
+        self._record("manual_bypass_ping")
+        return True
+
+    def get_error_status(self) -> int:
+        self._record("manual_bypass_get_error_status")
+        return 0x00
+
+    def door_close(self) -> None:
+        self._record("manual_bypass_door_close")
+        self.door_closed = True
+
+    def fan_on(self) -> None:
+        self._record("manual_bypass_fan_on")
+        self.fan_on_state = True
+
+    def rgb_led_set(self, mask: int) -> None:
+        self._record("manual_bypass_rgb_led_set", mask)
+        self.rgb_mask = int(mask)
+
+    def tungsten_set(self, mask: int) -> None:
+        self._record("manual_bypass_tungsten_set", mask)
+        self.tungsten_mask = int(mask)
+
+    def ensure_rgb_capture_ready(self) -> None:
+        self._record("manual_bypass_ensure_rgb_capture_ready")
+        if not self.door_closed or not self.fan_on_state or self.rgb_mask == 0x00 or self.tungsten_mask != 0x00:
+            raise RuntimeError("manual RGB camera-only interlock state was not prepared")
+
+    def safe_stop(self) -> None:
+        self._record("manual_bypass_safe_stop")
+        self.safe_stop_count += 1
+        self.rgb_mask = 0x00
+        self.tungsten_mask = 0x00
+
+
+def run_rgb_capture_once_validation(
+    *,
+    config: RgbCameraConfig,
+    output_root: Path,
+    sample_name: str,
+    preview_running: bool,
+    collision_check: bool,
+    failure_device_index: int | None,
+    camera_only_validation: bool,
+) -> int:
+    if not camera_only_validation:
+        print("Hardware-backed manual validation is not wired in this CLI yet.")
+        print("Use --camera-only-validation to verify RGB production capture/save without claiming STM32 safety success.")
+        return 2
+
+    output_dir = _next_manual_sample_dir(output_root, sample_name)
+    rgb = RgbUvcCamera(config=config)
+    manager = CameraManager(rgb_camera=rgb)
+    hardware = CameraOnlyValidationHardware()
+    coordinator = CaptureCoordinator(camera_manager=manager, hardware_controller=hardware)
+    preview_after = None
+    try:
+        probe = manager.probe_rgb()
+        status = probe.get("status") or manager.status().get("rgb") or {}
+        preview_meta = {"mode": "not_running", "previewFrameReadableAfterCapture": None}
+        if preview_running:
+            manager.start_rgb_preview()
+            preview_meta["mode"] = "running_reuse_existing_handle"
+        result = coordinator.run_rgb_capture(
+            sample_id=sample_name,
+            output_dir=output_dir,
+            rgb_dir_name="rgb",
+            view_index=0,
+        )
+        result["metadata"]["hardwareSafetyBypassedForManualCameraValidation"] = True
+        result["metadata"]["manualValidationHardwareCalls"] = hardware.calls
+        _write_manual_metadata(output_dir, result["metadata"])
+        if preview_running:
+            preview_data, preview_after = manager.rgb_preview_jpeg()
+            preview_meta["previewFrameReadableAfterCapture"] = bool(preview_data.startswith(b"\xff\xd8"))
+        frame_meta = _first_frame_metadata(result)
+        if result.get("state") != "completed" or not frame_meta:
+            _print_capture_result(status, result, output_dir, preview_meta, None)
+            return 2
+        saved_path = Path(frame_meta["path"])
+        png_check = _inspect_saved_png(saved_path)
+        _print_capture_result(status, result, output_dir, preview_meta, png_check)
+        if collision_check:
+            collision = coordinator.run_rgb_capture(
+                sample_id=sample_name,
+                output_dir=output_dir,
+                rgb_dir_name="rgb",
+                view_index=0,
+            )
+            print()
+            print("Path collision check:")
+            print(f"  state: {collision.get('state')}")
+            print(f"  code: {(collision.get('error') or {}).get('code')}")
+            print(f"  originalFileSizeBytes: {saved_path.stat().st_size if saved_path.exists() else '--'}")
+        if failure_device_index is not None:
+            _run_rgb_failure_validation(config, failure_device_index, output_root)
+        return 0 if png_check["readable"] else 2
+    except CameraError as exc:
+        print(f"Camera error: {exc.user_message}")
+        print(f"Technical detail: {exc.technical_message}")
+        return 2
+    finally:
+        if preview_after is not None:
+            try:
+                manager.stop_rgb_preview()
+            except Exception as exc:
+                print(f"preview stop warning: {exc}")
+        elif preview_running:
+            try:
+                manager.stop_rgb_preview()
+            except Exception as exc:
+                print(f"preview stop warning: {exc}")
+
+
+def _run_rgb_failure_validation(config: RgbCameraConfig, failure_device_index: int, output_root: Path) -> None:
+    bad_config = RgbCameraConfig.from_dict({**config.to_dict(), "deviceIndex": failure_device_index})
+    output_dir = _next_manual_sample_dir(output_root, f"failure_device_{failure_device_index}")
+    manager = CameraManager(rgb_camera=RgbUvcCamera(config=bad_config))
+    coordinator = CaptureCoordinator(
+        camera_manager=manager,
+        hardware_controller=CameraOnlyValidationHardware(),
+    )
+    result = coordinator.run_rgb_capture(
+        sample_id=f"failure_device_{failure_device_index}",
+        output_dir=output_dir,
+        rgb_dir_name="rgb",
+        view_index=0,
+    )
+    png_path = output_dir / "rgb" / "rgb_view_000.png"
+    print()
+    print("Failure scenario:")
+    print(f"  deviceIndex: {failure_device_index}")
+    print(f"  state: {result.get('state')}")
+    print(f"  code: {(result.get('error') or {}).get('code')}")
+    print(f"  message: {(result.get('error') or {}).get('message')}")
+    print(f"  pngExists: {png_path.exists()}")
+    print(f"  successMetadataFrames: {len((result.get('metadata') or {}).get('frames') or [])}")
+
+
+def _next_manual_sample_dir(output_root: Path, sample_name: str) -> Path:
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    root = output_root / "p1b3_rgb_capture"
+    root.mkdir(parents=True, exist_ok=True)
+    base = root / f"{timestamp}_{sample_name}"
+    if not base.exists():
+        return base
+    suffix = 1
+    while True:
+        candidate = root / f"{timestamp}_{sample_name}_{suffix:02d}"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def _first_frame_metadata(result: dict) -> dict | None:
+    frames = (result.get("metadata") or {}).get("frames") or []
+    return frames[0] if frames else None
+
+
+def _inspect_saved_png(path: Path) -> dict:
+    from PIL import Image
+    import numpy as np
+
+    with Image.open(path) as image:
+        array = np.asarray(image)
+        return {
+            "readable": True,
+            "width": int(image.width),
+            "height": int(image.height),
+            "mode": image.mode,
+            "shape": tuple(int(value) for value in array.shape),
+            "dtype": str(array.dtype),
+            "channels": int(array.shape[2]) if array.ndim == 3 else 1,
+            "fileSizeBytes": path.stat().st_size,
+        }
+
+
+def _write_manual_metadata(output_dir: Path, metadata: dict) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "capture_metadata_skeleton.json"
+    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _print_capture_result(
+    status: dict,
+    result: dict,
+    output_dir: Path,
+    preview_meta: dict,
+    png_check: dict | None,
+) -> None:
+    frame_meta = _first_frame_metadata(result) or {}
+    requested = frame_meta.get("requestedSettings") or status.get("requested") or {}
+    actual = frame_meta.get("actualSettings") or status.get("actual") or {}
+    device = frame_meta.get("device") or {}
+    print("RGB device:")
+    print(f"  deviceIndex: {device.get('deviceIndex', status.get('deviceIndex', '--'))}")
+    print(f"  transport: {device.get('transport', status.get('transport', '--'))}")
+    print(f"Capture status: {result.get('state')}")
+    print(f"Requested resolution: {requested.get('width', '--')}x{requested.get('height', '--')}")
+    print(f"Actual resolution: {actual.get('width', '--')}x{actual.get('height', '--')}")
+    print(f"Requested FPS: {requested.get('fps', '--')}")
+    print(f"Actual FPS: {actual.get('fps', '--')}")
+    print(f"Codec: requested={requested.get('fourcc', '--')} actual={actual.get('fourcc', '--')}")
+    print(f"Frame shape: {frame_meta.get('height', '--')}x{frame_meta.get('width', '--')}x{frame_meta.get('channels', '--')}")
+    print(f"dtype: {frame_meta.get('dtype', '--')}")
+    print(f"channels: {frame_meta.get('channels', '--')}")
+    print(f"pixel order: {frame_meta.get('pixelOrder', '--')}")
+    print(f"source pixel order: {frame_meta.get('sourcePixelOrder', '--')}")
+    print(f"Capture timestamp: {frame_meta.get('timestamp', '--')}")
+    print(f"Saved path: {frame_meta.get('path', '--')}")
+    print(f"File size: {(png_check or {}).get('fileSizeBytes', '--')}")
+    print(f"Preview ownership mode: {preview_meta.get('mode')}")
+    print(f"Preview frame readable after capture: {preview_meta.get('previewFrameReadableAfterCapture')}")
+    print(f"Output directory: {output_dir}")
+    print("PNG check:")
+    _print_section("  png", png_check or {})
+    print("Metadata:")
+    _print_section("  frame", frame_meta)
+    print(f"hardwareSafetyBypassedForManualCameraValidation: {bool((result.get('metadata') or {}).get('hardwareSafetyBypassedForManualCameraValidation'))}")
+
+
 def _run_frame_loop(camera: RgbUvcCamera, frames: int) -> None:
     success = 0
     failure = 0
@@ -207,6 +447,7 @@ def _print_section(name: str, values: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manual camera verification; not used by unittest.")
     parser.add_argument("--rgb", action="store_true", help="Test RGB UVC camera through OpenCV DirectShow.")
+    parser.add_argument("--rgb-capture-once", action="store_true", help="Run protected CaptureCoordinator -> CameraManager -> RgbUvcCamera single-frame PNG validation.")
     parser.add_argument("--multispectral", action="store_true", help="Test DO3THINK DVP2 GigE monochrome camera.")
     parser.add_argument("--device-index", type=int, default=1, help="OpenCV device index, default: 1 for the current development PC.")
     parser.add_argument("--width", type=int, default=3840, help="Requested width, default: 3840.")
@@ -222,6 +463,12 @@ def main() -> int:
     parser.add_argument("--serial", default=None, help="DVP2 camera serial number, default: GP23400004963.")
     parser.add_argument("--frames", type=int, default=1, help="Number of frames to capture for stability test.")
     parser.add_argument("--save", action="store_true", help="Save one frame to a temporary test directory.")
+    parser.add_argument("--output-root", default="manual_test_output", help="Manual validation output root.")
+    parser.add_argument("--sample-name", default="sample_test", help="Manual validation sample name.")
+    parser.add_argument("--preview-running", action="store_true", help="Start RGB preview before protected capture to validate handle reuse.")
+    parser.add_argument("--collision-check", action="store_true", help="Attempt the same capture path again to verify overwrite protection.")
+    parser.add_argument("--failure-device-index", type=int, default=None, help="Optional wrong RGB device index for failure-path validation.")
+    parser.add_argument("--camera-only-validation", action="store_true", help="Bypass real STM32/light hardware only for manual RGB camera capture/save validation.")
     args = parser.parse_args()
 
     if args.rgb:
@@ -238,6 +485,28 @@ def main() -> int:
             auto_white_balance=args.auto_white_balance,
         )
         return run_rgb_test(config, args.save, max(1, args.frames))
+    if args.rgb_capture_once:
+        config = RgbCameraConfig(
+            device_index=args.device_index,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            fourcc=args.fourcc,
+            exposure=args.exposure,
+            gain=args.gain,
+            white_balance=args.white_balance,
+            auto_exposure=args.auto_exposure,
+            auto_white_balance=args.auto_white_balance,
+        )
+        return run_rgb_capture_once_validation(
+            config=config,
+            output_root=Path(args.output_root),
+            sample_name=args.sample_name,
+            preview_running=args.preview_running,
+            collision_check=args.collision_check,
+            failure_device_index=args.failure_device_index,
+            camera_only_validation=args.camera_only_validation,
+        )
     if args.multispectral:
         return run_multispectral_test(
             sdk_dir=args.sdk_dir,
@@ -247,7 +516,7 @@ def main() -> int:
             save=args.save,
             frames=max(1, args.frames),
         )
-    parser.error("Choose a manual test, for example: --rgb or --multispectral")
+    parser.error("Choose a manual test, for example: --rgb, --rgb-capture-once or --multispectral")
     return 2
 
 

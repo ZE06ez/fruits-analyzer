@@ -4,7 +4,7 @@ import io
 import threading
 from typing import Any
 
-from .base import CameraStatus
+from .base import CameraFrame, CameraStatus
 from .config import RgbCameraConfig
 from .dvp2_mono import Dvp2MonoCamera
 from .errors import CameraError
@@ -210,6 +210,28 @@ class CameraManager:
                 self.rgb.close()
                 raise
 
+    def capture_rgb_frame(self) -> tuple[CameraFrame, dict[str, Any]]:
+        """Capture one production RGB frame through the owned RGB adapter."""
+
+        with self._lock:
+            was_open = bool(getattr(self.rgb, "is_open", False))
+            preview_was_running = bool(self._rgb_preview.get("running") and was_open)
+            frame = self.rgb.capture_frame()
+            status = self._status_dict(self.rgb)
+            metadata = {
+                "status": status,
+                "preview": self._preview_status(),
+                "previewWasRunning": preview_was_running,
+                "openedForCapture": not was_open,
+                "requestedSettings": dict(status.get("requested") or {}),
+                "actualSettings": dict(status.get("actual") or {}),
+                "device": self._camera_device_metadata(status, frame.metadata),
+            }
+            if not was_open:
+                self.rgb.stop_stream()
+                self.rgb.close()
+            return frame, metadata
+
     def start_multispectral_preview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         with self._lock:
@@ -372,6 +394,24 @@ class CameraManager:
                 "error": "相机状态读取失败",
                 "technicalError": str(exc),
             }
+
+    @staticmethod
+    def _camera_device_metadata(status: dict[str, Any], frame_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        requested = status.get("requested") or {}
+        actual = status.get("actual") or {}
+        frame_metadata = frame_metadata or {}
+        return {
+            "role": status.get("role") or "rgb",
+            "deviceIndex": (
+                frame_metadata.get("deviceIndex")
+                if frame_metadata.get("deviceIndex") is not None
+                else requested.get("deviceIndex")
+            ),
+            "deviceName": actual.get("deviceName") or status.get("deviceName") or "",
+            "stableId": actual.get("stableId") or status.get("stableId") or "",
+            "backend": actual.get("backend") or status.get("backend") or "opencv",
+            "transport": status.get("transport") or actual.get("transport") or "",
+        }
 
     def _rgb_check(self, status: dict[str, Any]) -> dict[str, Any]:
         connected = bool(status.get("connected") or status.get("available"))

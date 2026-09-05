@@ -123,7 +123,7 @@ def remove_outliers(points, k=12, std_ratio=2.0):
     return points[keep]
 
 
-def align_pointclouds_icp(pointclouds):
+def align_pointclouds_by_centroid(pointclouds):
     if not pointclouds:
         return np.empty((0, 3), dtype=np.float32)
     ref = pointclouds[0]
@@ -137,6 +137,11 @@ def align_pointclouds_icp(pointclouds):
         aligned = src + (dst_c - src_c)
         merged = np.vstack([merged, aligned])
     return merged
+
+
+def align_pointclouds_icp(pointclouds):
+    """Deprecated compatibility alias for centroid translation alignment."""
+    return align_pointclouds_by_centroid(pointclouds)
 
 
 def refine_mask_center(mask):
@@ -388,6 +393,7 @@ def load_ply_points_colors(path):
 
 
 def pointcloud_volume(points, voxel_size=1.0):
+    """Estimate volume from occupied voxel count, not a watertight mesh."""
     if points is None or points.size == 0:
         return 0.0
     coords = np.floor(points / voxel_size).astype(np.int64)
@@ -455,7 +461,7 @@ def reconstruct_sfm(color_dir, depth_dir, output_dir, fx, fy, cx, cy, max_pairs=
         points = depth_to_pointcloud(depth, pose, K, mask=mask_i)
         pointclouds.append(points)
 
-    merged = align_pointclouds_icp(pointclouds)
+    merged = align_pointclouds_by_centroid(pointclouds)
     pre_n = len(merged)
     voxel_size = 2.0 if pre_n > 300000 else 1.0
     merged = merge_pointclouds([merged], voxel_size=voxel_size)

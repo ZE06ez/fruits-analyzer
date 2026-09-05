@@ -147,13 +147,13 @@
           <article class="view-page active" data-page="motor">
             <div class="panel-title">
               <h3>电机检测 / Motor Check</h3>
-              <span>单片机待接入</span>
+              <span>STM32 基础控制</span>
             </div>
             <section class="device-check-panel">
               <div class="device-check-head">
                 <div>
                   <strong>设备检查</strong>
-                  <small id="deviceCheckSummary">未检查；包含滤光轮归零/运动检查，真实相机当前尚未接入。</small>
+                  <small id="deviceCheckSummary">未检查；包含 STM32、滤光轮、光源和相机 adapter 状态。</small>
                 </div>
                 <button class="primary-action" id="startDeviceCheck" type="button">开始设备检查</button>
               </div>
@@ -162,6 +162,34 @@
                 <summary>查看设备详情</summary>
                 <pre id="deviceDetailText">暂无设备详情</pre>
               </details>
+            </section>
+            <section class="device-check-panel">
+              <div class="device-check-head">
+                <div>
+                  <strong>设备选择</strong>
+                  <small id="deviceDiscoverySummary">未扫描；COM 和 camera index 只作为当前位置。</small>
+                </div>
+                <button class="primary-action" id="refreshDeviceDiscovery" type="button">重新扫描</button>
+              </div>
+              <div class="device-binding-grid" aria-label="设备绑定">
+                <label>主控制器
+                  <select id="mainControllerSelect" data-device-role="MAIN_CONTROLLER"></select>
+                </label>
+                <button class="test-button secondary" data-bind-device-role="MAIN_CONTROLLER" type="button">绑定</button>
+                <label>RGB 相机
+                  <select id="rgbCameraSelect" data-device-role="RGB_CAMERA"></select>
+                </label>
+                <button class="test-button secondary" data-bind-device-role="RGB_CAMERA" type="button">绑定</button>
+                <label>多光谱相机
+                  <select id="multispectralCameraSelect" data-device-role="MULTISPECTRAL_CAMERA"></select>
+                </label>
+                <button class="test-button secondary" data-bind-device-role="MULTISPECTRAL_CAMERA" type="button">绑定</button>
+              </div>
+              <div class="status-strip">
+                <span id="mainControllerBindingStatus">主控制器: 未绑定</span>
+                <span id="rgbCameraBindingStatus">RGB: 未绑定</span>
+                <span id="multispectralCameraBindingStatus">多光谱: 未绑定</span>
+              </div>
             </section>
             <div class="control-grid">
               <button class="test-button" data-test="motor">运行电机自检</button>
@@ -205,8 +233,8 @@
             </div>
             <div class="control-grid">
               <button class="test-button" data-test="camera">运行相机自检</button>
-              <button class="test-button secondary" data-log="已尝试打开彩色相机预览，当前为离线占位画面">彩色相机预览</button>
-              <button class="test-button secondary" data-log="已尝试打开多光谱相机预览，当前为离线占位画面">多光谱预览</button>
+              <button class="test-button secondary" data-log="请在相机设置页打开 RGB 真实预览；预览不代表正式采集已就绪">彩色相机预览</button>
+              <button class="test-button secondary" data-log="请在相机设置页打开 DVP2 多光谱真实预览；预览不代表正式采集已就绪">多光谱预览</button>
             </div>
           </article>
 
@@ -406,8 +434,8 @@
                 <input id="datasetDir" value="" placeholder="请选择本次拍摄的样品文件夹" readonly />
                 <label for="colorDir">RGB 图像目录名</label>
                 <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" readonly />
-                <label for="depthDir">多光谱图像目录名</label>
-                <input id="depthDir" value="multispectral" placeholder="例如 multispectral、spectral" readonly />
+                <label for="multispectralDir">多光谱图像目录名</label>
+                <input id="multispectralDir" value="multispectral" placeholder="例如 multispectral、spectral" readonly />
                 <div class="data-check-card" id="dataCheckCard" data-status="empty">
                   <strong id="dataCheckTitle">暂无数据目录</strong>
                   <span id="dataCheckSummary">请选择本次拍摄或其他文件夹。</span>
@@ -672,7 +700,7 @@
                     </div>
                     <div class="calibration-confirm">
                       <span id="calibrationConfirmText">未确认。本按钮仅记录人工检查结果，不代表 RGB ↔ 多光谱配准已完成。</span>
-                      <button id="confirmCalibration" type="button">确认检查通过</button>
+                      <button id="confirmCalibration" type="button">确认标定检查</button>
                     </div>
                   </section>
                 </div>
@@ -837,7 +865,7 @@
           <div class="metric-row"><span>样品面积</span><strong id="metricDepth">--</strong></div>
           <div class="metric-row"><span>水平宽度</span><strong id="metricDiameter">--</strong></div>
           <div class="metric-row"><span>垂直高度</span><strong id="metricHeight">--</strong></div>
-          <div class="metric-row"><span>三维体积</span><strong id="metricVolume">待接入</strong></div>
+          <div class="metric-row"><span>估算体积</span><strong id="metricVolume">待接入</strong></div>
           <div class="metric-row"><span>重量估算</span><strong id="metricWeight">待接入</strong></div>
           <div class="metric-row"><span>果粉覆盖率</span><strong id="metricBloomSide">--</strong></div>
         </section>
@@ -941,8 +969,8 @@
         <button id="clearLog">清空</button>
         <button id="saveLog">保存</button>
       </div>
-      <pre id="runLog">[INFO] 界面已载入，STM32待连接，相机SDK尚未接入。
-[INFO] 单片机、相机、光源、电机尚未接入真实通信。
+      <pre id="runLog">[INFO] 界面已载入，STM32 待连接；RGB/DVP2 adapter 已接入，正式采集仍待 CaptureCoordinator。
+[INFO] STM32 基础控制层与相机预览/参数链路已接入；完整整机流程仍需实机联调。
 [INFO] 当前形态分析以两相机二维测算为主，三维点云建模作为后续预留入口。</pre>
     </footer>
   </div>

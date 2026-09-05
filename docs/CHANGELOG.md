@@ -2,6 +2,30 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-05 P1B-3.6 统一设备发现、识别与选择基础层
+
+- 修改内容：新增 `device_discovery.py`，定义 JSON-friendly 的 `DeviceCandidate`、`DeviceBinding`、`DeviceRegistry`、`DeviceDiscovery` 和逻辑角色 `MAIN_CONTROLLER`、`ROTATION_CONTROLLER`、`RGB_CAMERA`、`MULTISPECTRAL_CAMERA`。串口 discovery 枚举 pyserial 可提供的 `VID/PID/serial_number/manufacturer/product/location/hwid`，并对未占用 COM 只执行 open/PING/close；已连接端口标记 `inUse=true`，不二次抢占。RGB discovery 扫描有限 OpenCV DirectShow index，记录 `deviceIndex/backend/opened/frameReadable/width/height/fps/fourcc`，但 `stableId=null`，不把 index 当永久身份，也不自动选择第一台。DVP2 discovery 复用 SDK 枚举信息，按 serial/original serial/user id/friendly name 建立候选，稳定身份优先 serial。新增运行时 `runtime/hardware_profile.json` 绑定文件，保存 stableId 与 `lastPort/lastDeviceIndex/backend` 这类 last known location cache。后端新增 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind`；主 UI 设备准备页新增最小设备选择面板，支持扫描候选、按角色选择并保存绑定。
+- 修改文件：`host_software/static_ui_prototype_bin/device_discovery.py`、`host_software/static_ui_prototype_bin/serial_service.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/styles.css`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/tests/test_device_discovery.py`、`host_software/static_ui_prototype_bin/tests/test_serial_service.py`、`host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`、`docs/PROJECT_CONTEXT.md`、`docs/REQUIREMENTS.md`、`docs/ARCHITECTURE.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 固件协议，不新增 GET_DEVICE_TYPE 假回复，不执行门/电机/光源/滤光轮动作，不实现 DVP2 正式 capture，不强行通过 RGB 实机验收，不自动选择第一台相机，不开放 `/api/capture/start`，`trueCapturePrepared` 继续保持 false。
+
+## 2026-09-05 P1B-3 CaptureCoordinator RGB 正式单帧采集与保存
+
+- 修改内容：新增 `CameraManager.capture_rgb_frame()`，通过同一个 `RgbUvcCamera` adapter 获取正式 RGB `CameraFrame` 和 requested/actual/device 状态快照；预览运行中复用已有 UVC 句柄，预览停止时临时打开、取帧后关闭。扩展 `CaptureCoordinator.run_rgb_capture()`，复用 P1B-2 RGB 安全准备链，在 `capture_safety_check` 后执行 `rgb_capture`，校验 RGB `uint8` H×W×3 非空帧，默认保存 `<rgbDirName>/rgb_view_000.png`，写入前拒绝覆盖已有文件，使用临时 PNG 写入并替换最终文件，确认最终文件存在且大小大于 0 后才记录 metadata。metadata `frames` 记录路径、宽高、通道、dtype、RGB/source pixel order、设备信息、requested/actual settings 和预览复用状态；失败、取消和超时继续进入 `safe_stop()`。
+- 修改文件：`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/tests/test_camera_service.py`、`host_software/static_ui_prototype_bin/tests/test_capture_coordinator.py`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不实现 DVP2 正式多波段采集，不驱动滤光轮或样品旋转，不修改 RGB preview JPEG/UI，不修改 `create_offline_capture_dataset()`，不放行 `/api/capture/start`，`trueCapturePrepared` 继续保持 false。
+
+## 2026-09-05 P1B-2 CaptureCoordinator 真实安全准备链
+
+- 修改内容：扩展 `capture_coordinator.py`，新增 `run_preparation(mode="rgb"|"multispectral")` 和硬件准备步骤：`hardware_precheck`、`door_close`、`fan_on`、`rgb_light_prepare`/`multispectral_light_prepare`、`capture_safety_check`、`lighting_shutdown`。准备链只通过 `HardwareController` 高层 API 调用 PING、故障码、升降门、风扇、RGB LED、钨灯和 `ensure_*_capture_ready()` interlock，不直接发送串口命令；每步可记录 `result` 到 snapshot/metadata。失败、取消和超时继续执行 best-effort `safe_stop()`。
+- 修改文件：`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/tests/test_capture_coordinator.py`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不实现 RGB/DVP2 正式采图保存，不驱动滤光轮多波段循环，不驱动样品旋转，不写正式 metadata，不放行 `/api/capture/start`，`trueCapturePrepared` 继续保持 false，`create_offline_capture_dataset()` 仍作为当前离线验证路径保留。
+
+## 2026-09-05 P1B-1 CaptureCoordinator 架构骨架
+
+- 修改内容：新增 `capture_coordinator.py`，定义 `CaptureState`、`CaptureStepStatus`、`CaptureStep`、`CaptureStepPlan`、`CaptureRun`、`CaptureCoordinatorError`、`CaptureCancelled`、`CaptureStepTimeout`、`CaptureSafetyError` 和 `CaptureCoordinator`；支持同步 dry-run 步骤执行、JSON-friendly snapshot、取消请求、步骤超时 metadata、失败/取消 best-effort safe stop 和 `capture_metadata_skeleton.json` 骨架写入。`DeviceManager` 初始化并暴露 coordinator snapshot，但 `start_capture()` 仍抛 `CameraIntegrationRequired`。
+- 修改文件：`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/tests/test_capture_coordinator.py`、`host_software/static_ui_prototype_bin/tests/test_device_manager.py`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不实现真实 RGB/DVP2/光源/滤光轮/样品旋转采集，不写真实帧，不放行 `/api/capture/start`，`trueCapturePrepared` 继续保持 false，`create_offline_capture_dataset()` 仍作为当前离线验证路径保留。
+
 ## 2026-09-04 P1A-2B DVP2 多光谱网页预览与参数控制
 
 - 修改内容：在既有 DVP2 `ctypes` binding 和 `Dvp2MonoCamera` 基础上完成多光谱黑白相机网页预览链路；新增 `/api/camera/multispectral/apply-settings`，支持曝光时间和增益通过 UI -> Backend -> `CameraManager` -> `Dvp2MonoCamera` -> DVP2 SDK 下发并回读实际值；`/api/camera/multispectral/preview/start` 保持同一个 DVP2 实例 open/streaming，`preview-frame` 只读取当前流并输出 960x540 JPEG；预览转换只用于浏览器显示，底层 `CameraFrame` 保留原始 `uint8/uint16` dtype；状态字段拆分 `detected/available/opened/streaming`，`connected` 仅作为 detected 兼容别名；修正相机 IP 严格解析、MAC 显示、`streamFps` 与 `linkSpeedMbps` 分离、当前 `pixelFormat/frameDtype` 与 `supportedPixelFormats` 分离；已发现但无法打开时提示关闭 BasedCam3 或其他相机程序。

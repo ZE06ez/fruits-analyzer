@@ -1,10 +1,11 @@
 import json
+import http.client
+import io
 import tempfile
 import threading
 import time
 import unittest
 import urllib.parse
-import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -28,29 +29,52 @@ class BackendDataFlowTests(unittest.TestCase):
         self.session = SessionState()
         handler = create_handler(self.static_dir, self.outputs_dir, self.app_dir, JobStore(), self.session)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server.daemon_threads = False
+        self.server.block_on_close = True
+        self.server_ready = threading.Event()
+        self.thread = threading.Thread(target=self._serve, name="BackendDataFlowTestServer")
         self.thread.start()
+        self.assertTrue(self.server_ready.wait(timeout=2), "test HTTP server did not start")
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
 
     def tearDown(self):
-        self.server.shutdown()
-        self.thread.join(timeout=2)
-        self.server.server_close()
+        try:
+            self.server.shutdown()
+        finally:
+            self.server.server_close()
+            self.thread.join(timeout=2)
+        self.assertFalse(self.thread.is_alive(), "test HTTP server thread did not stop")
+
+    def _serve(self):
+        self.server_ready.set()
+        self.server.serve_forever(poll_interval=0.01)
 
     def get_json(self, path: str, params: dict | None = None) -> dict:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
-        with urllib.request.urlopen(self.base_url + path + query, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self.request_json("GET", path + query)
 
     def post_json(self, path: str, payload: dict | None = None) -> dict:
         data = json.dumps(payload or {}).encode("utf-8")
-        request = urllib.request.Request(
-            self.base_url + path,
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self.request_json("POST", path, body=data, headers={"Content-Type": "application/json"})
+
+    def request_json(self, method: str, path: str, body: bytes | None = None, headers: dict | None = None) -> dict:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            request_headers = {"Connection": "close", **(headers or {})}
+            connection.request(method, path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            raw = response.read()
+            if response.status >= 400:
+                raise urllib.error.HTTPError(
+                    self.base_url + path,
+                    response.status,
+                    response.reason,
+                    response.headers,
+                    io.BytesIO(raw),
+                )
+            return json.loads(raw.decode("utf-8"))
+        finally:
+            connection.close()
 
     def prepare_device(self) -> dict:
         return self.post_json("/api/device-preparation", {
@@ -261,7 +285,10 @@ class BackendDataFlowTests(unittest.TestCase):
         images = self.get_json("/api/dataset-images", {"datasetDir": str(capture_dir)})
         self.assertEqual(images["rgbDirName"], "color_images")
         self.assertEqual(images["multispectralDirName"], "spectral_images")
+        self.assertEqual(Path(images["multispectralDir"]), capture_dir / "spectral_images")
         self.assertTrue(images["images"])
+        self.assertIn("multispectral", images["images"][0])
+        self.assertEqual(images["images"][0]["depth"], images["images"][0]["multispectral"])
 
     def test_image_directory_name_validation_rejects_empty_duplicate_and_illegal_values(self):
         self.prepare_device()
@@ -367,11 +394,13 @@ class BackendDataFlowTests(unittest.TestCase):
 
         report = self.get_json(
             "/api/sample-folder",
-            {"datasetDir": str(capture_dir), "source": "current", "colorDir": "rgb", "depthDir": "multispectral"},
+            {"datasetDir": str(capture_dir), "source": "current", "colorDir": "rgb", "multispectralDirName": "multispectral"},
         )
         self.assertTrue(report["valid"])
         self.assertEqual(report["rgbCount"], 3)
         self.assertEqual(report["spectralCount"], 3)
+        self.assertEqual(Path(report["multispectralDir"]), capture_dir / "multispectral")
+        self.assertEqual(report["depthDir"], report["multispectralDir"])
         self.assertEqual(report["sampleMetadata"]["fruit_type"], "blueberry")
         self.assertEqual(report["sampleMetadata"]["variety"], "Duke")
 
@@ -386,7 +415,7 @@ class BackendDataFlowTests(unittest.TestCase):
 
         shape = self.post_json(
             "/api/analyze-shape",
-            {"datasetDir": str(capture_dir), "colorDir": "rgb", "depthDir": "multispectral"},
+            {"datasetDir": str(capture_dir), "colorDir": "rgb", "multispectralDirName": "multispectral"},
         )
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
@@ -425,7 +454,7 @@ class BackendDataFlowTests(unittest.TestCase):
                 "datasetDir": str(dataset),
                 "source": "other",
                 "colorDir": "color_images",
-                "depthDir": "spectral_images",
+                "multispectralDirName": "spectral_images",
                 "otherDirs": "calibration,mask",
                 "strictImageDirs": "1",
             },
@@ -472,6 +501,25 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertTrue(report["valid"])
         self.assertEqual(report["rgbDirName"], "rgb")
         self.assertEqual(report["multispectralDirName"], "multispectral")
+        self.assertEqual(Path(report["multispectralDir"]), dataset / "multispectral")
+
+    def test_legacy_depth_dir_alias_still_reads_multispectral_directory(self):
+        dataset = self.make_dataset("legacy_depth_alias", "color_images", "spectral_images")
+        report = self.get_json(
+            "/api/sample-folder",
+            {
+                "datasetDir": str(dataset),
+                "source": "other",
+                "colorDir": "color_images",
+                "depthDir": "spectral_images",
+                "strictImageDirs": "1",
+            },
+        )
+
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["multispectralDirName"], "spectral_images")
+        self.assertEqual(Path(report["multispectralDir"]), dataset / "spectral_images")
+        self.assertEqual(report["depthDir"], report["multispectralDir"])
 
     def test_manual_folder_shape_analysis_does_not_require_current_sample(self):
         dataset = self.make_dataset("manual_shape_only")

@@ -161,6 +161,7 @@ def inspect_sample_folder(
         "status": "empty",
         "datasetDir": str(root) if raw_value else "",
         "colorDir": "",
+        "multispectralDir": "",
         "depthDir": "",
         "rgbCount": 0,
         "spectralCount": 0,
@@ -213,6 +214,7 @@ def inspect_sample_folder(
         report["missing"].append("缺少 multispectral 多光谱图像目录")
         spectral_files: list[Path] = []
     else:
+        report["multispectralDir"] = str(spectral_path)
         report["depthDir"] = str(spectral_path)
         spectral_files = list_images(spectral_path)
         report["spectralCount"] = len(spectral_files)
@@ -258,6 +260,7 @@ def _inspect_sample_folder_by_enabled_bands(
         "status": "empty",
         "datasetDir": str(root) if raw_value else "",
         "colorDir": "",
+        "multispectralDir": "",
         "depthDir": "",
         "rgbCount": 0,
         "spectralCount": 0,
@@ -307,6 +310,7 @@ def _inspect_sample_folder_by_enabled_bands(
     report.update(
         {
             "colorDir": str(rgb_path) if rgb_path and rgb_path.exists() else "",
+            "multispectralDir": str(spectral_path) if spectral_path and spectral_path.exists() else "",
             "depthDir": str(spectral_path) if spectral_path and spectral_path.exists() else "",
             "rgbCount": int(structure["rgb_count"]),
             "spectralCount": int(structure["multispectral_count"]),
@@ -323,7 +327,7 @@ def _inspect_sample_folder_by_enabled_bands(
     )
     if not report["colorDir"]:
         report["missing"].append("missing RGB image directory")
-    if not report["depthDir"]:
+    if not report["multispectralDir"]:
         report["missing"].append("missing multispectral image directory")
     if report["rgbCount"] <= 0:
         report["missing"].append("no RGB images")
@@ -377,7 +381,10 @@ def ply_measurements(source_ply: Path, options: AnalysisOptions) -> dict | None:
         "diameterMm": round(float(max(ranges[0], ranges[1])), 2),
         "heightMm": round(float(ranges[2]), 2),
         "volumeMm3": round(float(volume_mm3), 2),
+        "volumeMethod": "voxel_occupancy_estimate",
+        "volumeEstimated": True,
         "weightG": round(float(volume_mm3 / 1000.0 * options.density_g_cm3), 2),
+        "weightEstimated": True,
         "bboxXMm": round(float(ranges[0]), 2),
         "bboxYMm": round(float(ranges[1]), 2),
         "bboxZMm": round(float(ranges[2]), 2),
@@ -431,6 +438,9 @@ def analyze_rgb_multispectral_sample(
     height_mm = ply_metrics["heightMm"] if ply_metrics else None
     volume_mm3 = ply_metrics["volumeMm3"] if ply_metrics else 0.0
     weight_g = ply_metrics["weightG"] if ply_metrics else 0.0
+    volume_method = ply_metrics["volumeMethod"] if ply_metrics else None
+    volume_estimated = ply_metrics["volumeEstimated"] if ply_metrics else False
+    weight_estimated = ply_metrics["weightEstimated"] if ply_metrics else False
 
     elapsed = time.perf_counter() - started
     emit("done", 100, "图像形态分析成功")
@@ -439,6 +449,7 @@ def analyze_rgb_multispectral_sample(
         "algorithm": "rgb_multispectral_morphology",
         "datasetDir": str(dataset_dir),
         "colorDir": str(rgb_path),
+        "multispectralDir": str(spectral_path) if spectral_path else "",
         "depthDir": str(spectral_path) if spectral_path else "",
         "pairCount": len(rgb_files),
         "pointCount": ply_metrics["pointCount"] if ply_metrics else 0,
@@ -448,7 +459,10 @@ def analyze_rgb_multispectral_sample(
         "diameterPx": round(diameter_px, 2),
         "heightPx": round(height_px, 2),
         "volumeMm3": volume_mm3,
+        "volumeMethod": volume_method,
+        "volumeEstimated": volume_estimated,
         "weightG": weight_g,
+        "weightEstimated": weight_estimated,
         "densityGCm3": options.density_g_cm3,
         "voxelSizeMm": options.voxel_size_mm,
         "elapsedSec": round(elapsed, 2),
@@ -614,7 +628,10 @@ def analyze_cached_pointcloud(
         "diameterMm": round(diameter, 2),
         "heightMm": round(height, 2),
         "volumeMm3": round(float(volume_mm3), 2),
+        "volumeMethod": "voxel_occupancy_estimate",
+        "volumeEstimated": True,
         "weightG": round(float(weight_g), 2),
+        "weightEstimated": True,
         "densityGCm3": options.density_g_cm3,
         "voxelSizeMm": options.voxel_size_mm,
         "elapsedSec": round(elapsed, 2),
@@ -722,7 +739,10 @@ def analyze_with_pipeline_v2(
         "diameterMm": round(diameter, 2),
         "heightMm": round(height, 2),
         "volumeMm3": round(float(volume_mm3), 2),
+        "volumeMethod": "voxel_occupancy_estimate",
+        "volumeEstimated": True,
         "weightG": round(float(weight_g), 2),
+        "weightEstimated": True,
         "densityGCm3": options.density_g_cm3,
         "voxelSizeMm": options.voxel_size_mm,
         "elapsedSec": round(elapsed, 2),
@@ -982,6 +1002,7 @@ def voxel_downsample(points: np.ndarray, colors: np.ndarray, voxel_size: float) 
 
 
 def pointcloud_volume(points: np.ndarray, voxel_size: float) -> float:
+    """Estimate volume from occupied voxel count, not a watertight mesh."""
     if points.size == 0:
         return 0.0
     coords = np.floor(points / voxel_size).astype(np.int64)
