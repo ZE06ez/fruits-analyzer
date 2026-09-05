@@ -618,10 +618,19 @@
                   <section class="camera-setting-section">
                     <h4>设备连接</h4>
                     <div class="settings-grid compact">
+                      <label>已发现 RGB 设备
+                        <select id="cameraRgbDeviceSelect" data-device-role="RGB_CAMERA"></select>
+                      </label>
+                      <label>绑定状态<input id="cameraRgbBindingStatus" value="RGB: 未绑定" readonly /></label>
                       <label>设备索引<input id="cameraDeviceIndex" type="number" step="1" min="0" value="1" /></label>
                       <label>连接方式<input id="cameraTransport" value="UVC / DirectShow" readonly /></label>
+                      <label>VID / PID<input id="cameraRgbVidPid" value="等待设备" readonly /></label>
+                      <label>稳定身份<input id="cameraRgbStableIdentity" value="等待设备" readonly /></label>
                     </div>
                     <p class="hint">device_index=1 只是当前开发电脑的枚举结果，不是跨电脑永久设备 ID。修改设备索引会重新打开 RGB 相机。</p>
+                    <div class="button-row compact">
+                      <button class="test-button secondary" data-bind-device-role="RGB_CAMERA" type="button">绑定 RGB 设备</button>
+                    </div>
                   </section>
 
                   <section class="camera-setting-section">
@@ -735,23 +744,30 @@
                     <img id="multispectralLivePreview" alt="多光谱黑白相机实时预览" />
                     <span class="empty-preview" id="multispectralLivePreviewEmpty">多光谱预览未启动</span>
                   </div>
-                  <p class="hint" id="multispectralPreviewMeta">预览会把 mono uint8/uint16 帧转换为 JPEG 显示；底层相机帧不会被强制改成 uint8。</p>
+                  <p class="hint" id="multispectralPreviewMeta">Low Latency Preview enabled：预览只显示最新可用 mono 帧并允许丢弃旧帧；底层 scientific capture 仍使用完整 raw 帧。</p>
                 </div>
 
                 <div class="camera-control-panel">
                   <section class="camera-setting-section">
                     <h4>黑白相机连接</h4>
                     <div class="settings-grid compact">
+                      <label>已发现多光谱设备
+                        <select id="cameraMultispectralDeviceSelect" data-device-role="MULTISPECTRAL_CAMERA"></select>
+                      </label>
+                      <label>绑定状态<input id="cameraMultispectralBindingStatus" value="多光谱: 未绑定" readonly /></label>
                       <label>厂商<input value="DO3THINK / 度申" readonly /></label>
                       <label>连接方式<input value="GigE / RJ45" readonly /></label>
                       <label>SDK<input value="DVP2" readonly /></label>
-                      <label>网络适配器<input value="Realtek PCIe GbE Family Controller" readonly /></label>
+                      <label>网络适配器<input id="multispectralHostAdapter" value="等待设备" readonly /></label>
                       <label>相机 IP<input id="multispectralCameraIp" value="等待设备" readonly /></label>
                       <label>MAC<input id="multispectralCameraMac" value="等待设备" readonly /></label>
                       <label>Serial<input id="multispectralCameraSerial" value="等待设备" readonly /></label>
                       <label>实时帧率<input id="multispectralStreamFps" value="等待设备" readonly /></label>
                     </div>
                     <p class="hint">不能根据 Realtek 网卡存在判断相机在线；必须等待 DVP2 枚举到真实相机。</p>
+                    <div class="button-row compact">
+                      <button class="test-button secondary" data-bind-device-role="MULTISPECTRAL_CAMERA" type="button">绑定多光谱设备</button>
+                    </div>
                   </section>
 
                   <section class="camera-setting-section">
@@ -781,6 +797,28 @@
                   <div class="button-row">
                     <button id="applyMultispectralCameraSettings" type="button">应用到相机</button>
                   </div>
+
+                  <section class="camera-setting-section">
+                    <h4>对焦辅助</h4>
+                    <div class="focus-readout" id="multispectralFocusReadout" data-status="idle">
+                      <div class="focus-score-row">
+                        <span>清晰度评分</span>
+                        <strong id="multispectralFocusScore">--</strong>
+                      </div>
+                      <div class="focus-bar" aria-hidden="true"><div id="multispectralFocusBar"></div></div>
+                      <div class="settings-grid compact">
+                        <label>Tenengrad<input id="multispectralFocusTenengrad" value="--" readonly /></label>
+                        <label>Laplacian<input id="multispectralFocusLaplacian" value="--" readonly /></label>
+                        <label>Edge Density<input id="multispectralFocusEdgeDensity" value="--" readonly /></label>
+                        <label>ROI<input id="multispectralFocusRoi" value="center" readonly /></label>
+                      </div>
+                      <p class="hint" id="multispectralFocusStatus">阈值尚未标定；请观察相对评分峰值辅助人工调焦。</p>
+                    </div>
+                    <div class="button-row compact">
+                      <button id="startMultispectralFocus" type="button">开始对焦检测</button>
+                      <button id="stopMultispectralFocus" type="button" class="secondary">停止对焦检测</button>
+                    </div>
+                  </section>
 
                   <details class="camera-advanced">
                     <summary>设备详情</summary>

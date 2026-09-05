@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -121,6 +122,11 @@ class FakeDvp2Binding:
         self.opened_user_id = ""
         self.closed = False
         self.started = False
+        self.open_count = 0
+        self.close_count = 0
+        self.start_count = 0
+        self.stop_count = 0
+        self.get_frame_count_calls = 0
         self.trigger_state = False
         self.exposure = 10000.0
         self.gain = 1.0
@@ -129,27 +135,34 @@ class FakeDvp2Binding:
         return list(self.devices)
 
     def open_by_name(self, friendly_name, auto_ip=False):
+        self.open_count += 1
         self.opened_name = friendly_name
         return 101
 
     def open_by_user_id(self, user_id, auto_ip=False):
+        self.open_count += 1
         self.opened_user_id = user_id
         return 103
 
     def open_by_index(self, index, auto_ip=False):
+        self.open_count += 1
         self.opened_index = index
         return 102
 
     def close(self, handle):
+        self.close_count += 1
         self.closed = True
 
     def start(self, handle):
+        self.start_count += 1
         self.started = True
 
     def stop(self, handle):
+        self.stop_count += 1
         self.started = False
 
     def get_frame(self, handle, timeout_ms=3000):
+        self.get_frame_count_calls += 1
         frame = dvpFrame()
         frame.format = 0
         frame.bits = 4 if self.frame_array.dtype == np.uint16 else 0
@@ -216,6 +229,75 @@ class OccupiedDvp2Binding(FakeDvp2Binding):
 
     def open_by_name(self, friendly_name, auto_ip=False):
         raise Dvp2ApiError("dvpOpenByName", -1105)
+
+
+class FailingFrameDvp2Binding(FakeDvp2Binding):
+    def get_frame(self, handle, timeout_ms=3000):
+        raise Dvp2ApiError("dvpGetFrame", -1000)
+
+
+class LowLatencyPreviewCamera:
+    role = "multispectral"
+
+    def __init__(self, *, dtype=np.uint8, fail_after: int | None = None):
+        self.dtype = dtype
+        self.fail_after = fail_after
+        self.is_open = False
+        self.started = False
+        self.capture_count = 0
+        self.stop_count = 0
+        self.close_count = 0
+        self.probe_count = 0
+
+    def probe_available(self):
+        self.probe_count += 1
+        return True
+
+    def start_stream(self):
+        self.is_open = True
+        self.started = True
+
+    def stop_stream(self):
+        self.stop_count += 1
+        self.started = False
+
+    def close(self):
+        self.close_count += 1
+        self.is_open = False
+
+    def capture_frame(self):
+        self.capture_count += 1
+        if self.fail_after is not None and self.capture_count > self.fail_after:
+            raise CameraCaptureError("preview failed", "simulated preview failure")
+        value = self.capture_count % 255
+        if self.dtype == np.uint16:
+            data = np.full((24, 32), value * 257, dtype=np.uint16)
+            pixel_format = "Mono16"
+        else:
+            data = np.full((24, 32), value, dtype=np.uint8)
+            pixel_format = "Mono8"
+        return CameraFrame(
+            data=data,
+            color_space="MONO",
+            dtype=str(data.dtype),
+            shape=data.shape,
+            metadata={"pixelFormat": pixel_format, "frameId": self.capture_count, "timestamp": 1000 + self.capture_count},
+        )
+
+    def get_status(self):
+        return {
+            "role": "multispectral",
+            "sdkAvailable": True,
+            "detected": True,
+            "available": True,
+            "connected": True,
+            "opened": self.is_open,
+            "streaming": self.started,
+            "transport": "GigE/DVP2",
+            "actual": {"width": 32, "height": 24, "pixelFormat": "Mono16" if self.dtype == np.uint16 else "Mono8", "frameDtype": str(self.dtype)},
+            "requested": {"serialNumber": "TEST"},
+            "capabilities": {},
+        }
 
 
 class CameraServiceTests(unittest.TestCase):
@@ -716,8 +798,11 @@ class CameraServiceTests(unittest.TestCase):
             multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
             manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
 
-            manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
-            result = manager.apply_multispectral_settings({"exposure": 12000, "gain": 1.5})
+            try:
+                manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
+                result = manager.apply_multispectral_settings({"exposure": 12000, "gain": 1.5})
+            finally:
+                manager.stop_multispectral_preview()
 
             self.assertEqual(result["settingResults"]["exposure"]["actual"], 12000.0)
             self.assertEqual(result["settingResults"]["gain"]["actual"], 1.5)
@@ -749,6 +834,198 @@ class CameraServiceTests(unittest.TestCase):
             self.assertFalse(stopped["preview"]["multispectral"]["running"])
             self.assertTrue(second["preview"]["multispectral"]["running"])
             self.assertEqual(calls, 1)
+            manager.stop_multispectral_preview()
+
+    def test_multispectral_low_latency_preview_exposes_latest_frame_and_drops_old_frames(self):
+        camera = LowLatencyPreviewCamera()
+        manager = CameraManager(
+            rgb_camera=RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture()),
+            multispectral_camera=camera,
+        )
+        manager.start_multispectral_preview({"width": 160, "height": 90, "fps": 15})
+        self.assertTrue(manager._multispectral_preview_ready_event.wait(timeout=1.0))
+        deadline = time.time() + 1.0
+        while camera.capture_count < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        manager._multispectral_preview_stop_event.set()
+
+        data, meta = manager.multispectral_preview_jpeg()
+        latest_at_read = camera.capture_count
+        manager.stop_multispectral_preview()
+
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+        self.assertGreaterEqual(meta["frameId"], 3)
+        self.assertEqual(meta["frameId"], latest_at_read)
+        self.assertEqual(meta["sourceTimestamp"], 1000 + meta["frameId"])
+        self.assertTrue(meta["lowLatency"])
+        self.assertIn("droppedFrames", meta)
+
+    def test_multispectral_preview_polling_reads_cache_without_request_backlog(self):
+        camera = LowLatencyPreviewCamera()
+        manager = CameraManager(
+            rgb_camera=RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture()),
+            multispectral_camera=camera,
+        )
+        manager.start_multispectral_preview({"width": 160, "height": 90, "fps": 15})
+        self.assertTrue(manager._multispectral_preview_ready_event.wait(timeout=1.0))
+        manager._multispectral_preview_stop_event.set()
+        capture_count_after_cache_fill = camera.capture_count
+
+        first_data, first_meta = manager.multispectral_preview_jpeg()
+        second_data, second_meta = manager.multispectral_preview_jpeg()
+        manager.stop_multispectral_preview()
+
+        self.assertTrue(first_data.startswith(b"\xff\xd8"))
+        self.assertTrue(second_data.startswith(b"\xff\xd8"))
+        self.assertEqual(camera.capture_count, capture_count_after_cache_fill)
+        self.assertEqual(first_meta["frameId"], second_meta["frameId"])
+        self.assertGreaterEqual(second_meta["measuredPreviewFps"], 0.0)
+
+    def test_multispectral_preview_stop_cleans_background_acquisition(self):
+        camera = LowLatencyPreviewCamera()
+        manager = CameraManager(
+            rgb_camera=RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture()),
+            multispectral_camera=camera,
+        )
+        manager.start_multispectral_preview({"width": 160, "height": 90, "fps": 15})
+
+        stopped = manager.stop_multispectral_preview()
+
+        self.assertFalse(stopped["preview"]["multispectral"]["running"])
+        self.assertFalse(camera.is_open)
+        self.assertFalse(camera.started)
+        self.assertGreaterEqual(camera.stop_count, 1)
+        self.assertGreaterEqual(camera.close_count, 1)
+        self.assertIsNone(manager._multispectral_preview_thread)
+
+    def test_multispectral_preview_exception_cleans_state(self):
+        camera = LowLatencyPreviewCamera(fail_after=0)
+        manager = CameraManager(
+            rgb_camera=RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture()),
+            multispectral_camera=camera,
+        )
+        manager.start_multispectral_preview({"width": 160, "height": 90, "fps": 15})
+
+        with self.assertRaises(CameraError):
+            manager.multispectral_preview_jpeg()
+
+        self.assertFalse(manager.status()["preview"]["multispectral"]["running"])
+        self.assertFalse(camera.is_open)
+        self.assertFalse(camera.started)
+
+    def test_camera_manager_capture_multispectral_frame_temporarily_opens_and_closes_when_preview_stopped(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.array([[1, 2], [3, 4]], dtype=np.uint8)
+            binding = FakeDvp2Binding(frame_array=mono, target_format=30)
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            frame, meta = manager.capture_multispectral_frame()
+
+            self.assertEqual(frame.shape, (2, 2))
+            self.assertEqual(frame.dtype, "uint8")
+            self.assertFalse(multispectral.is_open)
+            self.assertEqual(binding.open_count, 1)
+            self.assertEqual(binding.start_count, 1)
+            self.assertEqual(binding.stop_count, 1)
+            self.assertEqual(binding.close_count, 1)
+            self.assertTrue(meta["openedForCapture"])
+            self.assertFalse(meta["previewWasRunning"])
+            self.assertEqual(meta["pixelFormat"], "Mono8")
+            self.assertEqual(meta["device"]["serial"], "DSGP23400004963")
+            self.assertEqual(meta["device"]["userId"], "GP23400004963")
+
+    def test_camera_manager_capture_multispectral_frame_reuses_running_preview_stream(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding(frame_array=np.ones((3, 4), dtype=np.uint16))
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+            try:
+                manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
+
+                frame, meta = manager.capture_multispectral_frame()
+
+                self.assertEqual(frame.dtype, "uint16")
+                self.assertTrue(multispectral.is_open)
+                self.assertTrue(binding.started)
+                self.assertEqual(binding.open_count, 2)
+                self.assertEqual(binding.close_count, 1)
+                self.assertTrue(meta["previewWasRunning"])
+                self.assertFalse(meta["openedForCapture"])
+                self.assertEqual(meta["dtype"], "uint16")
+            finally:
+                manager.stop_multispectral_preview()
+
+    def test_camera_manager_capture_multispectral_frame_closes_temporary_stream_on_error(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FailingFrameDvp2Binding()
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            with self.assertRaises(CameraError):
+                manager.capture_multispectral_frame()
+
+            self.assertFalse(multispectral.is_open)
+            self.assertEqual(binding.stop_count, 1)
+            self.assertEqual(binding.close_count, 1)
+
+    def test_camera_manager_multispectral_focus_reuses_running_preview_stream_without_saving(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_focus_") as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.zeros((32, 32), dtype=np.uint8)
+            mono[:, 16:] = 255
+            binding = FakeDvp2Binding(frame_array=mono, target_format=30)
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+            try:
+                manager.start_multispectral_preview({"width": 320, "height": 180, "fps": 8})
+                open_count_before = binding.open_count
+                close_count_before = binding.close_count
+
+                result = manager.evaluate_multispectral_focus({"roiMode": "center", "bandId": "A520", "wavelengthNm": 520})
+
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["bandId"], "A520")
+                self.assertEqual(result["wavelengthNm"], 520)
+                self.assertGreater(result["focusScore"], 0)
+                self.assertTrue(result["capture"]["previewWasRunning"])
+                self.assertFalse(result["capture"]["openedForCapture"])
+                self.assertTrue(result["preview"]["multispectral"]["running"])
+                self.assertTrue(multispectral.is_open)
+                self.assertEqual(binding.open_count, open_count_before)
+                self.assertEqual(binding.close_count, close_count_before)
+                self.assertEqual(list(tmp_path.glob("*.png")), [])
+            finally:
+                manager.stop_multispectral_preview()
+
+    def test_camera_manager_multispectral_focus_closes_temporary_stream_when_preview_stopped(self):
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
+        with tempfile.TemporaryDirectory(prefix="dvp2_focus_once_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            mono = np.eye(16, dtype=np.uint16) * np.uint16(65535)
+            binding = FakeDvp2Binding(frame_array=mono)
+            multispectral = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multispectral)
+
+            result = manager.evaluate_multispectral_focus({"roiMode": "full"})
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["frame"]["dtype"], "uint16")
+            self.assertFalse(result["capture"]["previewWasRunning"])
+            self.assertTrue(result["capture"]["openedForCapture"])
+            self.assertFalse(multispectral.is_open)
+            self.assertEqual(binding.open_count, 1)
+            self.assertEqual(binding.start_count, 1)
+            self.assertEqual(binding.stop_count, 1)
+            self.assertEqual(binding.close_count, 1)
 
     def test_camera_frame_allows_uint16_mono_data(self):
         mono = np.zeros((2, 3), dtype=np.uint16)

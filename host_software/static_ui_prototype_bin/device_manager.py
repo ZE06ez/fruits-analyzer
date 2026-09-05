@@ -8,7 +8,7 @@ from camera_service import CameraManager
 from capture_coordinator import CaptureCoordinator
 from device_discovery import DeviceDiscovery, DeviceRegistry
 from hardware_controller import DoorState, HardwareController
-from serial_service import SerialService
+from serial_service import SerialDependencyError, SerialService
 
 
 LOGGER = logging.getLogger(__name__)
@@ -204,6 +204,40 @@ class DeviceManager:
                 "checks": self._self_test_checks(include_motion=include_motion),
             }
 
+    def independent_device_check(self) -> dict[str, Any]:
+        """Check controller, RGB and DVP2 domains independently."""
+
+        with self._lock:
+            controller_check = self._controller_check()
+            status = self.status()
+
+        rgb_check = self._probe_rgb_check()
+        multispectral_check = self._probe_multispectral_check()
+
+        with self._lock:
+            status = self.status()
+            checks = {
+                **self._hardware_checks_from_status(status, controller_check),
+                "rgbCamera": rgb_check,
+                "multispectralCamera": multispectral_check,
+                "calibration": {
+                    "status": "manual_required",
+                    "label": "标定状态",
+                    "message": "当前需要操作员人工确认",
+                },
+            }
+            return {
+                "passed": all(
+                    checks[key]["status"] == "passed"
+                    for key in ("controller", "rgbCamera", "multispectralCamera")
+                    if key in checks
+                ),
+                "includeMotion": False,
+                "independentDomains": True,
+                "status": status,
+                "checks": checks,
+            }
+
     def emergency_stop(self) -> dict[str, Any]:
         """执行安全停止并返回停止后的设备状态。"""
 
@@ -308,6 +342,118 @@ class DeviceManager:
                 "message": "当前需要操作员人工确认",
             },
         }
+
+    def _controller_check(self) -> dict[str, Any]:
+        if self.controller is not None and self.serial.is_connected:
+            try:
+                self.controller.ping()
+                return {
+                    "status": "passed",
+                    "label": "STM32 控制器",
+                    "message": "PING 通过",
+                    "verified": True,
+                }
+            except Exception as exc:
+                return {
+                    "status": "failed",
+                    "label": "STM32 控制器",
+                    "message": str(exc),
+                    "verified": False,
+                }
+        try:
+            ports = self.serial.list_ports()
+        except SerialDependencyError as exc:
+            return {
+                "status": "dependency_missing",
+                "label": "STM32 控制器",
+                "message": str(exc),
+                "verified": False,
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "label": "STM32 控制器",
+                "message": f"读取串口列表失败：{exc}",
+                "verified": False,
+            }
+        return {
+            "status": "not_connected" if ports else "no_serial_port",
+            "label": "STM32 控制器",
+            "message": "请选择串口并连接 STM32" if ports else "未发现可用串口",
+            "verified": False,
+            "candidateCount": len(ports),
+        }
+
+    def _hardware_checks_from_status(
+        self,
+        status: dict[str, Any],
+        controller_check: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        connected = bool(status.get("connected"))
+        wheel_homed = bool(status.get("wheelHomed"))
+        door = status.get("door") or "unknown"
+        door_state = "passed" if door in {"open", "closed"} else "warning"
+        if door == "error":
+            door_state = "failed"
+        return {
+            "controller": controller_check,
+            "door": {
+                "status": door_state if connected else "not_connected",
+                "label": "升降门",
+                "message": f"门状态: {door}" if connected else "STM32 未连接，未读取门状态",
+            },
+            "fan": {
+                "status": "passed" if status.get("fanOn") else "warning" if connected else "not_connected",
+                "label": "风扇",
+                "message": "风扇已开启" if status.get("fanOn") else "风扇未开启",
+            },
+            "filterWheel": {
+                "status": "passed" if connected and wheel_homed else "manual_required" if connected else "not_connected",
+                "label": "滤光轮",
+                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "尚未确认 HOME",
+            },
+            "light": {
+                "status": "manual_required" if connected else "not_connected",
+                "label": "光源控制",
+                "message": "控制层已接入，需在光源检查页人工确认输出" if connected else "STM32 未连接，未读取光源输出",
+            },
+        }
+
+    def _probe_rgb_check(self) -> dict[str, Any]:
+        try:
+            if hasattr(self.camera_manager, "probe_rgb"):
+                result = self.camera_manager.probe_rgb()
+                return self.camera_manager._rgb_check(result.get("status") or {})
+            return self.camera_manager.checks(probe_rgb=True)["rgbCamera"]
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "label": "RGB 相机",
+                "message": str(exc),
+                "cameraStatus": {"available": False, "error": str(exc)},
+            }
+
+    def _probe_multispectral_check(self) -> dict[str, Any]:
+        try:
+            if hasattr(self.camera_manager, "probe_multispectral"):
+                result = self.camera_manager.probe_multispectral()
+                return self.camera_manager._multispectral_check(result.get("status") or {})
+            return self.camera_manager.checks(probe_rgb=False)["multispectralCamera"]
+        except Exception as exc:
+            status = {}
+            try:
+                status = self.camera_manager.status().get("multispectral") or {}
+            except Exception:
+                status = {"available": False}
+            status = {**status, "error": status.get("error") or str(exc)}
+            if hasattr(self.camera_manager, "_multispectral_check"):
+                return self.camera_manager._multispectral_check(status)
+            return {
+                "status": "failed",
+                "label": "多光谱相机",
+                "message": str(exc),
+                "cameraStatus": status,
+            }
 
     def _empty_status(self) -> dict[str, Any]:
         return {

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 import time
 from dataclasses import asdict, dataclass, field
+from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from camera_service.dvp2_mono import _best_ip_text, _best_mac_text, _device_stable_id, find_dvp2_sdk
 from camera_service.rgb_uvc import RgbUvcCamera
-from serial_service import SerialService
+from serial_service import SerialDependencyError, SerialService
 
 
 class DeviceRole:
@@ -24,6 +28,15 @@ MUTUALLY_EXCLUSIVE_ROLES = {
     DeviceRole.RGB_CAMERA,
     DeviceRole.MULTISPECTRAL_CAMERA,
 }
+
+ROLE_KIND = {
+    DeviceRole.MAIN_CONTROLLER: "serial",
+    DeviceRole.ROTATION_CONTROLLER: "serial",
+    DeviceRole.RGB_CAMERA: "uvc",
+    DeviceRole.MULTISPECTRAL_CAMERA: "dvp2",
+}
+
+STABLE_RGB_MAPPING_CONFIDENCE = {"exact", "verified"}
 
 
 @dataclass(frozen=True)
@@ -143,6 +156,9 @@ class DeviceRegistry:
 
     def bind(self, role: str, candidate: DeviceCandidate) -> DeviceBinding:
         role = _normalize_role(role)
+        expected_kind = ROLE_KIND.get(role)
+        if expected_kind and candidate.kind != expected_kind:
+            raise ValueError(f"{role} 只能绑定 {expected_kind} 设备，不能绑定 {candidate.kind}")
         self._ensure_candidate_role_available(role, candidate)
         binding = DeviceBinding(
             role=role,
@@ -208,6 +224,8 @@ class DeviceDiscovery:
         dvp2_scanner: Callable[[], list[DeviceCandidate]] | None = None,
         camera_manager: Any | None = None,
         rgb_max_index: int = 10,
+        windows_rgb_info_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        host_network_provider: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.serial_service = serial_service or SerialService()
         self.serial_service_factory = serial_service_factory or (lambda: SerialService())
@@ -215,8 +233,12 @@ class DeviceDiscovery:
         self.dvp2_scanner = dvp2_scanner
         self.camera_manager = camera_manager
         self.rgb_max_index = max(0, int(rgb_max_index))
+        self.windows_rgb_info_provider = windows_rgb_info_provider or discover_windows_uvc_devices
+        self.host_network_provider = host_network_provider or discover_windows_ipv4_adapters
+        self._diagnostics: dict[str, Any] = {}
 
     def discover_all(self) -> dict[str, Any]:
+        self._diagnostics = {}
         serial = self.discover_serial()
         rgb = self.discover_rgb()
         dvp2 = self.discover_dvp2()
@@ -230,12 +252,22 @@ class DeviceDiscovery:
                 "uvc": [candidate.to_dict() for candidate in rgb],
                 "dvp2": [candidate.to_dict() for candidate in dvp2],
             },
+            "diagnostics": dict(self._diagnostics),
         }
 
     def discover_serial(self) -> list[DeviceCandidate]:
         candidates: list[DeviceCandidate] = []
         connected_port = str(getattr(self.serial_service, "port_name", "") or "")
-        for port in self.serial_service.list_ports():
+        try:
+            ports = self.serial_service.list_ports()
+        except SerialDependencyError as exc:
+            self._diagnostics["serial"] = {
+                "status": "dependency_missing",
+                "label": "STM32 控制器",
+                "message": str(exc),
+            }
+            return []
+        for port in ports:
             port_dict = port.to_dict() if hasattr(port, "to_dict") else dict(port)
             device = str(port_dict.get("device") or "").strip()
             if not device:
@@ -310,9 +342,10 @@ class DeviceDiscovery:
             )]
         config = getattr(rgb, "config", None)
         probe_camera = RgbUvcCamera(config=config, max_probe_index=self.rgb_max_index + 1) if config is not None else rgb
+        windows_devices = _safe_provider_list(self.windows_rgb_info_provider)
         result: list[DeviceCandidate] = []
         for index in range(self.rgb_max_index + 1):
-            candidate = self._probe_rgb_index(probe_camera, index)
+            candidate = self._probe_rgb_index(probe_camera, index, windows_devices)
             if candidate:
                 result.append(candidate)
         return result
@@ -327,9 +360,10 @@ class DeviceDiscovery:
             devices = camera._enum_devices(camera._ensure_binding())
         except Exception:
             return []
-        return [_dvp2_candidate(device) for device in devices]
+        adapters = _safe_provider_list(self.host_network_provider)
+        return [_dvp2_candidate(device, adapters) for device in devices]
 
-    def _probe_rgb_index(self, rgb: Any, index: int) -> DeviceCandidate | None:
+    def _probe_rgb_index(self, rgb: Any, index: int, windows_devices: list[dict[str, Any]] | None = None) -> DeviceCandidate | None:
         previous_config = getattr(rgb, "config", None)
         previous_index = getattr(rgb, "device_index", None)
         was_open = bool(getattr(rgb, "is_open", False))
@@ -351,10 +385,21 @@ class DeviceDiscovery:
                 shape = None
             status = rgb.get_status().to_dict()
             actual = status.get("actual") or {}
+            windows_info = _windows_info_for_index(index, windows_devices or [])
+            mapping_confidence = windows_info.get("mappingConfidence") or "unknown"
+            stable_identity = _rgb_stable_id_from_windows_info(windows_info)
+            stable_id = stable_identity if mapping_confidence in STABLE_RGB_MAPPING_CONFIDENCE else None
+            display_name = (
+                windows_info.get("friendlyName")
+                or windows_info.get("product")
+                or status.get("deviceName")
+                or f"OpenCV DirectShow camera {index}"
+            )
+            recommended = _rgb_candidate_recommended(actual)
             return DeviceCandidate(
                 kind="uvc",
-                stable_id=None,
-                display_name=status.get("deviceName") or f"OpenCV DirectShow camera {index}",
+                stable_id=stable_id,
+                display_name=display_name,
                 connection={"backend": "DSHOW", "deviceIndex": index},
                 status="available" if frame_readable else "unavailable",
                 metadata={
@@ -366,7 +411,24 @@ class DeviceDiscovery:
                     "fps": actual.get("fps"),
                     "fourcc": actual.get("fourcc"),
                     "frameShape": shape,
-                    "stableIdentityAvailable": False,
+                    "connectionType": "USB/UVC",
+                    "directShowIndex": index,
+                    "mappingConfidence": mapping_confidence,
+                    "stableIdentityAvailable": bool(stable_id),
+                    "potentialStableId": stable_identity,
+                    "identitySource": windows_info.get("identitySource") or "",
+                    "windowsFriendlyName": windows_info.get("friendlyName") or "",
+                    "pnpDeviceId": windows_info.get("pnpDeviceId") or "",
+                    "vid": windows_info.get("vid"),
+                    "pid": windows_info.get("pid"),
+                    "usbSerialNumber": windows_info.get("usbSerialNumber"),
+                    "manufacturer": windows_info.get("manufacturer") or "",
+                    "product": windows_info.get("product") or "",
+                    "devicePath": windows_info.get("devicePath") or "",
+                    "location": windows_info.get("location") or "",
+                    "locationPath": windows_info.get("locationPath") or "",
+                    "recommended": recommended,
+                    "recommendationReason": "matches 3840x2160 25fps MJPG" if recommended else "",
                 },
             )
         except Exception:
@@ -381,8 +443,10 @@ class DeviceDiscovery:
                     rgb.device_index = previous_index
 
 
-def _dvp2_candidate(device: Any) -> DeviceCandidate:
+def _dvp2_candidate(device: Any, host_adapters: list[dict[str, Any]] | None = None) -> DeviceCandidate:
     stable_id = _device_stable_id(device) or None
+    ip = _best_ip_text(device)
+    host_adapter = match_host_adapter_for_device_ip(ip, host_adapters or [])
     return DeviceCandidate(
         kind="dvp2",
         stable_id=stable_id,
@@ -395,8 +459,12 @@ def _dvp2_candidate(device: Any) -> DeviceCandidate:
         status="available",
         metadata={
             **(device.to_dict() if hasattr(device, "to_dict") else {}),
-            "ip": _best_ip_text(device),
+            "ip": ip,
             "mac": _best_mac_text(device),
+            "hostAdapterName": host_adapter.get("name") or "",
+            "hostAdapterIPv4": host_adapter.get("ip") or "",
+            "hostAdapterPrefixLength": host_adapter.get("prefixLength"),
+            "hostAdapterMatch": bool(host_adapter),
         },
     )
 
@@ -456,6 +524,165 @@ def _serial_stable_id(port: dict[str, Any]) -> str | None:
     if vid and pid and serial_number:
         return f"usb:VID_{vid}&PID_{pid}:{serial_number}"
     return None
+
+
+def discover_windows_uvc_devices() -> list[dict[str, Any]]:
+    if os.name != "nt":
+        return []
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "Get-PnpDevice -PresentOnly | "
+        "Where-Object { $_.Class -in @('Camera','Image') } | "
+        "Select-Object FriendlyName,InstanceId,Manufacturer,Status,Class | "
+        "ConvertTo-Json -Depth 4"
+    )
+    payload = _run_powershell_json(script)
+    if payload is None:
+        return []
+    rows = payload if isinstance(payload, list) else [payload]
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        instance_id = str(row.get("InstanceId") or "").strip()
+        parsed = _parse_usb_instance_id(instance_id)
+        result.append({
+            "friendlyName": str(row.get("FriendlyName") or "").strip(),
+            "pnpDeviceId": instance_id,
+            "manufacturer": str(row.get("Manufacturer") or "").strip(),
+            "status": str(row.get("Status") or "").strip(),
+            "class": str(row.get("Class") or "").strip(),
+            "vid": parsed.get("vid"),
+            "pid": parsed.get("pid"),
+            "usbSerialNumber": parsed.get("serial"),
+            "product": "",
+            "devicePath": "",
+            "location": "",
+            "locationPath": "",
+            "mappingConfidence": "inferred",
+            "identitySource": "windows-pnp-usb-serial" if parsed.get("serial") else "",
+        })
+    return result
+
+
+def discover_windows_ipv4_adapters() -> list[dict[str, Any]]:
+    if os.name != "nt":
+        return []
+    script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "Get-NetIPAddress -AddressFamily IPv4 | "
+        "Where-Object { $_.IPAddress -and $_.PrefixLength -ne $null } | "
+        "Select-Object InterfaceAlias,IPAddress,PrefixLength | "
+        "ConvertTo-Json -Depth 4"
+    )
+    payload = _run_powershell_json(script)
+    if payload is None:
+        return []
+    rows = payload if isinstance(payload, list) else [payload]
+    return [
+        {
+            "name": str(row.get("InterfaceAlias") or "").strip(),
+            "ip": str(row.get("IPAddress") or "").strip(),
+            "prefixLength": _optional_int(row.get("PrefixLength")),
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def match_host_adapter_for_device_ip(device_ip: str, adapters: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        target = IPv4Address(str(device_ip))
+    except Exception:
+        return {}
+    for adapter in adapters:
+        try:
+            prefix = int(adapter.get("prefixLength"))
+            network = IPv4Network(f"{adapter.get('ip')}/{prefix}", strict=False)
+        except Exception:
+            continue
+        if target in network:
+            return dict(adapter)
+    return {}
+
+
+def _run_powershell_json(script: str) -> Any:
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return None
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return None
+    try:
+        return json.loads(completed.stdout)
+    except Exception:
+        return None
+
+
+def _parse_usb_instance_id(instance_id: str) -> dict[str, str | None]:
+    text = str(instance_id or "").strip()
+    vid_match = re.search(r"VID_([0-9A-Fa-f]{4})", text)
+    pid_match = re.search(r"PID_([0-9A-Fa-f]{4})", text)
+    serial = None
+    parts = text.split("\\")
+    if len(parts) >= 3:
+        serial = parts[2].split("&MI_", 1)[0].strip() or None
+    return {
+        "vid": vid_match.group(1).upper() if vid_match else None,
+        "pid": pid_match.group(1).upper() if pid_match else None,
+        "serial": serial,
+    }
+
+
+def _windows_info_for_index(index: int, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    for device in devices:
+        if _optional_int(device.get("deviceIndex")) == index:
+            result = dict(device)
+            result["mappingConfidence"] = result.get("mappingConfidence") or "exact"
+            return result
+    if 0 <= index < len(devices):
+        result = dict(devices[index])
+        result["mappingConfidence"] = result.get("mappingConfidence") or "inferred"
+        return result
+    return {"mappingConfidence": "unknown"}
+
+
+def _rgb_stable_id_from_windows_info(info: dict[str, Any]) -> str | None:
+    vid = _optional_text(info.get("vid"))
+    pid = _optional_text(info.get("pid"))
+    serial = _optional_text(info.get("usbSerialNumber") or info.get("serialNumber"))
+    if vid and pid and serial:
+        return f"usb:VID_{vid.upper()}&PID_{pid.upper()}:{serial}"
+    return None
+
+
+def _rgb_candidate_recommended(actual: dict[str, Any]) -> bool:
+    try:
+        return (
+            int(actual.get("width") or 0) == 3840
+            and int(actual.get("height") or 0) == 2160
+            and abs(float(actual.get("fps") or 0) - 25.0) < 0.6
+            and str(actual.get("fourcc") or "").upper() == "MJPG"
+        )
+    except Exception:
+        return False
+
+
+def _safe_provider_list(provider: Callable[[], list[dict[str, Any]]] | None) -> list[dict[str, Any]]:
+    if provider is None:
+        return []
+    try:
+        return list(provider())
+    except Exception:
+        return []
 
 
 def _last_port(candidate: DeviceCandidate) -> str | None:

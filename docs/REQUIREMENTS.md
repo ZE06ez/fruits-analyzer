@@ -1,6 +1,6 @@
 # Requirements
 
-更新时间：2026-09-05
+更新时间：2026-09-06
 
 本文档集中记录当前已经确认或待确认的需求。状态含义：
 
@@ -15,14 +15,14 @@
 | --- | --- | --- |
 | 软件应是水果/果实口感多光谱无损检测系统 | 部分实现 | 主界面、样品流程、形态、模型入口、STM32 硬件控制层和 RGB UVC adapter 已存在；完整真实采集闭环未接入 |
 | 使用 RGB 彩色相机采集外观图像 | 部分实现/实机验证 | UI 和目录支持默认 `rgb/`，并支持用户自定义 RGB 子目录名；`RgbUvcCamera` 已在当前电脑通过 OpenCV DirectShow/UVC 验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，可返回 RGB `uint8` 帧；相机设置页已支持 `/api/camera/rgb/probe` 真实重新检测、真实参数应用和 960x540 JPEG 预览；P1B-3 已接入 `CameraManager.capture_rgb_frame()` 和 Coordinator 受保护单帧 RGB PNG 正式保存，但完整真实采集入口仍未放行 |
-| 使用黑白相机 + 滤光片转轮采集多光谱图像 | 部分实现/实机验证 | 目录和算法支持默认 `multispectral/`，并支持用户自定义多光谱子目录名；滤光轮已有 STM32 HOME/相对旋转控制层；目标黑白相机是 DO3THINK/度申 GigE/RJ45 工业相机，`Dvp2MonoCamera` 已基于真实 DVP2 header/examples 完成 Python 3.12 `ctypes` 绑定；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、取流、30 帧取图和 PNG 保存；网页相机设置页已接入 DVP2 重新检测、实时预览、曝光/增益应用和回读；正式多波段采集与保存仍未完成 |
-| 使用封闭暗箱和稳定光源 | 部分实现 | 升降门、RGB LED 两路、钨灯两路、风扇已有 STM32 控制命令；P1B-2 已在 CaptureCoordinator 中接入安全准备链，可按 RGB/多光谱模式准备互斥光源并确认 interlock；P1B-3 的受保护 RGB 单帧保存会复用 RGB 安全准备和关灯收尾；亮度闭环、DVP2 多波段和完整真实采图同步未实现 |
-| 支持暗场和白板校正 | 部分实现 | 算法有反射率校正；暗场/白板的真实采集联动尚未接入 CaptureCoordinator |
-| 样品采集必须先完成设备准备流程 | 已实现/部分真实 | 前端和后端要求先完成设备检查；当前离线验证门槛为控制器/电机/光源控制，P1B-2 coordinator 可执行真实 STM32 安全准备链；`trueCapturePrepared` 在完整相机采图、滤光轮/样品旋转同步和正式保存闭环完成前保持 false，真实采集不可用 |
+| 使用黑白相机 + 滤光片转轮采集多光谱图像 | 部分实现/实机验证 | 目录和算法支持默认 `multispectral/`，并支持用户自定义多光谱子目录名；滤光轮已有 STM32 HOME/相对旋转控制层；目标黑白相机是 DO3THINK/度申 GigE/RJ45 工业相机，`Dvp2MonoCamera` 已基于真实 DVP2 header/examples 完成 Python 3.12 `ctypes` 绑定；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、取流、30 帧取图和 PNG 保存；网页相机设置页已接入 DVP2 重新检测、实时预览、曝光/增益应用和回读；P1B-4 已接入受保护 DVP2 raw mono 单帧正式 PNG 保存；P1B-5 已接入受保护滤光轮 + DVP2 多波段 sequence 软件路径，可按 filter config/显式 band plan 保存 enabled bands raw PNG；P1B-6 已接入受保护 Dark/White 多波段 reference sequence 软件路径；样品旋转和完整 `/api/capture/start` 仍未完成 |
+| 使用封闭暗箱和稳定光源 | 部分实现 | 升降门、RGB LED 两路、钨灯两路、风扇已有 STM32 控制命令；P1B-2 已在 CaptureCoordinator 中接入安全准备链，可按 RGB/多光谱模式准备互斥光源并确认 interlock；P1B-3/P1B-4/P1B-5/P1B-6 的受保护 RGB/DVP2 单帧、多波段 sample 和 Dark/White reference 保存会复用对应安全准备和关灯收尾；Dark reference 会先关采集光源并通过 output status 验证关闭；亮度闭环和完整真实采图同步未实现 |
+| 支持暗场和白板校正 | 部分实现/SOFTWARE IMPLEMENTED | 算法有反射率校正；P1B-6 已在 CaptureCoordinator 中新增 `run_dark_reference_capture()` 和 `run_white_reference_capture()`，复用 `MultispectralCapturePlan`/`MultispectralBandPlan`、滤光轮同步、每 band exposure/gain 设置和 raw `uint8/uint16` PNG saver，写入 `CalibrationSet`、`calibrationId`、`captureType`、完整性和诊断 metadata；物理遮光/标准白板放置和真实校准质量仍需现场验收 |
+| 样品采集必须先完成设备准备流程 | 已实现/部分真实 | 前端和后端要求先完成设备检查；当前离线验证门槛为控制器/电机/光源控制，P1B-2 coordinator 可执行真实 STM32 安全准备链；即使 P1B-6 内部多波段 sequence 和 Dark/White calibration sequence 可用，`trueCapturePrepared` 在真实滤光轮验收、样品旋转同步、物理校正验收和完整 `/api/capture/start` 闭环完成前仍保持 false，真实完整采集不可用 |
 | 主界面应显示统一全局系统状态 | 已实现 | 顶栏新增“当前状态”，由 `deriveSystemStatus()` 基于设备、样品、离线验证、形态任务和预测状态派生 |
-| 设备准备页应提供普通用户的一键设备检查 | 已实现/部分真实 | “开始设备检查”复用 `/api/device/status` 和 `/api/device/self-test`；RGB 状态来自 OpenCV/DirectShow adapter probe，多光谱显示 DVP2 SDK 状态，标定显示需要确认 |
-| 软件应支持统一设备发现、选择和绑定 | 部分实现 | P1B-3.6 新增 `DeviceDiscovery`/`DeviceRegistry`/`DeviceBinding` 基础层和 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind`；主 UI 设备准备页可扫描 STM32 串口、RGB UVC、DVP2 候选并按逻辑角色保存绑定。绑定保存 stableId 和 last known location，但不等于 connected/verified/ready |
-| 软件不得把 COM 口或 camera index 当作永久身份 | 已实现/架构约束 | 串口 stableId 仅在 pyserial 提供 VID/PID/serial_number 时生成；COM 只保存为 `lastPort`。RGB UVC 当前无法获得稳定身份，`stableId=null`，DirectShow `deviceIndex` 只保存为 `lastDeviceIndex`。DVP2 优先按 serial/user id 匹配 |
+| 设备准备页应提供普通用户的一键设备检查 | 已实现/部分真实 | “开始设备检查”调用 `/api/device/check`，按 STM32、RGB、DVP2 独立硬件域检查；STM32 未连接或缺 pyserial 不阻断 RGB/DVP2；RGB 状态来自 OpenCV/DirectShow adapter probe，多光谱来自 DVP2 SDK probe，标定显示需要确认 |
+| 软件应支持统一设备发现、选择和绑定 | 部分实现 | P1B-3.6 新增基础层；P1B-3.7 完善 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind` 的角色/kind 校验、Windows RGB 身份元数据和相机设置页绑定入口。绑定保存 stableId 和 last known location，但不等于 connected/verified/ready |
+| 软件不得把 COM 口或 camera index 当作永久身份 | 已实现/架构约束 | 串口 stableId 仅在 pyserial 提供 VID/PID/serial_number 时生成；COM 只保存为 `lastPort`。RGB 会尝试读取 Windows FriendlyName/PnP/VID/PID/USB serial，但 DirectShow index 或仅按顺序推断的映射只保存为 `lastDeviceIndex`/`mappingConfidence=inferred`，不生成 stableId。DVP2 优先按 serial/user id 匹配 |
 | 设备发现阶段不得触发机械动作 | 已实现/测试覆盖 | 串口 discovery 对候选 COM 只执行 open/PING/close；已连接的正式 `SerialService` 端口标记 `inUse=true`，不二次打开；不调用风扇、门、光源、滤光轮或电机动作命令 |
 | 相机服务层应与样品保存目录解耦 | 已实现 | `camera_service` adapter 返回 numpy 帧和状态，不决定 Sample Folder、文件名或 `rgbDirName/multispectralDirName` |
 | RGB 相机帧色彩格式必须明确 | 已实现 | `RgbUvcCamera.capture_frame()` 把 OpenCV BGR 转为 RGB，返回 RGB `uint8` H×W×3 |
@@ -31,8 +31,16 @@
 | RGB 预览应与正式采集分离 | 已实现/部分真实 | `/api/camera/rgb/preview/start` 使用同一个 `RgbUvcCamera` 实例启动预览，`/api/camera/rgb/preview-frame` 返回 960x540 JPEG；`CameraManager.capture_rgb_frame()` 通过同一个 RGB adapter 取正式 RGB 帧，不使用预览 JPEG，不在预览运行时打开第二个 UVC 句柄；完整 `/api/capture/start` 仍未放行 |
 | 多光谱相机接口必须支持未来 16-bit mono | 已实现/部分实机 | `CameraFrame` 不强制 `uint8`，允许 `uint16` H×W 单通道；DVP2 binding 的 `frame_to_array()` 会按 `dvpFrame.bits` 保留 `uint8` 或 `uint16`，预览 JPEG 才做显示归一化；用户当前实机验证为 `Mono8/uint8`，代码仍保留 `uint16` 边界 |
 | 多光谱相机网页预览应读取真实 DVP2 当前流 | 已实现/需现场复核 | `/api/camera/multispectral/preview/start` 打开并保持同一个 DVP2 实例和 stream，`/api/camera/multispectral/preview-frame` 只读取当前流并输出 960x540 JPEG；预览响应包含 source dtype、PixelFormat 和亮度 min/max/mean |
+| 多光谱网页预览应优先低延迟显示最新帧 | 已实现/需现场复核 | P1B-5.4 后 preview 使用后台 latest-frame cache，HTTP 请求只编码最新 cached frame，不为每个浏览器请求排队调用 DVP2 `get_frame()`；允许丢弃旧帧，响应和 UI 显示 frameId、sourceTimestamp、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 计数和 encoder；默认目标提升到 12 FPS，前端仍限制最多一个 in-flight request |
 | 多光谱曝光/增益应能从网页真实下发并回读 | 已实现/需现场复核 | `/api/camera/multispectral/apply-settings` 调用 `Dvp2MonoCamera.set_exposure()` 和 `set_gain()`，回读实际值；曝光单位为 μs；范围来自 SDK capability，不在前端硬编码 |
 | 多光谱 PixelFormat 本阶段只显示不切换 | 已实现 | 当前实际 `pixelFormat/frameDtype` 与 `supportedPixelFormats` 分开；只验证 `Mono8`，不开放格式切换 UI |
+| DVP2 正式单帧保存必须保留 raw mono 位深 | 已实现/需实机复核 | `CameraManager.capture_multispectral_frame()` 返回 DVP2 `CameraFrame.data`，`CaptureCoordinator.run_multispectral_capture()` 只接受二维 MONO `uint8/uint16`，保存 PNG 前后读回验证尺寸、单通道和 dtype；不使用 960x540 预览 JPEG，不做 `astype(uint8)`、`/256` 或显示归一化 |
+| DVP2 low-latency preview 不得影响 scientific capture | 已实现 | latest-frame cache 仅用于 `/api/camera/multispectral/preview-frame`；P1B-4 单帧和 P1B-5 多波段 sequence 仍通过 `capture_multispectral_frame()` 直接获取 raw `CameraFrame`，不读取 preview JPEG，不用 cache 冒充正式采集，不改变 uint8/uint16 raw PNG 保存和滤光轮同步 |
+| DVP2 单帧未同步滤光轮时不得伪造波长 | 已实现 | P1B-4 metadata 固定记录 `wavelengthNm=null`、`bandAssignment=unassigned`、`filterWheelSynchronized=false`，`bands` 仍为空，不写假滤光轮位置 |
+| DVP2 多波段 sequence 必须由滤光轮确认后采集 | 已实现/需实机验收 | P1B-5 `CaptureCoordinator.run_multispectral_sequence()` 会先 HOME，再按 enabled band 读取目标轮位、相对移动、查询确认位置、等待稳定、应用该 band 的 exposure/gain，之后才保存 DVP2 raw PNG；位置未知或不匹配会失败并 `safe_stop()`，不保存未同步 band |
+| 多波段 metadata 必须记录真实 band plan 和部分完成状态 | 已实现 | P1B-5 metadata 写入 `bands`、`multispectralSequence`、enabled/disabled/completed/pending/failed bands、filter config source/version、developmentConfig、settlingMs、`partialCapture`、`cancelled` 和每帧 `wavelengthNm`/`bandAssignment`/`filterWheelSynchronized=true` |
+| Dark/White reference 必须是 raw scientific 数据 | 已实现/需实机验收 | P1B-6 Dark/White reference 使用同一 DVP2 raw mono scientific saver，保存 `calibration/dark/band_XX_<bandId>.png` 与 `calibration/white/band_XX_<bandId>.png`，不使用 preview JPEG、不归一化、不把 `uint16` 转 `uint8`；每帧 metadata 明确 `captureType`、band、wavelength、filterWheel、requested/actual exposure/gain、min/max/mean/std |
+| CalibrationSet 必须可追溯并可做兼容性检查 | 已实现 | P1B-6 写入 `calibration/calibration_set_<calibrationId>.json`，记录 camera identity、filter config、bands、dark/white frames、completed/missing bands、`calibrationComplete`、`sameBandSettingsMatched`；`validate_calibration_compatibility()` 比较 camera、filter config、band/wavelength、尺寸、dtype、PixelFormat、exposure/gain，并区分 compatible/warning/incompatible |
 | 支持创建样品并保存元数据 | 已实现 | `/api/new-sample` 写 `metadata.json` |
 | 每次样品创建应生成唯一保存目录 | 已实现 | `create_unique_sample_folder()` |
 | 本次拍摄目录自动进入分析流程 | 部分实现/模拟 | 离线采集会设置 `analysisDataDir` |
@@ -40,7 +48,7 @@
 | 样品拍摄保存前应允许设置 RGB 与多光谱图像子目录名称 | 已实现 | 用户选择保存父目录后弹出“图像目录名称设置”；默认 `rgb`/`multispectral`，校验空值、非法字符、路径分隔符、`.`/`..` 和重名 |
 | 手动读取样品时应先选择父文件夹，再选择 RGB/多光谱一级子目录 | 已实现 | `/api/inspect-image-folders` 扫描父目录直接子目录并建议角色；确认后 `/api/sample-folder` 使用实际选择的 `colorDir/multispectralDirName`；旧 `depthDir` 仅作为历史兼容 alias |
 | 文件夹/文件路径选择应使用系统原生选择器，普通用户不需要手动输入完整 Windows 路径 | 已实现 | 主程序保存位置、其他样品文件夹、Model Studio 导入来源/样品文件夹和 labels.csv 均为只读路径显示 + 选择按钮；取消选择保留原路径 |
-| 样品目录应包含 RGB、多光谱、校准目录 | 已实现/部分实现 | RGB/多光谱子目录名可配置并写入 `metadata.json.image_directories`；默认继续兼容 `rgb`/`multispectral`；P1B-3 受保护 RGB 单帧保存会写入 `<rgbDirName>/rgb_view_000.png`，多光谱和校准真实采集仍未实现 |
+| 样品目录应包含 RGB、多光谱、校准目录 | 已实现/部分实现 | RGB/多光谱子目录名可配置并写入 `metadata.json.image_directories`；默认继续兼容 `rgb`/`multispectral`；P1B-3 受保护 RGB 单帧保存会写入 `<rgbDirName>/rgb_view_000.png`；P1B-4 受保护 DVP2 单帧保存会写入 `<multispectralDirName>/multispectral_frame_000.png`；P1B-5 受保护多波段 sequence 会写入 `<multispectralDirName>/band_XX_<bandId>.png`；P1B-6 受保护 Dark/White reference 会写入 `calibration/dark/band_XX_<bandId>.png`、`calibration/white/band_XX_<bandId>.png` 和 `calibration/calibration_set_<calibrationId>.json` |
 | 样品采集应支持样品台多角度旋转拍摄设置 | 已实现/模拟 | 主程序可设置期望角度间隔、起始角度、方向和闭合补拍；后端生成 `captureRotationPlan` 并写入 metadata；当前样品台硬件为 simulated |
 | 样品旋转角度必须与滤光片转轮角度分开 | 已实现 | `sample_rotation` 用于样品台多视角，`filter_wheel_rotation` 用于多光谱波段切换；metadata 明确两者独立 |
 | 多角度采集默认不得重复拍摄 360° | 已实现 | `views=ceil(360/interval)` 后重新均分一周，默认不生成闭合 View；只有启用“补拍闭合角度”才保存 closure view |
@@ -94,9 +102,9 @@
 
 | 需求 | 备注 |
 | --- | --- |
-| 真实黑白相机多波段采集 | DO3THINK/度申 GigE/RJ45 黑白相机已完成 DVP2 adapter、manual test 用户实机通过和网页预览/参数控制 API；下一步需要把 DVP2 frame 与滤光轮、光源、样品旋转和 `rgbDirName/multispectralDirName` 保存流程接成 CaptureCoordinator；不能用 Wi-Fi link 或 OpenCV VideoCapture 替代 |
+| 真实黑白相机多波段采集 | DO3THINK/度申 GigE/RJ45 黑白相机已完成 DVP2 adapter、manual test 用户实机通过、网页预览/参数控制 API、Coordinator 受保护 raw mono 单帧保存、受保护滤光轮+DVP2 多波段 sample sequence 和 Dark/White calibration sequence 软件路径；下一步需要真实滤光轮现场验收、暗白物理校正验收、样品旋转和完整 `/api/capture/start` 闭环；不能用 Wi-Fi link 或 OpenCV VideoCapture 替代 |
 | STM32 串口通信 | 已有两字节协议、超时、状态查询和测试；仍需实机验证和采集编排 |
-| 滤光轮 HOME/GOTO/报警 | 已有 HOME、相对旋转、位置查询、故障码查询；绝对 GOTO 和真实流程联动待补 |
+| 滤光轮 HOME/GOTO/报警 | 已有 HOME、相对旋转、位置查询、故障码查询；P1B-5 软件 sequence 已用 HOME/相对旋转/位置查询完成 band 同步；绝对 GOTO、最终 STM32 contract 和真实硬件验收待补 |
 | LED 光源开关和亮度控制 | 已有 RGB LED/钨灯开关命令；亮度控制、三路 LED 是否需要扩展需硬件确认 |
 | 门控、急停、温度、电机报警状态 | 升降门、急停、故障码已有基础 API；温度和扩展报警未接入 |
 | RGB 与多光谱标定配准 | `calibrated` registration 未实现 |
