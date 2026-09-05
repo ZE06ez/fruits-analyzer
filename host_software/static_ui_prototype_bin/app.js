@@ -48,6 +48,14 @@ const state = {
     rgb: null,
     multispectral: null,
   },
+  deviceDiscovery: {
+    candidates: [],
+    byKind: {},
+  },
+  deviceBindings: {
+    bindings: {},
+    matches: {},
+  },
   cameraSettingsTab: "rgb",
   rgbPreviewRunning: false,
   rgbPreviewFetching: false,
@@ -202,10 +210,31 @@ const checkStatusText = {
   passed: "正常",
   warning: "需注意",
   failed: "失败",
-  not_connected: "尚未接入",
+  not_connected: "未连接",
   sdk_missing: "SDK 未安装",
   unsupported: "暂不支持",
   manual_required: "需要确认",
+};
+
+const deviceRoleConfig = {
+  MAIN_CONTROLLER: {
+    kind: "serial",
+    select: "mainControllerSelect",
+    status: "mainControllerBindingStatus",
+    label: "主控制器",
+  },
+  RGB_CAMERA: {
+    kind: "uvc",
+    select: "rgbCameraSelect",
+    status: "rgbCameraBindingStatus",
+    label: "RGB",
+  },
+  MULTISPECTRAL_CAMERA: {
+    kind: "dvp2",
+    select: "multispectralCameraSelect",
+    status: "multispectralCameraBindingStatus",
+    label: "多光谱",
+  },
 };
 
 function $(selector) {
@@ -1138,7 +1167,7 @@ function deriveSystemStatus() {
     key: "waiting-device-check",
     label: "等待设备检查",
     tone: "waiting",
-    detail: "请先完成设备准备；真实相机当前尚未接入。",
+    detail: "请先完成当前离线设备准备；真实采集仍需完整采集协调器。",
   };
 }
 
@@ -1152,7 +1181,7 @@ function renderSystemStatus() {
   return status;
 }
 
-function requireDevicePreparation(message = "请先完成设备准备：连接检查、电机、光源、相机和标定检查。") {
+function requireDevicePreparation(message = "请先完成当前离线设备准备检查：连接、电机和光源。相机真实采集与完整标定将在真实采集流程中单独检查。") {
   if (isDevicePreparationReady()) return true;
   addLog(message, "WARN");
   setText("statusNote", message);
@@ -1162,7 +1191,7 @@ function requireDevicePreparation(message = "请先完成设备准备：连接�
 
 function updateDevicePreparationControls() {
   const ready = isDevicePreparationReady();
-  const hint = ready ? "离线验证可用；真实采集仍需完整相机与采集协调器。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
+  const hint = ready ? "离线验证可用；真实采集仍需正式保存流程与采集协调器。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
   $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
   $("#startWorkflow") && ($("#startWorkflow").title = hint);
   $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
@@ -1174,7 +1203,7 @@ function updateDevicePreparationControls() {
     button.disabled = !ready;
     button.title = hint;
   });
-  if (ready) setText("statusNote", "设备检查已完成：离线验证可用，真实采集仍需完整相机与采集协调器。");
+  if (ready) setText("statusNote", "设备检查已完成：离线验证可用，真实采集仍需正式保存流程与采集协调器。");
 }
 
 function renderDevicePreparationStatus() {
@@ -1204,7 +1233,7 @@ function renderDevicePreparationStatus() {
     const rgbReady = Boolean(state.cameraStatus.rgb?.connected || state.cameraStatus.rgb?.available);
     const spectralSdkMissing = state.cameraStatus.multispectral?.sdkAvailable === false;
     const cameraText = rgbReady
-      ? "相机: RGB 可用，多光谱待接入"
+      ? "相机: RGB 可用，DVP2 待检查"
       : spectralSdkMissing
         ? "相机: DVP2 SDK 未安装"
         : "相机: 未连接";
@@ -1357,7 +1386,7 @@ function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCh
   const summary = state.deviceCheckRunning
     ? "设备检查中，包含滤光轮归零/运动检查..."
     : offlineReady
-      ? "离线验证可用；真实采集不可用，等待完整相机服务和采集协调器。"
+      ? "离线验证可用；真实采集不可用，等待完整采集协调器。"
       : controllerOk
         ? `设备未完全就绪；${manual} 项需要确认，${blocked} 项不可用。`
         : "未连接 STM32；请先选择串口并连接。";
@@ -1405,6 +1434,137 @@ function renderSerialPorts() {
     select.appendChild(option);
   });
   if (ports.some((port) => port.device === selected)) select.value = selected;
+}
+
+function candidateLocationText(candidate = {}) {
+  const connection = candidate.connection;
+  if (typeof connection === "string") return connection;
+  if (!connection || typeof connection !== "object") return "";
+  const parts = [];
+  if (connection.backend) parts.push(connection.backend);
+  if (connection.deviceIndex !== undefined && connection.deviceIndex !== null) parts.push(`index ${connection.deviceIndex}`);
+  if (connection.serial) parts.push(connection.serial);
+  if (connection.userId) parts.push(`user ${connection.userId}`);
+  return parts.join(" · ");
+}
+
+function candidateLabel(candidate = {}) {
+  const meta = candidate.metadata || {};
+  const flags = [];
+  if (candidate.stableId) flags.push(candidate.stableId);
+  const location = candidateLocationText(candidate);
+  if (location) flags.push(location);
+  if (meta.protocolMatched) flags.push("PING");
+  if (meta.frameReadable) flags.push("frame");
+  if (candidate.status === "in_use") flags.push("使用中");
+  if (candidate.status === "unavailable") flags.push("不可用");
+  return [candidate.displayName || candidate.kind || "Device", flags.join(" · ")].filter(Boolean).join(" / ");
+}
+
+function candidatesForRole(role) {
+  const config = deviceRoleConfig[role] || {};
+  return (state.deviceDiscovery.candidates || []).filter((candidate) => candidate.kind === config.kind);
+}
+
+function renderDeviceDiscovery() {
+  Object.entries(deviceRoleConfig).forEach(([role, config]) => {
+    const select = document.getElementById(config.select);
+    if (!select) return;
+    const previous = select.value;
+    const candidates = candidatesForRole(role);
+    select.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = candidates.length ? "请选择设备候选" : "未发现候选设备";
+    select.appendChild(empty);
+    candidates.forEach((candidate, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = candidateLabel(candidate);
+      select.appendChild(option);
+    });
+    if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  });
+  renderDeviceBindingStatus();
+  const count = (state.deviceDiscovery.candidates || []).length;
+  const bindings = state.deviceBindings?.bindings || {};
+  setText(
+    "deviceDiscoverySummary",
+    count
+      ? `发现 ${count} 个候选；已保存 ${Object.keys(bindings).length} 个角色绑定。`
+      : "未发现候选设备；设备未插入是正常状态，可重新扫描。"
+  );
+}
+
+function renderDeviceBindingStatus() {
+  Object.entries(deviceRoleConfig).forEach(([role, config]) => {
+    const binding = state.deviceBindings?.bindings?.[role];
+    const match = state.deviceBindings?.matches?.[role];
+    const stateText = match?.state === "matched"
+      ? `已匹配 ${match.method}`
+      : binding
+        ? "已绑定 / 当前未匹配"
+        : "未绑定";
+    const location = match?.candidate ? candidateLocationText(match.candidate) : "";
+    const name = match?.candidate?.displayName || binding?.displayName || "";
+    setText(config.status, `${config.label}: ${[stateText, name, location].filter(Boolean).join(" · ")}`);
+  });
+}
+
+async function refreshDeviceDiscovery() {
+  const button = $("#refreshDeviceDiscovery");
+  if (button) button.disabled = true;
+  setText("deviceDiscoverySummary", "正在扫描设备候选...");
+  try {
+    const payload = await api("/api/devices/discover");
+    state.deviceDiscovery = payload.discovery || { candidates: [], byKind: {} };
+    state.deviceBindings = payload.bindings || { bindings: {}, matches: {} };
+    renderDeviceDiscovery();
+    addLog(`设备扫描完成：发现 ${(state.deviceDiscovery.candidates || []).length} 个候选。`);
+  } catch (error) {
+    state.deviceDiscovery = { candidates: [], byKind: {} };
+    renderDeviceDiscovery();
+    addLog(error.message || "设备扫描失败。", "WARN");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function bindSelectedDevice(role) {
+  const config = deviceRoleConfig[role];
+  const select = config ? document.getElementById(config.select) : null;
+  if (!config || !select || select.value === "") {
+    addLog("请先选择一个设备候选再绑定。", "WARN");
+    return;
+  }
+  const candidates = candidatesForRole(role);
+  const candidate = candidates[Number(select.value)];
+  if (!candidate) {
+    addLog("当前选择的设备候选不存在，请重新扫描。", "WARN");
+    return;
+  }
+  try {
+    const payload = await api("/api/devices/bind", {
+      method: "POST",
+      body: JSON.stringify({
+        role,
+        kind: candidate.kind,
+        stableId: candidate.stableId,
+        connection: candidate.connection,
+      }),
+    });
+    state.deviceBindings = payload.result?.bindings || state.deviceBindings;
+    renderDeviceDiscovery();
+    if (role === "RGB_CAMERA" && candidate.connection?.deviceIndex !== undefined && $("#cameraDeviceIndex")) {
+      $("#cameraDeviceIndex").value = candidate.connection.deviceIndex;
+    }
+    if (role === "MULTISPECTRAL_CAMERA" && candidate.stableId && $("#multispectralCameraSerial")) {
+      $("#multispectralCameraSerial").value = candidate.stableId;
+    }
+    addLog(`${config.label}已绑定：${candidateLabel(candidate)}。`);
+  } catch (error) {
+    addLog(error.message || "设备绑定失败。", "ERROR");
+  }
 }
 
 async function loadDevicePorts() {
@@ -1547,8 +1707,8 @@ async function runUnifiedDeviceCheck() {
     setStepStatus("motor", state.devicePrep.motor ? "done" : "warning");
     setStepStatus("light", state.devicePrep.light ? "done" : "warning");
     setStepStatus("camera", "warning");
-    setText("statusNote", "设备检查完成：离线验证可用；RGB 走 OpenCV/DirectShow 检查，多光谱等待 DVP2 SDK，真实采集不可用。");
-    addLog("一键设备检查完成：已复用 STM32 状态读取与硬件自检；相机仍为尚未接入。");
+    setText("statusNote", "设备检查完成：离线验证可用；RGB 走 OpenCV/DirectShow 检查，DVP2 走 SDK adapter 检查；真实采集不可用。");
+    addLog("一键设备检查完成：已复用 STM32 状态读取与硬件自检；相机预览与参数能力不等于真实采集就绪。");
     await syncDevicePreparation();
   } catch (error) {
     const checks = checksFromHardwareStatus(state.hardwareStatus);
@@ -1773,13 +1933,18 @@ function applyImageDirNames({ rgbDirName = "rgb", multispectralDirName = "multis
   state.multispectralDirName = multispectralDirName || "multispectral";
   state.otherImageDirs = Array.isArray(otherImageDirs) ? otherImageDirs : [];
   if ($("#colorDir")) $("#colorDir").value = state.rgbDirName;
+  if ($("#multispectralDir")) $("#multispectralDir").value = state.multispectralDirName;
   if ($("#depthDir")) $("#depthDir").value = state.multispectralDirName;
+}
+
+function currentMultispectralDirName(fallback = "multispectral") {
+  return state.multispectralDirName || $("#multispectralDir")?.value || $("#depthDir")?.value || fallback;
 }
 
 function imageDirSettingsDefaults() {
   return {
     rgbDirName: state.rgbDirName || $("#colorDir")?.value || "rgb",
-    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+    multispectralDirName: currentMultispectralDirName(),
   };
 }
 
@@ -2357,11 +2522,11 @@ async function runDeviceTest(type) {
     },
     camera: {
       pill: "cameraStatus",
-      text: "相机: 尚未接入",
+      text: "相机: 真实采集未就绪",
       step: "camera",
       status: "warning",
       prepValue: false,
-      log: "相机检查完成：RGB 已进入 OpenCV/DirectShow 接入层；多光谱相机等待 DVP2 SDK，不能开始真实采集。",
+      log: "相机检查完成：RGB 已接入 OpenCV/DirectShow，DVP2 已接入 SDK adapter；完整采集协调器完成前不能开始真实采集。",
     },
   };
   const item = map[type];
@@ -2369,7 +2534,7 @@ async function runDeviceTest(type) {
   setPill(item.pill, item.text, item.status === "warning" ? "warn" : "ok");
   setStepStatus(item.step, item.status === "warning" ? "warning" : "done");
   state.devicePrep[type] = item.prepValue ?? true;
-  setText("statusNote", "硬件通信尚未接入，当前自检结果来自离线模拟。");
+  setText("statusNote", "当前手动自检结果用于离线验证；真实整机流程仍需采集协调器和实机联调。");
   addLog(item.log);
   await syncDevicePreparation();
 }
@@ -2386,12 +2551,12 @@ function renderCalibrationStatus() {
   const passed = state.calibrationStatus === "passed";
   const button = $("#confirmCalibration");
   if (button) {
-    button.textContent = passed ? "✓ 检查通过" : "确认检查通过";
+    button.textContent = passed ? "✓ 标定检查已确认" : "确认标定检查";
     button.classList.toggle("passed", passed);
   }
   setText("calibrationConfirmText", passed
-    ? "已由操作员人工确认标定检查通过。"
-    : "未确认。本按钮仅记录人工检查结果，不代表已连接真实标定设备。");
+    ? "已由操作员人工确认采集前标定检查通过；不代表几何标定或尺寸标定已经完成。"
+    : "未确认。本按钮仅记录采集前人工检查结果，不代表几何标定或尺寸标定已经完成。");
   setStepStatus("calibration", passed ? "done" : "waiting");
 }
 
@@ -2399,7 +2564,7 @@ async function confirmCalibrationCheck() {
   state.calibrationStatus = "passed";
   state.devicePrep.calibration = true;
   renderCalibrationStatus();
-  addLog("标定检查已人工确认通过。");
+  addLog("采集前标定检查已人工确认通过；不代表完整几何或尺寸标定完成。");
   await syncDevicePreparation();
 }
 
@@ -2451,7 +2616,7 @@ async function completeCurrentCapture() {
     state.analysisDataDir = payload.analysisDataDir || state.currentCaptureDir;
     applyImageDirNames({
       rgbDirName: payload.rgbDirName || payload.colorDir || state.rgbDirName,
-      multispectralDirName: payload.multispectralDirName || payload.depthDir || state.multispectralDirName,
+      multispectralDirName: payload.multispectralDirName || payload.multispectralDir || payload.depthDir || state.multispectralDirName,
       otherImageDirs: [],
     });
     state.captureRotationPlan = payload.captureRotationPlan || state.captureRotationPlan;
@@ -2499,9 +2664,8 @@ function qualityPayload() {
   return {
     datasetDir: state.analysisDataDir,
     colorDir: state.rgbDirName || $("#colorDir")?.value || "rgb",
-    depthDir: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
     rgbDirName: state.rgbDirName || $("#colorDir")?.value || "rgb",
-    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+    multispectralDirName: currentMultispectralDirName(),
     sampleId: $("#sampleId")?.value || "",
     fruitType: state.fruitType || "",
     variety: state.variety || "generic",
@@ -2556,7 +2720,7 @@ function updateSampleSessionFromImages() {
     .map((item) => item.color?.name)
     .filter(Boolean);
   state.sampleSession.multispectralFiles = state.imageBrowser.images
-    .map((item) => item.depth?.name)
+    .map((item) => (item.multispectral || item.depth)?.name)
     .filter(Boolean);
   renderQualitySampleSummary();
 }
@@ -2819,7 +2983,7 @@ function applySampleSessionState(sample = {}) {
   state.analysisDataDir = sample.analysisDataDir || "";
   applyImageDirNames({
     rgbDirName: sample.rgbDirName || sample.colorDir || state.rgbDirName || "rgb",
-    multispectralDirName: sample.multispectralDirName || sample.depthDir || state.multispectralDirName || "multispectral",
+    multispectralDirName: sample.multispectralDirName || sample.multispectralDir || sample.depthDir || state.multispectralDirName || "multispectral",
     otherImageDirs: sample.otherImageDirs || state.otherImageDirs || [],
   });
   state.captureStarted = Boolean(sample.captureStarted);
@@ -3069,7 +3233,7 @@ async function selectDataset() {
       await loadSampleFolder(payload.path, {
         source: "other",
         colorDir: selection.rgbDirName,
-        depthDir: selection.multispectralDirName,
+        multispectralDir: selection.multispectralDirName,
         otherDirs: selection.otherImageDirs,
         strictImageDirs: true,
       });
@@ -3177,17 +3341,19 @@ async function handleDataSourceChange(source) {
 async function loadSampleFolder(datasetDir, {
   source = state.dataSource,
   colorDir = state.rgbDirName || $("#colorDir")?.value || "rgb",
-  depthDir = state.multispectralDirName || $("#depthDir")?.value || "multispectral",
+  multispectralDir = currentMultispectralDirName(),
+  depthDir: legacyDepthDir = "",
   otherDirs = state.otherImageDirs || [],
   strictImageDirs = false,
 } = {}) {
   const target = datasetDir || "";
+  const spectralDir = multispectralDir || legacyDepthDir || currentMultispectralDirName();
   state.analysisDataDir = target;
   setDataSource(source);
   setPathDisplay("#datasetDir", target);
   applyImageDirNames({
     rgbDirName: colorDir || state.rgbDirName || "rgb",
-    multispectralDirName: depthDir || state.multispectralDirName || "multispectral",
+    multispectralDirName: spectralDir || state.multispectralDirName || "multispectral",
     otherImageDirs: otherDirs,
   });
 
@@ -3215,9 +3381,8 @@ async function loadSampleFolder(datasetDir, {
   const query = new URLSearchParams({
     datasetDir: target,
     colorDir: colorDir || "",
-    depthDir: depthDir || "",
     rgbDirName: colorDir || "",
-    multispectralDirName: depthDir || "",
+    multispectralDirName: spectralDir || "",
     otherDirs: Array.isArray(otherDirs) ? otherDirs.join(",") : "",
     strictImageDirs: strictImageDirs ? "1" : "0",
     source,
@@ -3232,7 +3397,7 @@ async function loadSampleFolder(datasetDir, {
   }
   applyImageDirNames({
     rgbDirName: report.rgbDirName || directoryNameForInput(report.colorDir, colorDir || "rgb"),
-    multispectralDirName: report.multispectralDirName || directoryNameForInput(report.depthDir, depthDir || "multispectral"),
+    multispectralDirName: report.multispectralDirName || directoryNameForInput(report.multispectralDir || report.depthDir, spectralDir || "multispectral"),
     otherImageDirs: report.otherImageDirs || otherDirs,
   });
   if (report.valid || Number(report.rgbCount || 0) > 0) {
@@ -3280,9 +3445,8 @@ async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datas
   const query = new URLSearchParams({
     datasetDir,
     colorDir: state.rgbDirName || $("#colorDir")?.value || "",
-    depthDir: state.multispectralDirName || $("#depthDir")?.value || "",
     rgbDirName: state.rgbDirName || $("#colorDir")?.value || "",
-    multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "",
+    multispectralDirName: currentMultispectralDirName(""),
   });
   try {
     const payload = await api(`/api/dataset-images?${query.toString()}`);
@@ -3290,7 +3454,7 @@ async function loadDatasetImages(datasetDir = state.analysisDataDir || $("#datas
     state.imageBrowser.index = 0;
     applyImageDirNames({
       rgbDirName: payload.rgbDirName || directoryNameForInput(payload.colorDir, state.rgbDirName || "rgb"),
-      multispectralDirName: payload.multispectralDirName || directoryNameForInput(payload.depthDir, state.multispectralDirName || "multispectral"),
+      multispectralDirName: payload.multispectralDirName || directoryNameForInput(payload.multispectralDir || payload.depthDir, state.multispectralDirName || "multispectral"),
       otherImageDirs: state.otherImageDirs,
     });
     renderDatasetImage();
@@ -3322,11 +3486,12 @@ function renderDatasetImage() {
   const index = Math.max(0, Math.min(state.imageBrowser.index, images.length - 1));
   state.imageBrowser.index = index;
   const item = images[index];
+  const multispectral = item.multispectral || item.depth;
   setPreviewImage("#colorPreview", "#colorPreviewEmpty", `${item.color.url}&t=${Date.now()}`);
-  setPreviewImage("#depthPreview", "#depthPreviewEmpty", item.depth?.url ? `${item.depth.url}&t=${Date.now()}` : "");
+  setPreviewImage("#depthPreview", "#depthPreviewEmpty", multispectral?.url ? `${multispectral.url}&t=${Date.now()}` : "");
   setText("imageBrowserCount", `${index + 1} / ${images.length}`);
   setText("colorPreviewName", item.color.name || "彩色图");
-  setText("depthPreviewName", item.depth?.name || "未提供多光谱图");
+  setText("depthPreviewName", multispectral?.name || "未提供多光谱图");
 }
 
 function stepDatasetImage(delta) {
@@ -3374,9 +3539,8 @@ async function runShapeAnalysis() {
       body: JSON.stringify({
         datasetDir: state.analysisDataDir || $("#datasetDir")?.value || "",
         colorDir: state.rgbDirName || $("#colorDir")?.value || "",
-        depthDir: state.multispectralDirName || $("#depthDir")?.value || "",
         rgbDirName: state.rgbDirName || $("#colorDir")?.value || "",
-        multispectralDirName: state.multispectralDirName || $("#depthDir")?.value || "",
+        multispectralDirName: currentMultispectralDirName(""),
         fx: camera.fx,
         fy: camera.fy,
         cx: camera.cx,
@@ -3462,10 +3626,12 @@ function renderShapeResult(result) {
   setText("metricDepth", detail.areaPixels ? `${detail.areaPixels} px` : "--");
   setText("metricDiameter", formatLength(result.diameterMm, result.diameterPx ?? detail.diameterPx));
   setText("metricHeight", formatLength(result.heightMm, result.heightPx ?? detail.heightPx));
-  setText("metricVolume", hasPointcloud ? `${Number(result.volumeMm3).toFixed(2)} mm³` : "待三维方案");
-  setText("metricWeight", hasPointcloud ? `${Number(result.weightG).toFixed(2)} g` : "待三维方案");
+  const volumePrefix = result.volumeEstimated ? "估算 " : "";
+  const weightPrefix = result.weightEstimated ? "估算 " : "";
+  setText("metricVolume", hasPointcloud ? `${volumePrefix}${Number(result.volumeMm3).toFixed(2)} mm³` : "待三维方案");
+  setText("metricWeight", hasPointcloud ? `${weightPrefix}${Number(result.weightG).toFixed(2)} g` : "待三维方案");
   renderTextureResult(result.texture);
-  setText("resultShape", hasPointcloud ? `二维形态 + 点云数值 ${result.pointCount} 点` : "二维形态与表面分析完成");
+  setText("resultShape", hasPointcloud ? `二维形态 + 点云估算 ${result.pointCount} 点` : "二维形态与表面分析完成");
   setText("resultSummary", `形态分析成功，用时 ${result.elapsedSec}s。`);
   setStepStatus("confirm", "done");
   state.shapeDone = true;
@@ -3565,7 +3731,7 @@ function exportReport() {
     `综合等级: ${$("#gradeValue")?.textContent || "--"}`,
     `形态分析: ${$("#resultShape")?.textContent || "--"}`,
     `果粉覆盖率: ${$("#metricBloomSide")?.textContent || "--"}`,
-    "说明: 硬件控制仍为预留；形态分析在本地 Python 后端执行。",
+    "说明: RGB、DVP2 与 STM32 基础控制层已接入；当前结果仍处于软件/实验验证阶段，完整真实自动采集闭环尚未接入 CaptureCoordinator。",
   ];
   const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
@@ -3718,6 +3884,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#faultClearDevice")?.addEventListener("click", () => faultClearDevice());
   $("#refreshDeviceStatus")?.addEventListener("click", () => refreshHardwareStatus());
   $("#startDeviceCheck")?.addEventListener("click", () => runUnifiedDeviceCheck());
+  $("#refreshDeviceDiscovery")?.addEventListener("click", () => refreshDeviceDiscovery());
+  document.querySelectorAll("[data-bind-device-role]").forEach((button) => {
+    button.addEventListener("click", () => bindSelectedDevice(button.dataset.bindDeviceRole));
+  });
   $("#hardwareSelfTest")?.addEventListener("click", () => runHardwareSelfTest(false));
   $("#hardwareMotionSelfTest")?.addEventListener("click", () => runHardwareSelfTest(true));
 
@@ -3790,9 +3960,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateDevicePreparationControls();
   updateShapeMode();
   renderDeviceChecks(checksFromHardwareStatus());
+  renderDeviceDiscovery();
   renderSystemStatus();
   await loadDevicePorts();
   await refreshHardwareStatus();
+  await refreshDeviceDiscovery().catch((error) => addLog(error.message || "设备扫描失败。", "WARN"));
   try {
     const status = await api("/api/status");
     applyHardwareStatus(status.device || {});
@@ -3808,7 +3980,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.analysisDataDir = status.analysisDataDir || status.sampleDataset || "";
     applyImageDirNames({
       rgbDirName: status.rgbDirName || status.colorDir || "rgb",
-      multispectralDirName: status.multispectralDirName || status.depthDir || "multispectral",
+      multispectralDirName: status.multispectralDirName || status.multispectralDir || status.depthDir || "multispectral",
       otherImageDirs: status.otherImageDirs || [],
     });
     await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));

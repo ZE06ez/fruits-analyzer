@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -37,7 +37,7 @@
 
 | 模块 | 目标/文档描述 | 当前代码状态 |
 | --- | --- | --- |
-| RGB 彩色相机 | `camera/rgb` 厂商资料显示 Windows AMCAP/UVC 与锐尔威视 USB Camera SDK；用于外观和形态 | PARTIAL/REAL VERIFIED：`camera_service.RgbUvcCamera` 通过 OpenCV `cv2.CAP_DSHOW`/UVC 打开当前电脑 `device_index=1`，请求 `MJPG`、`3840x2160`、`25fps`，实机验证可取 `(2160, 3840, 3)` `uint8` RGB 帧；配置在 `RgbCameraConfig`，不在 adapter 内硬编码；同一逻辑 index 兼容 `VideoCapture(index, CAP_DSHOW)` 与 `VideoCapture(index + CAP_DSHOW)` 两种 DirectShow 打开形式，不扫描或 fallback 到 0；相机设置页“重新检测”调用 `/api/camera/rgb/probe` 执行真实打开/取帧/释放，状态区分 `detected`、`available`、`opened`、`streaming`，释放句柄或停止预览后仍保留已检测/可用状态；`/api/camera/rgb/apply-settings` 可下发并回读参数，`/api/camera/rgb/preview-*` 可做 960x540 JPEG 预览；正式保存和完整采集协调器仍未接入，主采集仍走离线验证 |
+| RGB 彩色相机 | `camera/rgb` 厂商资料显示 Windows AMCAP/UVC 与锐尔威视 USB Camera SDK；用于外观和形态 | PARTIAL/REAL VERIFIED：`camera_service.RgbUvcCamera` 通过 OpenCV `cv2.CAP_DSHOW`/UVC 打开当前电脑 `device_index=1`，请求 `MJPG`、`3840x2160`、`25fps`，实机验证可取 `(2160, 3840, 3)` `uint8` RGB 帧；配置在 `RgbCameraConfig`，不在 adapter 内硬编码；同一逻辑 index 兼容 `VideoCapture(index, CAP_DSHOW)` 与 `VideoCapture(index + CAP_DSHOW)` 两种 DirectShow 打开形式，不扫描或 fallback 到 0；相机设置页“重新检测”调用 `/api/camera/rgb/probe` 执行真实打开/取帧/释放，状态区分 `detected`、`available`、`opened`、`streaming`，释放句柄或停止预览后仍保留已检测/可用状态；`/api/camera/rgb/apply-settings` 可下发并回读参数，`/api/camera/rgb/preview-*` 可做 960x540 JPEG 预览；P1B-3 已新增受保护的 `CaptureCoordinator.run_rgb_capture()` 单帧 RGB 正式 PNG 保存路径，但完整 `/api/capture/start`、DVP2 多波段、滤光轮和样品旋转闭环仍未放行，主 UI 采集仍走离线验证 |
 | 黑白多光谱相机 | DO3THINK/度申 GigE/RJ45 工业黑白相机，通过 PC 千兆以太网口和 DVP2 SDK 连接；配合滤光片转轮采集多光谱灰度图 | PARTIAL/REAL ADAPTER：`camera_service.Dvp2MonoCamera` 已基于 `D:\Netease\DVP2 SDK CN\library\Visual C++\include\DVPCamera.h` 和官方示例新增 Python 3.12 `ctypes` 绑定；可发现 `DVPCamera64.dll`，真实枚举目标为 `MGV231M-H2-169.254.25.110`、`UserID=GP23400004963`、SDK serial `DSGP23400004963`、MAC `B4-61-D3-14-6E-18`；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、开始取流、30 帧取图和 PNG 保存，实际帧 `2048x1200`、`Mono8`、`uint8`；相机设置页已接入 DVP2 重新检测、网页 JPEG 预览、曝光/增益下发与回读、设备详情和占用提示。本轮 Codex 复测时当前环境枚举返回 0，因此正式采集保存和 CaptureCoordinator 仍未接入，不能把多光谱预览成功等同于完整采集闭环 |
 | 滤光片转轮 | 文档建议 8-16 孔，STM32 控制 HOME/定位；代码开发配置启用 450/560/670 nm | PARTIAL：已有 `serial_service.py`、`hardware_controller.py`、`device_manager.py` 的两字节 STM32 串口控制层和滤光轮寻零/相对旋转命令；真实运行需连接 STM32 和 pyserial |
 | 样品旋转平台 | 围绕水果旋转，用于 RGB + 多光谱多视角采集 | PARTIAL/MOCK：主程序已支持 `sample_rotation` 角度计划、UI 设置、metadata/views.json 记录和离线模拟多 View 文件；没有真实样品台电机控制 |
@@ -77,7 +77,9 @@ UI
 - `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
 - `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 两字节串口服务，115200 8N1，一问一答，不自动重发机械命令。
 - `host_software/static_ui_prototype_bin/hardware_controller.py`：风扇、升降门、RGB LED、钨灯、滤光片轮、状态查询、急停和故障清除控制层。
+- `host_software/static_ui_prototype_bin/device_discovery.py`：P1B-3.6 统一设备发现和绑定基础层；定义 `DeviceCandidate`/`DeviceBinding`/`DeviceRegistry`/`DeviceDiscovery`，区分 stable identity 与 current location。串口只用 open/PING/close 验证协议，不执行机械动作；RGB UVC 候选 `stableId=null`，只记录 DirectShow index 作为 last known location；DVP2 优先用 serial/user id 作为稳定身份。运行时绑定保存到 `runtime/hardware_profile.json`，不把当前电脑私有 COM/index 写入源码默认配置。
 - `host_software/static_ui_prototype_bin/device_manager.py`：后端设备管理层，连接串口、执行 PING、自检、急停、采集状态，并在完整真实采集协调器未接入时拒绝真实采集。
+- `host_software/static_ui_prototype_bin/capture_coordinator.py`：P1B 采集协调器骨架，定义真实采集状态机、步骤模型、取消/超时/安全停止和 metadata 骨架；P1B-2 已接入 STM32 硬件安全准备链，可执行预检查、关门、风扇、RGB/多光谱光源准备、interlock 确认和关灯收尾；P1B-3 新增受保护的 RGB 单帧正式采集与 PNG 保存步骤，但不转滤光轮、不采 DVP2 多波段、不驱动样品旋转，也不放行完整真实采集。
 - `host_software/static_ui_prototype_bin/camera_service/`：P1A 相机服务基础层；包含统一相机异常/状态接口、RGB UVC/OpenCV DirectShow adapter、DVP2 `ctypes` binding、DVP2 黑白相机 adapter 和 `CameraManager`。
 - `host_software/static_ui_prototype_bin/rotation_plan.py`：样品台多角度旋转采集计划；与滤光片转轮角度独立。
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
@@ -94,7 +96,7 @@ UI
 1. 启动软件：运行 `python launcher.py` 或打包后的 EXE。
 2. `launcher.py` 启动本地后端并打开浏览器页面。
 3. UI 加载 `/api/status`，获取依赖状态、默认保存根目录、当前样品会话、Model Studio 发布模型目录。
-4. 用户进行设备准备：顶栏显示由 `deriveSystemStatus()` 派生的全局状态；设备准备页提供“开始设备检查”普通入口，复用 `/api/device/status` 和 `/api/device/self-test` 读取 STM32、门、风扇、滤光轮、光源控制状态。P1A 后 RGB 相机状态来自 `CameraManager`/`RgbUvcCamera` 的 OpenCV DirectShow probe；相机设置页的“重新检测”会调用 `/api/camera/rgb/probe`，按当前配置只打开 `device_index=1` 并取一帧，不会自动 fallback 到内置摄像头。probe 成功后即使释放句柄，UI 也应显示“已检测 / 预览已停止”，而不是“未连接”。多光谱相机状态来自 DVP2 SDK：相机设置页可重新检测、打开网页预览、调整曝光/增益并回读 actual；若已枚举但无法打开，会提示关闭 BasedCam3 或其他相机程序。标定显示“需要人工确认”，不会标为真实通过。串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；完整真实采集、光源波段联动和样品台控制仍未接入。
+4. 用户进行设备准备：顶栏显示由 `deriveSystemStatus()` 派生的全局状态；设备准备页提供“开始设备检查”普通入口，复用 `/api/device/status` 和 `/api/device/self-test` 读取 STM32、门、风扇、滤光轮、光源控制状态。P1A 后 RGB 相机状态来自 `CameraManager`/`RgbUvcCamera` 的 OpenCV DirectShow probe；相机设置页的“重新检测”会调用 `/api/camera/rgb/probe`，按当前配置只打开 `device_index=1` 并取一帧，不会自动 fallback 到内置摄像头。probe 成功后即使释放句柄，UI 也应显示“已检测 / 预览已停止”，而不是“未连接”。P1B-3 后 Coordinator 内部受保护方法可在 RGB 安全准备链后采集并保存一张正式 RGB PNG。多光谱相机状态来自 DVP2 SDK：相机设置页可重新检测、打开网页预览、调整曝光/增益并回读 actual；若已枚举但无法打开，会提示关闭 BasedCam3 或其他相机程序。标定显示“需要人工确认”，不会标为真实通过。串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；完整真实采集、光源波段联动、DVP2 多波段和样品台控制仍未接入。
 5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
 6. 可在“样品采集”页设置样品台多角度旋转拍摄：启用/关闭、期望角度间隔、起始角度、CW/CCW、是否补拍闭合角度。该设置属于 `sample_rotation`，不等同于滤光片转轮角度。
 7. 完成设备准备并选择保存父目录后，前端弹出“图像目录名称设置”；用户确认 RGB 图像目录名和多光谱图像目录名后，点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json.image_directories`，并创建实际 RGB 子目录、实际多光谱子目录、`calibration/dark/`、`calibration/white/`。默认仍为 `rgb/` 和 `multispectral/`。
@@ -111,7 +113,7 @@ UI
 18. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
 19. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
 20. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
-21. 导出报告：前端生成本地 TXT 文本，说明硬件仍为预留。
+21. 导出报告：前端生成本地 TXT 文本，说明 RGB、DVP2 与 STM32 基础控制层已接入，但完整真实自动采集闭环尚未接入 CaptureCoordinator。
 
 ## 5. Model Studio 工作流
 
@@ -189,7 +191,8 @@ UI
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
 | RGB + 多光谱目录检查 | DONE | `inspect_sample_folder()` 按启用波段检查 |
 | Camera Service 基础层 | DONE/PARTIAL | `camera_service` 定义统一接口、异常和 `CameraManager`；adapter 与样品保存目录解耦；`CameraManager` 用单实例和锁统一 self-test、preview、apply settings |
-| RGB UVC/DirectShow adapter | DONE/PARTIAL | `RgbUvcCamera` 使用 OpenCV `cv2.CAP_DSHOW`，返回 RGB `uint8` H×W×3；当前电脑已验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`；状态明确区分 `detected`、`available`、`opened`、`streaming`；能力探测区分 exposure/gain/white balance 是否实际可设；已接入相机设置页重新检测、参数应用和 960x540 JPEG 预览，未接入正式采图保存 |
+| CaptureCoordinator 骨架 | DONE/PARTIAL | `capture_coordinator.py` 定义状态机、步骤模型、错误模型、取消、超时、best-effort safe stop 和 metadata 骨架；P1B-2 已通过 `HardwareController` 接入安全准备链：硬件预检查、升降门关闭确认、风扇开启确认、RGB/多光谱光源互斥准备、capture interlock 确认和关灯收尾；P1B-3 新增受保护的 RGB 单帧正式采集与 PNG 保存步骤，记录尺寸、dtype、通道、色彩顺序、设备和 requested/actual 设置；`DeviceManager.capture_status()` 可暴露 snapshot，但 `/api/capture/start` 仍受保护 |
+| RGB UVC/DirectShow adapter | DONE/PARTIAL | `RgbUvcCamera` 使用 OpenCV `cv2.CAP_DSHOW`，返回 RGB `uint8` H×W×3；当前电脑已验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`；状态明确区分 `detected`、`available`、`opened`、`streaming`；能力探测区分 exposure/gain/white balance 是否实际可设；已接入相机设置页重新检测、参数应用和 960x540 JPEG 预览，并通过 `CameraManager.capture_rgb_frame()` 供 Coordinator 受保护单帧正式保存使用 |
 | DVP2 多光谱相机 adapter | PARTIAL/REAL VERIFIED BY USER | `dvp2_binding.py` 已按真实 `DVPCamera.h`/官方示例绑定 `dvpRefresh`、`dvpEnum`、`dvpOpenByName`、`dvpOpenByUserId`、`dvpStart`、`dvpGetFrame`、曝光/增益/ROI/触发等接口；`Dvp2MonoCamera` 已能发现 SDK、按 serial/user_id 选择目标、打开、开始取流、保留 mono `uint8/uint16` 帧，并接入状态/probe/预览 API；相机设置页已支持网页实时预览和曝光/增益真实下发/回读；PixelFormat 仅显示当前实际值，当前只验证 `Mono8`，不开放格式切换；正式多波段采集保存和 CaptureCoordinator 未接入 |
 | RGB 二维形态/表面分析 | DONE/PARTIAL | 可测面积、宽高、颜色、果粉；不是完整真实尺寸标定 |
 | RGB-D/PLY 点云兼容 | PARTIAL | 旧流程可用，主 UI 标为三维建模预留 |
@@ -218,6 +221,7 @@ UI
 - RGB 相机第一阶段走 OpenCV `cv2.CAP_DSHOW`/Windows DirectShow/UVC，CameraService 返回 RGB `uint8` numpy 帧，不直接决定样品目录或文件名。当前电脑实机验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，但该 index 是配置层默认值，不是跨电脑稳定身份。
 - DVP2 多光谱相机是 DO3THINK/度申 GigE/RJ45 工业黑白相机；当前绑定只能使用已从真实 `DVPCamera.h` 和官方示例确认的 C API，禁止凭经验新增未核对函数名，禁止用 OpenCV VideoCapture 替代，禁止返回模拟帧。
 - 当前设备准备分为两层：`devicePrepared` 表示离线验证流程可用，`trueCapturePrepared` 表示未来真实采集就绪；即使 RGB/DVP2 预览和参数下发成功，仍强制 `trueCapturePrepared=false`，直到 CaptureCoordinator、光源/滤光轮/样品台同步和正式保存闭环完成。
+- 设备发现和设备绑定不等于设备就绪：`discovered/selected/bound/connected/verified/ready` 必须区分。`COM5`、`COM7`、`device_index=1`、`device_index=2` 只能作为 current location 或 last known location cache；不能作为跨电脑永久身份。STM32 当前只能通过 PING 证明兼容两字节协议，不能证明具体角色；下一版固件建议增加 `GET_DEVICE_TYPE` / `GET_DEVICE_INFO`，但当前代码不得伪造这些回复。
 - 样品旋转角度和滤光片转轮角度必须完全独立：`sample_rotation` 控制样品台多视角，`filter_wheel_rotation` 控制多光谱波段切换，不能用同一字段或同一电机状态表示。
 - 多角度采集默认不拍 360°，因为 0° 与 360° 是同一位置；只有用户启用闭合补拍时才生成 `closure_view=true` 的额外 View。
 - 多 View 仍属于同一个水果 Sample，同一个 `sample_id`；后续如果展开为多行特征，训练/验证必须继续按 `sample_id` 分组，避免同一水果进入 train/test 两边。
@@ -237,7 +241,7 @@ UI
 
 代码和文档中确认的主要缺口：
 
-- 真实采集闭环未接入：STM32 串口、滤光轮、门控、急停、部分光源命令已有控制层；RGB adapter 已完成当前电脑实机验证，并接入相机设置页预览/参数应用，但还没有接入正式单帧保存/完整 CaptureCoordinator；DVP2 adapter 已完成真实 SDK 打开/取帧边界、用户实机 manual test 通过，并接入相机设置页预览/曝光/增益回读，但还没有接入滤光轮同步、多波段保存和完整 CaptureCoordinator；样品台真实旋转、温度和扩展报警仍未接入。
+- 真实采集闭环未接入：STM32 串口、滤光轮、门控、急停、部分光源命令已有控制层；RGB adapter 已完成当前电脑实机验证，并接入相机设置页预览/参数应用和 Coordinator 受保护单帧正式 PNG 保存；但完整 `/api/capture/start`、DVP2 多波段保存、滤光轮同步和样品旋转仍未放行；DVP2 adapter 已完成真实 SDK 打开/取帧边界、用户实机 manual test 通过，并接入相机设置页预览/曝光/增益回读；样品台真实旋转、温度和扩展报警仍未接入。
 - 样品旋转平台当前只有角度计划、UI、metadata 和离线模拟文件，缺少 `home_sample_stage()`、`move_sample_stage_to_angle()`、`wait_sample_stage_stable()` 等真实硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、硬件通信自检、滤光轮寻零自检、紧急停止已接后端设备 API；一键设备检查已读取 CameraManager 状态。RGB 与 DVP2 相机设置页预览已接入；真实采图保存、样品台正反转和光源波段同步仍未完成。
@@ -263,7 +267,7 @@ Phase 1：把离线软件闭环变成可用于真实采集前的数据闭环
 
 Phase 2：接入硬件最小闭环
 
-- 将已验证 RGB UVC adapter 从预览/参数应用推进到正式单帧拍照和保存试验，但仍不放行完整真实采集。
+- 在已验证 RGB UVC adapter 单帧正式保存基础上，继续把 DVP2 多波段、滤光轮同步、样品旋转和完整 metadata 串成受控采集闭环；在闭环完成前仍不放行完整真实采集。
 - 对 DO3THINK GigE 黑白相机继续做现场网页预览复核：用户 manual test 已确认退出 BasedCam3 后 Python 3.12 ctypes 可打开、取帧和保存；本轮 Codex 复测时当前环境枚举返回 0。下一步应在设备在线时用主程序相机设置页复核重新检测、打开预览、曝光/增益应用、停止/重启预览，并随后进入 CaptureCoordinator。
 - 扩展 STM32 串口协议接入，补齐真实采集编排、滤光轮绝对定位/GOTO、样品台电机、光源亮度、温度/报警状态。
 - 将 `create_offline_capture_dataset()` 替换为真实采集流程，同时保留明确的离线调试模式。

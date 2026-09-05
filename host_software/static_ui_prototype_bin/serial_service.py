@@ -39,8 +39,14 @@ class SerialPortInfo:
     device: str
     description: str = ""
     hwid: str = ""
+    vid: str | None = None
+    pid: str | None = None
+    serial_number: str | None = None
+    manufacturer: str | None = None
+    product: str | None = None
+    location: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -64,6 +70,21 @@ def _default_ports_provider() -> Iterable[Any]:
         ) from exc
 
     return list_ports.comports()
+
+
+def _str_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _hex_or_none(value: Any, *, width: int) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        return f"{int(value):0{width}X}"
+    except (TypeError, ValueError):
+        text = str(value).strip().upper()
+        return text or None
 
 
 class SerialService:
@@ -127,6 +148,12 @@ class SerialService:
                     device=str(getattr(item, "device", "")),
                     description=str(getattr(item, "description", "")),
                     hwid=str(getattr(item, "hwid", "")),
+                    vid=_hex_or_none(getattr(item, "vid", None), width=4),
+                    pid=_hex_or_none(getattr(item, "pid", None), width=4),
+                    serial_number=_str_or_none(getattr(item, "serial_number", None)),
+                    manufacturer=_str_or_none(getattr(item, "manufacturer", None)),
+                    product=_str_or_none(getattr(item, "product", None)),
+                    location=_str_or_none(getattr(item, "location", None)),
                 )
                 for item in raw_ports
                 if str(getattr(item, "device", "")).strip()

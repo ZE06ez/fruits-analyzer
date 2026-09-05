@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 ## 总体结构
 
@@ -10,11 +10,13 @@ host_software/static_ui_prototype_bin/
   backend_server.py
   index.html / styles.css / app.js
   serial_service.py
+  device_discovery.py
   hardware_controller.py
   device_manager.py
   pointcloud_service.py
   pipeline_v2.py
   rotation_plan.py
+  capture_coordinator.py
   camera_service/
   quality_prediction.py
   quality_algorithm/
@@ -44,15 +46,17 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
-| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用，`trueCapturePrepared` 在完整 CaptureCoordinator、光源/滤光轮/样品台同步和正式保存闭环完成前仍强制为 false | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证，DVP2 adapter 已接入网页预览/参数控制；样品台和完整采集协调器仍为待接入 |
+| 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用，`trueCapturePrepared` 在 DVP2 多波段、滤光轮/样品台同步和完整采集入口完成前仍强制为 false | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证并接入受保护单帧正式保存，DVP2 adapter 已接入网页预览/参数控制；样品台和完整采集协调器仍为待接入 |
 | 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()` | `state`、设备状态、样品状态、形态任务、预测任务 | 顶栏“当前状态” | 前端派生状态，不新增后端状态源 |
 | STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
+| 设备发现与绑定 | `device_discovery.py`, `device_manager.py`, `backend_server.py`, `app.js` | `DeviceDiscovery`, `DeviceRegistry`, `DeviceBinding`, `DeviceCandidate` | 当前串口列表、RGB DirectShow index 扫描、DVP2 SDK 枚举、用户角色选择 | `/api/devices/discover` 返回候选；`/api/devices/bindings` 返回 profile 和匹配；`/api/devices/bind` 保存运行时绑定到 `runtime/hardware_profile.json` | SerialService, CameraManager, DVP2 binding |
 | 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
 | 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager`, `DeviceManager.self_test()` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*`，self-test `checks` | HardwareController |
+| 采集协调器骨架 | `capture_coordinator.py`, `device_manager.py` | `CaptureCoordinator`, `CaptureRun`, `CaptureStep`, `CaptureStepPlan`, `run_rgb_capture()` | 注入的 CameraManager/DeviceManager/HardwareController、步骤计划、样品 ID、输出目录 | JSON-friendly snapshot、取消/失败/超时状态、metadata 骨架、best-effort safe stop；P1B-2 已接入 STM32 安全准备链，P1B-3 已接入受保护 RGB 单帧正式 PNG 保存；完整 `/api/capture/start` 仍不开放 | dataclass, Enum, PIL, numpy |
 | 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；`CameraStatus` 区分 `detected`、`available`、`opened`、`streaming`；frame 不绑定样品目录 | Python dataclass/protocol |
 | RGB UVC 相机 | `camera_service/config.py`, `camera_service/rgb_uvc.py` | `RgbCameraConfig`, `RgbUvcCamera` | OpenCV device_index、DirectShow capture、请求 width/height/fps/fourcc/exposure/gain/white balance | RGB `uint8` H×W×3 numpy 帧；probe 成功后释放句柄仍保留 `detected/available`；status 同时返回 `requested`、`actual`、`capabilities` 和 `transport=UVC/DirectShow`；支持 apply config | `cv2`, numpy |
 | DVP2 多光谱相机 | `camera_service/dvp2_binding.py`, `camera_service/dvp2_mono.py` | `Dvp2Binding`, `Dvp2MonoCamera`, `find_dvp2_sdk()`, `frame_to_array()` | `DVP2_SDK_DIR`、配置路径、`DVPCamera64.dll`、真实 `DVPCamera.h`/官方示例、GigE 设备枚举信息 | `dvpRefresh/dvpEnum` 真实枚举、按 serial/user_id 选择目标、打开、状态、ROI/曝光/增益/触发/帧转换接口；`capture_frame()` 保留 mono `uint8/uint16` raw dtype；`connected` 作为 detected 兼容别名；已发现但无法打开时提示 BasedCam3/其他程序占用；当前只验证 `Mono8`，不开放 PixelFormat 切换 | `ctypes`, numpy, pathlib |
-| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `probe_rgb()`, `probe_multispectral()`, `apply_rgb_settings()`, `apply_multispectral_settings()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `start_multispectral_preview()`, `multispectral_preview_jpeg()`, preview stop methods | RGB adapter、多光谱 adapter、RGB/多光谱参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB/DVP2 probe 结果、RGB requested/actual、多光谱曝光/增益回读、RGB 与多光谱 JPEG 预览帧；多光谱预览只为浏览器显示归一化，不改变底层 frame dtype | RgbUvcCamera, Dvp2MonoCamera, PIL, numpy |
+| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `probe_rgb()`, `probe_multispectral()`, `apply_rgb_settings()`, `apply_multispectral_settings()`, `capture_rgb_frame()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `start_multispectral_preview()`, `multispectral_preview_jpeg()`, preview stop methods | RGB adapter、多光谱 adapter、RGB/多光谱参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB/DVP2 probe 结果、RGB requested/actual、多光谱曝光/增益回读、RGB 与多光谱 JPEG 预览帧；`capture_rgb_frame()` 通过同一 RGB adapter 返回正式 RGB `CameraFrame` 和状态快照；多光谱预览只为浏览器显示归一化，不改变底层 frame dtype | RgbUvcCamera, Dvp2MonoCamera, PIL, numpy |
 | 样品旋转计划 | `rotation_plan.py`, `backend_server.py`, `app.js` | `build_capture_rotation_plan()`, `mark_plan_completed()`, `renderRotationPlan()` | 期望角度间隔、起始角度、CW/CCW、闭合补拍 | `captureRotationPlan`、`sample_rotation` metadata、`views.json` | math/json |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
@@ -111,14 +115,27 @@ app.js runUnifiedDeviceCheck()
   -> CameraManager.checks(probe_rgb=True)
   -> checks: controller/door/fan/filterWheel/rgbCamera/multispectralCamera/light/calibration
 
+app.js refreshDeviceDiscovery()/bindSelectedDevice()
+  -> GET /api/devices/discover
+  -> DeviceManager.discover_devices()
+  -> DeviceDiscovery.discover_all()
+  -> serial candidates: list ports, skip already connected port, otherwise open/PING/close only
+  -> rgb candidates: scan limited OpenCV DirectShow indices, release after probe, stableId remains null
+  -> dvp2 candidates: DVP2 SDK enum only, stableId prefers serial/user id
+  -> POST /api/devices/bind
+  -> DeviceRegistry saves role binding to runtime/hardware_profile.json
+  -> DeviceManager updates selected RGB index or DVP2 serial in adapter config without opening devices
+
 app.js runDeviceTest()/confirmCalibrationCheck()
   -> POST /api/device-preparation
   -> SessionState.update_device_preparation()
   -> SessionState.devicePrepared = all(connect, motor, light)
-  -> SessionState.trueCapturePrepared = false until real cameras and CaptureCoordinator are complete
+  -> SessionState.trueCapturePrepared = false until DVP2/filter/sample-stage/full capture entry are complete
 ```
 
-串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。RGB probe 成功后会释放 `VideoCapture` 句柄，此时 `opened=false`、`streaming=false`，但 `detected=true`、`available=true` 会保留到下一次失败 probe 或配置设备索引变化。未插 RGB 相机或设备被占用时为 `not_connected`。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK/枚举/probe 状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，只有 probe/open 成功才可 passed；不能由普通网卡 link 推断为相机已连接。若 DVP2 已枚举目标但无法打开，UI 应提示关闭 BasedCam3 或其他相机程序。标定仍为 `manual_required`。样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
+串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。RGB probe 成功后会释放 `VideoCapture` 句柄，此时 `opened=false`、`streaming=false`，但 `detected=true`、`available=true` 会保留到下一次失败 probe 或配置设备索引变化。P1B-3 的 `run_rgb_capture()` 可在 RGB 安全准备链后通过 `CameraManager.capture_rgb_frame()` 采集并保存一张正式 RGB PNG，但未插 RGB 相机或设备被占用时仍必须失败。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK/枚举/probe 状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，只有 probe/open 成功才可 passed；不能由普通网卡 link 推断为相机已连接。若 DVP2 已枚举目标但无法打开，UI 应提示关闭 BasedCam3 或其他相机程序。标定仍为 `manual_required`。样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
+
+设备发现层只建立候选和角色绑定，不改变 `trueCapturePrepared`。STM32 当前 discovery 只能设置 `metadata.protocolMatched=true/false`，并保留 `deviceType/deviceId/firmwareVersion/capabilities=None`，因为固件尚无身份命令。RGB 候选的 stable identity 当前不可得，因此 `stableId=null`，`deviceIndex` 只作为 `lastDeviceIndex`。DVP2 候选以 SDK 枚举到的 serial/original serial/user id/friendly name 作为匹配来源。自动匹配规则优先 stableId，其次才用已验证的 last known location；找不到旧设备时保持 unbound，不自动使用列表第一项。
 
 ### Camera Service 数据边界
 
@@ -132,6 +149,8 @@ CameraManager
      -> probe_available(): read one frame, persist detected/available, then release capture handle
      -> capture_frame()
      -> CameraFrame(data=<RGB uint8 HxWx3>, color_space="RGB")
+     -> CameraManager.capture_rgb_frame()
+     -> production RGB CameraFrame + requested/actual/device metadata
      -> CameraManager.rgb_preview_jpeg()
      -> JPEG preview frame, default 960x540, up to 12 fps polling
 
@@ -156,7 +175,7 @@ Current DVP2 verification:
   -> Codex 2026-09-04 rerun in current environment: dvpRefresh/dvpEnum returned 0, so web visual preview not reverified in this run
 ```
 
-Camera adapter 只负责设备状态和帧，不负责 Sample Folder、文件命名或 `metadata.json.image_directories`。`CameraManager` 是 RGB 相机的单实例所有者：self-test、probe、preview、参数应用都共用同一个 `RgbUvcCamera`，不会各自新建 `cv2.VideoCapture(1)`。真实采集保存路径仍应由后续 CaptureCoordinator/Sample 层根据 `rgbDirName`、`multispectralDirName`、`colorDir`、`depthDir` 决定。
+Camera adapter 只负责设备状态和帧，不负责 Sample Folder、文件命名或 `metadata.json.image_directories`。`CameraManager` 是 RGB 相机的单实例所有者：self-test、probe、preview、参数应用和正式单帧取帧都共用同一个 `RgbUvcCamera`，不会各自新建 `cv2.VideoCapture(1)`；预览运行中 `capture_rgb_frame()` 复用已打开的句柄，预览停止时则临时打开、取帧后关闭。真实采集保存路径由 `CaptureCoordinator.run_rgb_capture()` 根据 `rgbDirName` 和文件名写入样品目录；旧 `depthDir` 仅用于历史 API 兼容或真正 RGB-D depth 路径。
 
 ### 相机设置 API
 
@@ -218,6 +237,16 @@ POST /api/camera/multispectral/preview/stop
 
 预览分辨率只用于浏览器观察，不改变正式 RGB 相机请求配置；当前正式配置仍为 `3840x2160`、`MJPG`、`25fps`。即使 RGB preview 和 apply settings 成功，`trueCapturePrepared` 仍为 false，`/api/capture/start` 仍由 `CameraIntegrationRequired` 拒绝。
 
+### CaptureCoordinator 骨架
+
+P1B 新增 `CaptureCoordinator`，作为后续真实采集流程的唯一编排入口。当前它建立架构边界：`CaptureState` 覆盖 `idle/preparing/capturing/finalizing/completed/cancelling/cancelled/failed`，`CaptureStep` 记录步骤 `id/name/status/startedAt/finishedAt/durationMs/timeoutMs/error/result`，`CaptureRun` 记录 `captureId/sampleId/mode/state/currentStep/progress/error/cancelRequested/outputDir/steps/metadata`。步骤通过 `CaptureStepPlan` 注入动作，便于分阶段接入硬件准备、RGB、DVP2、滤光轮、样品旋转和文件保存。
+
+P1B-2 中，`run_preparation(mode="rgb"|"multispectral")` 已通过 `HardwareController` 高层 API 执行 STM32 安全准备链：`hardware_precheck` 执行 PING 和故障码检查，`door_close` 下发关门并在有反馈时确认 `DoorState.CLOSED`，`fan_on` 开启风扇并通过输出状态确认，`rgb_light_prepare` 先关钨灯再开启 RGB LED 并调用 `ensure_rgb_capture_ready()`，`multispectral_light_prepare` 先关 RGB LED 再开启钨灯并调用 `ensure_multispectral_capture_ready()`，`capture_safety_check` 再次调用对应 interlock，`lighting_shutdown` 关闭采集光源。Coordinator 不直接调用 `SerialService.send_command()`，也不复制硬件 interlock 细节。
+
+P1B-3 中，`run_rgb_capture()` 复用 RGB 准备链，并在 `capture_safety_check` 和 `lighting_shutdown` 之间插入 `rgb_capture`：通过 `CameraManager.capture_rgb_frame()` 获取 RGB `uint8` H×W×3 帧，校验非空、形状、dtype 和 RGB 色彩顺序，按 `<rgbDirName>/rgb_view_000.png` 默认命名写入 PNG。写入前用独占创建目标名防止覆盖，先保存临时 PNG，再替换为最终文件，并在记录 metadata 前确认最终文件存在且大小大于 0。metadata `frames` 记录相对路径、绝对路径、宽高、通道、dtype、pixel order、source pixel order、设备信息、requested/actual settings、是否复用预览句柄等。取消请求在取帧前和保存前检查；若帧已保存后才出现取消，metadata 保留已保存事实。
+
+失败、取消和超时都会进入 `safe_stop()`，它通过注入的 callback、硬件控制器或 `DeviceManager.controller.safe_stop()` 尽力关闭输出/停止运动。metadata 只记录真实步骤和已保存帧；`bands` 仍为空数组，不伪造 DVP2 帧、滤光轮位置、曝光、增益或完整多视角结果。`DeviceManager.capture_status()` 可返回 coordinator snapshot；`DeviceManager.start_capture()` 仍抛出 `CameraIntegrationRequired`，因此 `/api/capture/start` 仍不开放真实采集。
+
 ### 样品创建
 
 ```text
@@ -260,7 +289,7 @@ Manual sample folder selection
   -> GET /api/select-folder?purpose=sample
   -> GET /api/inspect-image-folders?parentDir=<selected>
   -> user selects RGB + multispectral direct children
-  -> GET /api/sample-folder?datasetDir=<parent>&colorDir=<rgbDirName>&depthDir=<multispectralDirName>&strictImageDirs=1
+  -> GET /api/sample-folder?datasetDir=<parent>&colorDir=<rgbDirName>&multispectralDirName=<multispectralDirName>&strictImageDirs=1
 
 Model Studio labels.csv
   -> GET /api/select-file?purpose=labels-csv

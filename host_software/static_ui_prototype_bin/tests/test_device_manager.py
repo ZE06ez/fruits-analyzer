@@ -183,8 +183,8 @@ class DeviceManagerTests(unittest.TestCase):
         with self.assertRaises(CameraIntegrationRequired):
             manager.start_capture("sample-001")
 
-        self.assertEqual(manager.capture_status()["status"], "not_ready")
-        self.assertEqual(manager.capture_status()["sampleId"], "sample-001")
+        self.assertEqual(manager.capture_status()["status"], "idle")
+        self.assertEqual(manager.capture_status()["progress"], 0)
 
     def test_emergency_stop_and_fault_clear_update_state(self):
         manager, _ = self.make_manager()

@@ -58,10 +58,14 @@ class PointcloudServiceTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["algorithm"], "rgb_multispectral_morphology")
+        self.assertEqual(Path(result["multispectralDir"]), dataset / "multispectral")
+        self.assertEqual(result["depthDir"], result["multispectralDir"])
         self.assertGreater(result["diameterPx"], 0)
         self.assertGreater(result["heightPx"], 0)
         self.assertIsNone(result["diameterMm"])
         self.assertIsNone(result["heightMm"])
+        self.assertIsNone(result["volumeMethod"])
+        self.assertFalse(result["volumeEstimated"])
         self.assertGreater(result["details"][0]["diameterPx"], 0)
         self.assertGreater(result["details"][0]["heightPx"], 0)
 
@@ -77,6 +81,10 @@ class PointcloudServiceTests(unittest.TestCase):
         self.assertGreater(result["heightPx"], 0)
         self.assertEqual(result["diameterMm"], 24.0)
         self.assertEqual(result["heightMm"], 22.0)
+        self.assertEqual(result["volumeMm3"], 32.0)
+        self.assertEqual(result["volumeMethod"], "voxel_occupancy_estimate")
+        self.assertTrue(result["volumeEstimated"])
+        self.assertTrue(result["weightEstimated"])
         self.assertGreater(result["pointCount"], 0)
 
     def test_sample_dataset_runs_real_analysis(self):

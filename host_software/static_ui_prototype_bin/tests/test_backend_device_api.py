@@ -1,16 +1,35 @@
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import tempfile
 import threading
 import unittest
 import urllib.error
-import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from backend_server import JobStore, SessionState, create_handler
+from device_discovery import DeviceCandidate, DeviceRegistry, DeviceRole
 from device_manager import CameraIntegrationRequired
+
+
+class _BufferedResponse:
+    def __init__(self, body: bytes, status: int, reason: str, headers):
+        self._body = body
+        self.status = status
+        self.reason = reason
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
 
 
 class FakeCameraManager:
@@ -168,6 +187,31 @@ class FakeDeviceManager:
         self.self_test_motion = None
         self.emergency_stopped = False
         self.camera_manager = FakeCameraManager()
+        self.discovery_candidates = [
+            DeviceCandidate(
+                "serial",
+                "usb:VID_0483&PID_5740:CTRL-A",
+                "STM32 Controller",
+                "COM3",
+                metadata={"protocolMatched": True, "vid": "0483", "pid": "5740", "serialNumber": "CTRL-A"},
+            ),
+            DeviceCandidate(
+                "uvc",
+                None,
+                "USB RGB Camera",
+                {"backend": "DSHOW", "deviceIndex": 2},
+                metadata={"frameReadable": True, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            ),
+            DeviceCandidate(
+                "dvp2",
+                "GP23400004963",
+                "MGV231M-H2",
+                {"serial": "GP23400004963", "index": 0},
+                metadata={"mac": "B4-61-D3-14-6E-18", "ip": "169.254.25.110"},
+            ),
+        ]
+        self.registry_path = Path(tempfile.mkdtemp(prefix="fta_device_registry_")) / "hardware_profile.json"
+        self.registry = DeviceRegistry(self.registry_path)
 
     def _status(self):
         return {
@@ -188,6 +232,27 @@ class FakeDeviceManager:
 
     def list_ports(self):
         return [{"device": "COM3", "description": "STM32", "hwid": "USB"}]
+
+    def discover_devices(self):
+        return {
+            "ok": True,
+            "candidates": [candidate.to_dict() for candidate in self.discovery_candidates],
+            "byKind": {
+                "serial": [self.discovery_candidates[0].to_dict()],
+                "uvc": [self.discovery_candidates[1].to_dict()],
+                "dvp2": [self.discovery_candidates[2].to_dict()],
+            },
+        }
+
+    def device_bindings(self, discovery=None):
+        return self.registry.snapshot(self.discovery_candidates)
+
+    def bind_device(self, payload):
+        binding = self.registry.bind_from_payload(payload, self.discovery_candidates)
+        return {
+            "binding": binding.to_dict(),
+            "bindings": self.registry.snapshot(self.discovery_candidates),
+        }
 
     def connect(self, port):
         self.connected = True
@@ -254,30 +319,63 @@ class BackendDeviceApiTests(unittest.TestCase):
             device_manager=self.device,
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server.daemon_threads = False
+        self.server.block_on_close = True
+        self.server_ready = threading.Event()
+        self.thread = threading.Thread(target=self._serve, name="BackendDeviceApiTestServer")
         self.thread.start()
+        self.assertTrue(self.server_ready.wait(timeout=2), "test HTTP server did not start")
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
 
     def tearDown(self):
-        self.server.shutdown()
-        self.thread.join(timeout=2)
-        self.server.server_close()
+        try:
+            self.server.shutdown()
+        finally:
+            self.server.server_close()
+            self.thread.join(timeout=2)
+        self.assertFalse(self.thread.is_alive(), "test HTTP server thread did not stop")
+
+    def _serve(self):
+        self.server_ready.set()
+        self.server.serve_forever(poll_interval=0.01)
 
     def get_json(self, path: str) -> dict:
-        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self.request("GET", path, parse_json=True)["json"]
 
     def get_response(self, path: str):
-        return urllib.request.urlopen(self.base_url + path, timeout=5)
+        return self.request("GET", path, parse_json=False)["response"]
 
     def post_json(self, path: str, payload: dict | None = None) -> dict:
-        request = urllib.request.Request(
-            self.base_url + path,
-            data=json.dumps(payload or {}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        data = json.dumps(payload or {}).encode("utf-8")
+        return self.request("POST", path, body=data, headers={"Content-Type": "application/json"}, parse_json=True)["json"]
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict | None = None,
+        parse_json: bool = True,
+    ) -> dict:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            request_headers = {"Connection": "close", **(headers or {})}
+            connection.request(method, path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            raw = response.read()
+            wrapped = _BufferedResponse(raw, response.status, response.reason, response.headers)
+            if response.status >= 400:
+                raise urllib.error.HTTPError(
+                    self.base_url + path,
+                    response.status,
+                    response.reason,
+                    response.headers,
+                    io.BytesIO(raw),
+                )
+            parsed = json.loads(raw.decode("utf-8")) if parse_json else None
+            return {"json": parsed, "response": wrapped}
+        finally:
+            connection.close()
 
     def test_status_and_connect_expose_hardware_state(self):
         status = self.get_json("/api/status")
@@ -361,6 +459,30 @@ class BackendDeviceApiTests(unittest.TestCase):
         multi_stopped = self.post_json("/api/camera/multispectral/preview/stop")
         self.assertFalse(multi_stopped["result"]["preview"]["multispectral"]["running"])
 
+    def test_device_discovery_and_binding_api(self):
+        discovered = self.get_json("/api/devices/discover")
+
+        self.assertTrue(discovered["ok"])
+        self.assertEqual(len(discovered["discovery"]["byKind"]["serial"]), 1)
+        self.assertEqual(discovered["discovery"]["byKind"]["serial"][0]["stableId"], "usb:VID_0483&PID_5740:CTRL-A")
+        self.assertIsNone(discovered["discovery"]["byKind"]["uvc"][0]["stableId"])
+
+        bound = self.post_json("/api/devices/bind", {
+            "role": DeviceRole.RGB_CAMERA,
+            "kind": "uvc",
+            "stableId": None,
+            "connection": {"backend": "DSHOW", "deviceIndex": 2},
+        })
+
+        binding = bound["result"]["binding"]
+        self.assertEqual(binding["role"], DeviceRole.RGB_CAMERA)
+        self.assertIsNone(binding["stableId"])
+        self.assertEqual(binding["lastDeviceIndex"], 2)
+        self.assertEqual(bound["result"]["bindings"]["matches"][DeviceRole.RGB_CAMERA]["method"], "lastDeviceIndexVerified")
+
+        bindings = self.get_json("/api/devices/bindings")
+        self.assertIn(DeviceRole.RGB_CAMERA, bindings["bindings"]["bindings"])
+
     def test_camera_settings_ui_separates_rgb_and_multispectral_controls(self):
         html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
         self.assertIn("data-camera-settings-tab=\"rgb\"", html)
@@ -380,9 +502,14 @@ class BackendDeviceApiTests(unittest.TestCase):
 
     def test_camera_settings_ui_uses_probe_endpoint_and_relative_camera_urls(self):
         app_js = (Path(__file__).parents[1] / "app.js").read_text(encoding="utf-8")
+        html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("/api/camera/rgb/probe", app_js)
         self.assertIn("/api/camera/multispectral/probe", app_js)
+        self.assertIn("/api/devices/discover", app_js)
+        self.assertIn("/api/devices/bind", app_js)
+        self.assertIn("id=\"refreshDeviceDiscovery\"", html)
+        self.assertIn("data-device-role=\"RGB_CAMERA\"", html)
         self.assertIn("/api/camera/multispectral/apply-settings", app_js)
         self.assertIn("/api/camera/multispectral/preview-frame", app_js)
         self.assertIn('addEventListener("click", probeRgbCamera)', app_js)

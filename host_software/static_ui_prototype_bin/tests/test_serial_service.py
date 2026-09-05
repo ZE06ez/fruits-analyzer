@@ -11,10 +11,28 @@ from serial_service import (
 
 
 class FakePort:
-    def __init__(self, device, description="", hwid=""):
+    def __init__(
+        self,
+        device,
+        description="",
+        hwid="",
+        *,
+        vid=None,
+        pid=None,
+        serial_number=None,
+        manufacturer=None,
+        product=None,
+        location=None,
+    ):
         self.device = device
         self.description = description
         self.hwid = hwid
+        self.vid = vid
+        self.pid = pid
+        self.serial_number = serial_number
+        self.manufacturer = manufacturer
+        self.product = product
+        self.location = location
 
 
 class FakeSerial:
@@ -80,6 +98,12 @@ class SerialServiceTests(unittest.TestCase):
                     "COM3",
                     "STM32 Virtual COM Port",
                     "USB VID:PID=0483:5740",
+                    vid=0x0483,
+                    pid=0x5740,
+                    serial_number="CTRL-A",
+                    manufacturer="STMicroelectronics",
+                    product="STM32 Virtual COM Port",
+                    location="Port_#0003.Hub_#0001",
                 )
             ],
         )
@@ -92,6 +116,12 @@ class SerialServiceTests(unittest.TestCase):
             ports[0].description,
             "STM32 Virtual COM Port",
         )
+        self.assertEqual(ports[0].vid, "0483")
+        self.assertEqual(ports[0].pid, "5740")
+        self.assertEqual(ports[0].serial_number, "CTRL-A")
+        self.assertEqual(ports[0].manufacturer, "STMicroelectronics")
+        self.assertEqual(ports[0].product, "STM32 Virtual COM Port")
+        self.assertEqual(ports[0].location, "Port_#0003.Hub_#0001")
 
     def test_connect_uses_115200_8n1(self):
         fake = FakeSerial()

@@ -5,6 +5,8 @@ import threading
 from typing import Any, Callable
 
 from camera_service import CameraManager
+from capture_coordinator import CaptureCoordinator
+from device_discovery import DeviceDiscovery, DeviceRegistry
 from hardware_controller import DoorState, HardwareController
 from serial_service import SerialService
 
@@ -21,7 +23,7 @@ class DeviceNotConnectedError(DeviceManagerError):
 
 
 class CameraIntegrationRequired(DeviceManagerError):
-    """完整真实采集协调器尚未接入。"""
+    """完整真实采集协调器尚未开放。"""
 
 
 class DeviceManager:
@@ -45,20 +47,71 @@ class DeviceManager:
         serial_service: Any | None = None,
         controller_factory: Callable[[Any], HardwareController] = HardwareController,
         camera_manager: CameraManager | None = None,
+        capture_coordinator: CaptureCoordinator | None = None,
+        discovery: DeviceDiscovery | None = None,
+        registry: DeviceRegistry | None = None,
     ) -> None:
         self.serial = serial_service or SerialService()
         self.controller_factory = controller_factory
         self.camera_manager = camera_manager or CameraManager()
+        self.registry = registry
+        self.discovery = discovery or DeviceDiscovery(
+            serial_service=self.serial,
+            serial_service_factory=self._new_serial_probe_service,
+            camera_manager=self.camera_manager,
+        )
         self.controller: HardwareController | None = None
+        self.capture_coordinator = capture_coordinator or CaptureCoordinator(
+            camera_manager=self.camera_manager,
+            device_manager=self,
+        )
+        if self.registry is not None:
+            for binding in self.registry.bindings().values():
+                self._apply_binding_to_runtime_config(binding)
 
         self._lock = threading.RLock()
         self._emergency_stopped = False
-        self._capture = self._not_ready_capture_status()
 
     def list_ports(self) -> list[dict[str, str]]:
         """返回适合直接转换成 JSON 的串口列表。"""
 
         return [port.to_dict() for port in self.serial.list_ports()]
+
+    def discover_devices(self) -> dict[str, Any]:
+        """Scan candidates without treating COM/index as permanent identity."""
+
+        return self.discovery.discover_all()
+
+    def device_bindings(self, discovery: dict[str, Any] | None = None) -> dict[str, Any]:
+        if self.registry is None:
+            return {"profilePath": "", "bindings": {}, "matches": {}}
+        discovery = discovery or self.discovery.discover_all()
+        candidates = self._candidates_from_discovery(discovery)
+        return self.registry.snapshot(candidates)
+
+    def _candidates_from_discovery(self, discovery: dict[str, Any]) -> list[Any]:
+        candidates = [
+            self._candidate_from_payload(item)
+            for item in discovery.get("candidates", [])
+            if isinstance(item, dict)
+        ]
+        return candidates
+
+    def bind_device(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.registry is None:
+            raise DeviceManagerError("设备绑定 registry 尚未初始化")
+        discovery = self.discovery.discover_all()
+        candidates = [
+            self._candidate_from_payload(item)
+            for item in discovery.get("candidates", [])
+            if isinstance(item, dict)
+        ]
+        binding = self.registry.bind_from_payload(payload, candidates)
+        self._apply_binding_to_runtime_config(binding)
+        return {
+            "binding": binding.to_dict(),
+            "bindings": self.registry.snapshot(candidates),
+        }
 
     def connect(self, port: str) -> dict[str, Any]:
         """连接串口、创建硬件控制器并执行 PING。"""
@@ -176,20 +229,17 @@ class DeviceManager:
         """返回当前采集状态的副本。"""
 
         with self._lock:
-            return dict(self._capture)
+            snapshot = self.capture_coordinator.snapshot()
+            if snapshot.get("state") == "idle":
+                snapshot["message"] = "完整真实采集协调器骨架已接入，真实采集启动仍未开放"
+            return snapshot
 
     def start_capture(self, sample_id: str = "") -> dict[str, Any]:
         """CaptureCoordinator 接入前，明确拒绝启动真实采集。"""
 
         with self._lock:
             self._require_controller()
-            self._capture = {
-                "status": "not_ready",
-                "progress": 0,
-                "sampleId": str(sample_id).strip(),
-                "message": "完整真实采集协调器尚未接入，不能开始真实采集",
-            }
-            raise CameraIntegrationRequired(self._capture["message"])
+            raise CameraIntegrationRequired("完整真实采集协调器尚未开放，不能开始真实采集")
 
     def cancel_capture(self) -> dict[str, Any]:
         """取消当前采集；设备已连接时同时执行安全停止。"""
@@ -199,12 +249,7 @@ class DeviceManager:
                 self.controller.safe_stop()
                 self._emergency_stopped = True
 
-            self._capture = {
-                "status": "cancelled",
-                "progress": 0,
-                "message": "采集已取消并执行安全停止",
-            }
-            return dict(self._capture)
+            return self.capture_coordinator.request_cancel()
 
     def _require_controller(self) -> HardwareController:
         if self.controller is None or not self.serial.is_connected:
@@ -264,14 +309,6 @@ class DeviceManager:
             },
         }
 
-    @staticmethod
-    def _not_ready_capture_status() -> dict[str, Any]:
-        return {
-            "status": "not_ready",
-            "progress": 0,
-            "message": "完整真实采集协调器尚未接入",
-        }
-
     def _empty_status(self) -> dict[str, Any]:
         return {
             "connected": False,
@@ -288,3 +325,41 @@ class DeviceManager:
             "emergencyStopped": False,
             "cameras": self.camera_manager.status(),
         }
+
+    def _new_serial_probe_service(self) -> SerialService:
+        return SerialService(
+            serial_factory=getattr(self.serial, "_serial_factory", None),
+            ports_provider=getattr(self.serial, "_ports_provider", None),
+            default_timeout_s=getattr(self.serial, "_default_timeout_s", 0.5),
+        )
+
+    @staticmethod
+    def _candidate_from_payload(payload: dict[str, Any]):
+        from device_discovery import DeviceCandidate
+
+        return DeviceCandidate(
+            kind=str(payload.get("kind") or ""),
+            role=payload.get("role"),
+            stable_id=payload.get("stableId"),
+            display_name=str(payload.get("displayName") or ""),
+            connection=payload.get("connection"),
+            status=str(payload.get("status") or ""),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+
+    def _apply_binding_to_runtime_config(self, binding: Any) -> None:
+        if getattr(binding, "role", "") == "RGB_CAMERA" and binding.last_device_index is not None:
+            rgb = getattr(self.camera_manager, "rgb", None)
+            if rgb is not None and hasattr(rgb, "configure"):
+                config = getattr(rgb, "config", None)
+                if config is not None and hasattr(config, "to_dict"):
+                    rgb.configure({**config.to_dict(), "deviceIndex": binding.last_device_index})
+        if getattr(binding, "role", "") == "MULTISPECTRAL_CAMERA" and binding.stable_id:
+            multi = getattr(self.camera_manager, "multispectral", None)
+            if multi is not None:
+                if hasattr(multi, "serial_number"):
+                    multi.serial_number = binding.stable_id
+                if hasattr(multi, "stable_id"):
+                    multi.stable_id = binding.stable_id
+                if getattr(binding, "display_name", "") and hasattr(multi, "friendly_name"):
+                    multi.friendly_name = binding.display_name

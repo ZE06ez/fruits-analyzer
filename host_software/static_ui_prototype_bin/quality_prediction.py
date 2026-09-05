@@ -79,11 +79,11 @@ def build_sample_session(
     spectral_files: list[str] = []
 
     color_dir = report.get("colorDir") or ""
-    depth_dir = report.get("depthDir") or ""
+    spectral_dir = report.get("multispectralDir") or report.get("depthDir") or ""
     if color_dir:
         rgb_files = [str(path) for path in list_images(Path(color_dir))]
-    if depth_dir:
-        spectral_files = [str(path) for path in list_images(Path(depth_dir))]
+    if spectral_dir:
+        spectral_files = [str(path) for path in list_images(Path(spectral_dir))]
 
     session = SampleSession(
         sample_id=sample_id or root.name or "unnamed_sample",

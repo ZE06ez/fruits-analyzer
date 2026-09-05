@@ -165,6 +165,8 @@ class RgbUvcCamera:
             return status
         if self._available or self._detected:
             return status
+        if self._last_error or self._last_technical_error:
+            return status
         if self._cv2_available():
             status.error = "RGB 相机尚未检测，请点击重新检测。"
             status.technical_error = "Camera has not been probed in this session"
