@@ -10,6 +10,7 @@ from .errors import (
     CameraTimeoutError,
     CameraUnavailableError,
 )
+from .focus_quality import FocusEvaluator, FocusMetrics, FocusResult, FocusRoi, FocusThresholdConfig
 from .manager import CameraManager
 from .rgb_uvc import RgbUvcCamera
 
@@ -29,4 +30,9 @@ __all__ = [
     "RgbUvcCamera",
     "RgbCameraConfig",
     "find_dvp2_sdk",
+    "FocusEvaluator",
+    "FocusMetrics",
+    "FocusResult",
+    "FocusRoi",
+    "FocusThresholdConfig",
 ]

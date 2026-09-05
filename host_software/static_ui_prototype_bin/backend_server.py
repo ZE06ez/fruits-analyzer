@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from camera_service import CameraError
+from capture_coordinator import CaptureCoordinatorError
 from device_discovery import DeviceRegistry
 from device_manager import CameraIntegrationRequired, DeviceManager
 from PIL import Image, ImageDraw
@@ -616,9 +617,19 @@ def create_handler(
                             "X-Source-Shape": "x".join(str(value) for value in meta.get("sourceShape") or ()),
                             "X-Source-Dtype": str(meta.get("sourceDtype") or ""),
                             "X-Pixel-Format": str(meta.get("pixelFormat") or ""),
+                            "X-Frame-Id": str(meta.get("frameId") if meta.get("frameId") is not None else ""),
+                            "X-Source-Timestamp": str(meta.get("sourceTimestamp") if meta.get("sourceTimestamp") is not None else ""),
                             "X-Frame-Min": str(meta.get("frameMin") if meta.get("frameMin") is not None else ""),
                             "X-Frame-Max": str(meta.get("frameMax") if meta.get("frameMax") is not None else ""),
                             "X-Frame-Mean": str(meta.get("frameMean") if meta.get("frameMean") is not None else ""),
+                            "X-Capture-Duration-Ms": f"{float(meta.get('captureDurationMs') or 0.0):.3f}",
+                            "X-Resize-Duration-Ms": f"{float(meta.get('resizeDurationMs') or 0.0):.3f}",
+                            "X-Jpeg-Encode-Duration-Ms": f"{float(meta.get('jpegEncodeDurationMs') or 0.0):.3f}",
+                            "X-Server-Total-Ms": f"{float(meta.get('serverTotalMs') or 0.0):.3f}",
+                            "X-Measured-Preview-Fps": f"{float(meta.get('measuredPreviewFps') or 0.0):.3f}",
+                            "X-Dropped-Frames": str(meta.get("droppedFrames") if meta.get("droppedFrames") is not None else ""),
+                            "X-Low-Latency-Preview": "1" if meta.get("lowLatency") else "0",
+                            "X-Preview-Encoder": str(meta.get("previewEncoder") or ""),
                         },
                     )
                 except CameraError as exc:
@@ -714,6 +725,14 @@ def create_handler(
                     result = device_manager.self_test(
                         include_motion=bool(payload.get("includeMotion", False))
                     )
+                    self.json_response({"ok": True, "result": result})
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path == "/api/device/check":
+                self.read_json()
+                try:
+                    result = device_manager.independent_device_check()
                     self.json_response({"ok": True, "result": result})
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
@@ -840,6 +859,22 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
+            if parsed.path == "/api/camera/multispectral/focus/evaluate":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.evaluate_multispectral_focus(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if parsed.path == "/api/camera/rgb/preview/stop":
                 try:
                     self.json_response({
@@ -867,6 +902,44 @@ def create_handler(
                         "error": exc.user_message,
                         "technicalError": exc.technical_message,
                     }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if parsed.path in {"/api/capture/calibration/dark", "/api/capture/calibration/white"}:
+                payload = self.read_json()
+                try:
+                    session_info = session.snapshot()
+                    output_dir_raw = payload.get("outputDir") or payload.get("captureDir") or session_info.get("currentCaptureDir")
+                    if not output_dir_raw:
+                        self.json_response({"ok": False, "error": "请先提供校正采集保存目录。"}, status=400)
+                        return
+                    output_dir = resolve_user_path(output_dir_raw, app_dir)
+                    sample_id = str(payload.get("sampleId") or session_info.get("sampleId") or "").strip()
+                    filter_config_path = payload.get("filterConfigPath")
+                    if filter_config_path:
+                        filter_config_path = resolve_user_path(filter_config_path, app_dir)
+                    coordinator = getattr(device_manager, "capture_coordinator", None)
+                    if coordinator is None:
+                        self.json_response({"ok": False, "error": "采集协调器不可用。"}, status=503)
+                        return
+                    kwargs = {
+                        "sample_id": sample_id,
+                        "output_dir": output_dir,
+                        "band_plan": payload.get("bandPlan"),
+                        "filter_config_path": filter_config_path,
+                        "settling_ms": payload.get("settlingMs"),
+                        "calibration_id": payload.get("calibrationId"),
+                        "operator_confirmed": bool(payload.get("operatorConfirmed")),
+                    }
+                    if parsed.path.endswith("/dark"):
+                        capture = coordinator.run_dark_reference_capture(**kwargs)
+                    else:
+                        kwargs["tungsten_mask"] = int(payload.get("tungstenMask", 0x03))
+                        capture = coordinator.run_white_reference_capture(**kwargs)
+                    completed = (capture.get("state") or capture.get("status")) == "completed"
+                    self.json_response({"ok": completed, "capture": capture}, status=200 if completed else 409)
+                except CaptureCoordinatorError as exc:
+                    self.json_response({"ok": False, "error": str(exc), "details": exc.to_dict()}, status=409)
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return

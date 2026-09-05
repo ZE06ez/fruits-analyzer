@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
+from device_discovery import DeviceCandidate, DeviceDiscovery, DeviceRegistry, DeviceRole
 from device_manager import CameraIntegrationRequired, DeviceManager
 from hardware_controller import DoorState, OutputStatus
+from serial_service import SerialDependencyError
 
 
 class FakePort:
@@ -100,6 +104,28 @@ class FakeCameraManager:
             },
         }
 
+    def probe_rgb(self):
+        return {"passed": False, "status": self.status()["rgb"]}
+
+    def probe_multispectral(self):
+        return {"passed": False, "status": self.status()["multispectral"]}
+
+    def _rgb_check(self, status):
+        return {
+            "status": "passed" if status.get("available") else "not_connected",
+            "label": "RGB 相机",
+            "message": status.get("error") or "RGB 相机已连接",
+            "cameraStatus": status,
+        }
+
+    def _multispectral_check(self, status):
+        return {
+            "status": "sdk_missing" if not status.get("sdkAvailable") else "passed" if status.get("available") else "warning",
+            "label": "多光谱相机",
+            "message": status.get("error") or "多光谱相机状态",
+            "cameraStatus": status,
+        }
+
     def checks(self, *, probe_rgb=False):
         self.probe_requests.append(probe_rgb)
         return {
@@ -114,6 +140,23 @@ class FakeCameraManager:
                 "message": "多光谱 GigE 相机 DVP2 SDK 尚未安装",
             },
         }
+
+
+class ConfigurableFakeRgb:
+    def __init__(self):
+        self.config = type("Config", (), {"to_dict": lambda self: {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"}})()
+        self.applied = []
+
+    def configure(self, payload):
+        self.applied.append(dict(payload))
+        self.config = type("Config", (), {"to_dict": lambda self: dict(payload)})()
+
+
+class BindingCameraManager(FakeCameraManager):
+    def __init__(self):
+        super().__init__()
+        self.rgb = ConfigurableFakeRgb()
+        self.multispectral = type("Multi", (), {})()
 
 
 class DeviceManagerTests(unittest.TestCase):
@@ -175,6 +218,65 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(result["checks"]["filterWheel"]["status"], "passed")
         self.assertEqual(manager.controller.wheel_home_count, 1)
         self.assertEqual(manager.camera_manager.probe_requests[-1], True)
+
+    def test_independent_device_check_runs_cameras_when_stm32_is_not_connected(self):
+        manager, _ = self.make_manager()
+
+        result = manager.independent_device_check()
+
+        self.assertFalse(result["passed"])
+        self.assertTrue(result["independentDomains"])
+        self.assertEqual(result["checks"]["controller"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["rgbCamera"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["multispectralCamera"]["status"], "sdk_missing")
+        self.assertFalse(result["status"]["connected"])
+
+    def test_rgb_binding_updates_runtime_camera_device_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cameras = BindingCameraManager()
+            candidate = DeviceCandidate(
+                "uvc",
+                None,
+                "USB RGB Camera",
+                {"backend": "DSHOW", "deviceIndex": 2},
+                status="available",
+            )
+            discovery = DeviceDiscovery(
+                serial_service=FakeSerialService(),
+                serial_service_factory=FakeSerialService,
+                rgb_scanner=lambda: [candidate],
+                dvp2_scanner=lambda: [],
+            )
+            manager = DeviceManager(
+                serial_service=FakeSerialService(),
+                controller_factory=FakeHardwareController,
+                camera_manager=cameras,
+                discovery=discovery,
+                registry=DeviceRegistry(Path(tmp) / "hardware_profile.json"),
+            )
+
+            manager.bind_device({
+                "role": DeviceRole.RGB_CAMERA,
+                "kind": "uvc",
+                "connection": {"backend": "DSHOW", "deviceIndex": 2},
+            })
+
+        self.assertEqual(cameras.rgb.applied[-1]["deviceIndex"], 2)
+
+    def test_independent_check_reports_pyserial_missing_without_blocking_cameras(self):
+        serial = FakeSerialService()
+        serial.list_ports = lambda: (_ for _ in ()).throw(SerialDependencyError("缺少 pyserial"))
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=FakeHardwareController,
+            camera_manager=FakeCameraManager(),
+        )
+
+        result = manager.independent_device_check()
+
+        self.assertEqual(result["checks"]["controller"]["status"], "dependency_missing")
+        self.assertEqual(result["checks"]["rgbCamera"]["status"], "not_connected")
+        self.assertEqual(result["checks"]["multispectralCamera"]["status"], "sdk_missing")
 
     def test_start_capture_is_rejected_until_camera_service_exists(self):
         manager, _ = self.make_manager()

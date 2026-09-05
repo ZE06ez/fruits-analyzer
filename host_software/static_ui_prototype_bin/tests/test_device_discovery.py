@@ -10,8 +10,9 @@ from device_discovery import (
     DeviceDiscovery,
     DeviceRegistry,
     DeviceRole,
+    match_host_adapter_for_device_ip,
 )
-from serial_service import SerialService
+from serial_service import SerialDependencyError, SerialService
 
 
 class FakePort:
@@ -251,6 +252,119 @@ class DeviceDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["byKind"]["serial"], [])
         self.assertEqual(result["byKind"]["uvc"], [])
         self.assertEqual(result["byKind"]["dvp2"], [])
+
+    def test_pyserial_missing_is_reported_as_serial_domain_diagnostic(self):
+        service = self.make_serial_service(SerialFactory({}), [])
+        service._ports_provider = lambda: (_ for _ in ()).throw(SerialDependencyError("缺少 pyserial"))
+        discovery = DeviceDiscovery(
+            serial_service=service,
+            serial_service_factory=lambda: service,
+            rgb_scanner=lambda: [
+                DeviceCandidate("uvc", None, "USB RGB Camera", {"backend": "DSHOW", "deviceIndex": 2})
+            ],
+            dvp2_scanner=lambda: [
+                DeviceCandidate("dvp2", "GP23400004963", "MGV231M-H2", {"serial": "GP23400004963"})
+            ],
+        )
+
+        result = discovery.discover_all()
+
+        self.assertEqual(result["byKind"]["serial"], [])
+        self.assertEqual(result["diagnostics"]["serial"]["status"], "dependency_missing")
+        self.assertEqual(len(result["byKind"]["uvc"]), 1)
+        self.assertEqual(len(result["byKind"]["dvp2"]), 1)
+
+    def test_role_kind_validation_rejects_camera_as_controller(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = DeviceRegistry(Path(tmp) / "hardware_profile.json")
+            camera = DeviceCandidate("uvc", None, "USB RGB Camera", {"backend": "DSHOW", "deviceIndex": 1})
+
+            with self.assertRaises(ValueError):
+                registry.bind(DeviceRole.MAIN_CONTROLLER, camera)
+
+    def test_rgb_inferred_windows_mapping_does_not_promote_stable_id(self):
+        camera = FakeRgbDiscoveryCamera(index_open=0)
+        discovery = DeviceDiscovery(
+            serial_service=self.make_serial_service(SerialFactory({}), []),
+            serial_service_factory=lambda: self.make_serial_service(SerialFactory({}), []),
+            camera_manager=type("Manager", (), {"rgb": camera})(),
+            dvp2_scanner=lambda: [],
+            rgb_max_index=0,
+            windows_rgb_info_provider=lambda: [{
+                "friendlyName": "USB Camera",
+                "vid": "1D6C",
+                "pid": "0103",
+                "usbSerialNumber": "RGB123",
+                "mappingConfidence": "inferred",
+                "identitySource": "windows-pnp-usb-serial",
+            }],
+        )
+
+        candidate = discovery.discover_rgb()[0]
+
+        self.assertIsNone(candidate.stable_id)
+        self.assertEqual(candidate.metadata["potentialStableId"], "usb:VID_1D6C&PID_0103:RGB123")
+        self.assertEqual(candidate.metadata["mappingConfidence"], "inferred")
+
+    def test_rgb_exact_windows_mapping_uses_usb_serial_stable_id(self):
+        camera = FakeRgbDiscoveryCamera(index_open=2)
+        discovery = DeviceDiscovery(
+            serial_service=self.make_serial_service(SerialFactory({}), []),
+            serial_service_factory=lambda: self.make_serial_service(SerialFactory({}), []),
+            camera_manager=type("Manager", (), {"rgb": camera})(),
+            dvp2_scanner=lambda: [],
+            rgb_max_index=2,
+            windows_rgb_info_provider=lambda: [{
+                "deviceIndex": 2,
+                "friendlyName": "USB Camera",
+                "vid": "1D6C",
+                "pid": "0103",
+                "usbSerialNumber": "RGB123",
+                "mappingConfidence": "exact",
+                "identitySource": "windows-device-path",
+            }],
+        )
+
+        candidate = discovery.discover_rgb()[0]
+
+        self.assertEqual(candidate.stable_id, "usb:VID_1D6C&PID_0103:RGB123")
+        self.assertTrue(candidate.metadata["stableIdentityAvailable"])
+
+    def test_dvp2_host_adapter_match_uses_same_ipv4_network(self):
+        adapter = match_host_adapter_for_device_ip(
+            "169.254.25.110",
+            [{"name": "Ethernet", "ip": "169.254.25.20", "prefixLength": 16}],
+        )
+
+        self.assertEqual(adapter["name"], "Ethernet")
+
+
+class FakeRgbDiscoveryCamera:
+    def __init__(self, index_open):
+        self.index_open = index_open
+        self.device_index = 1
+        self.is_open = False
+        self.config = None
+
+    def configure(self, payload):
+        self.device_index = int(payload.get("deviceIndex"))
+
+    def open(self):
+        if self.device_index != self.index_open:
+            raise RuntimeError("camera not present")
+        self.is_open = True
+
+    def capture_frame(self):
+        return type("Frame", (), {"shape": (2160, 3840, 3)})()
+
+    def get_status(self):
+        return type("Status", (), {"to_dict": lambda self: {
+            "deviceName": "USB Camera",
+            "actual": {"width": 3840, "height": 2160, "fps": 25.0, "fourcc": "MJPG"},
+        }})()
+
+    def close(self):
+        self.is_open = False
 
 
 if __name__ == "__main__":

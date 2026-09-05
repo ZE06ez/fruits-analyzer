@@ -1,19 +1,21 @@
 import json
-import http.client
 import io
 import tempfile
-import threading
 import time
 import unittest
 import urllib.parse
 import urllib.error
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from PIL import Image
 
 from backend_server import JobStore, SessionState, create_handler, validate_file_path, validate_folder_path
 from model_studio.service import ModelStudioService
+
+try:
+    from .http_test_utils import InProcessHttpClient
+except ImportError:
+    from http_test_utils import InProcessHttpClient
 
 
 class BackendDataFlowTests(unittest.TestCase):
@@ -28,26 +30,11 @@ class BackendDataFlowTests(unittest.TestCase):
         self.studio = ModelStudioService(self.app_dir)
         self.session = SessionState()
         handler = create_handler(self.static_dir, self.outputs_dir, self.app_dir, JobStore(), self.session)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.server.daemon_threads = False
-        self.server.block_on_close = True
-        self.server_ready = threading.Event()
-        self.thread = threading.Thread(target=self._serve, name="BackendDataFlowTestServer")
-        self.thread.start()
-        self.assertTrue(self.server_ready.wait(timeout=2), "test HTTP server did not start")
-        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        self.client = InProcessHttpClient(handler)
+        self.base_url = "http://127.0.0.1"
 
     def tearDown(self):
-        try:
-            self.server.shutdown()
-        finally:
-            self.server.server_close()
-            self.thread.join(timeout=2)
-        self.assertFalse(self.thread.is_alive(), "test HTTP server thread did not stop")
-
-    def _serve(self):
-        self.server_ready.set()
-        self.server.serve_forever(poll_interval=0.01)
+        return None
 
     def get_json(self, path: str, params: dict | None = None) -> dict:
         query = f"?{urllib.parse.urlencode(params)}" if params else ""
@@ -58,11 +45,8 @@ class BackendDataFlowTests(unittest.TestCase):
         return self.request_json("POST", path, body=data, headers={"Content-Type": "application/json"})
 
     def request_json(self, method: str, path: str, body: bytes | None = None, headers: dict | None = None) -> dict:
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        response = self.client.request(method, path, body=body, headers=headers)
         try:
-            request_headers = {"Connection": "close", **(headers or {})}
-            connection.request(method, path, body=body, headers=request_headers)
-            response = connection.getresponse()
             raw = response.read()
             if response.status >= 400:
                 raise urllib.error.HTTPError(
@@ -74,7 +58,7 @@ class BackendDataFlowTests(unittest.TestCase):
                 )
             return json.loads(raw.decode("utf-8"))
         finally:
-            connection.close()
+            response.close()
 
     def prepare_device(self) -> dict:
         return self.post_json("/api/device-preparation", {

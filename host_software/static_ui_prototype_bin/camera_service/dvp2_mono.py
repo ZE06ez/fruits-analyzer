@@ -584,6 +584,7 @@ class Dvp2MonoCamera:
             "friendlyName": device.friendly_name if device else "",
             "cameraSerial": device.serial_number if device else self.serial_number,
             "originalSerialNumber": device.original_serial_number if device else "",
+            "userId": device.user_id if device else "",
             "cameraIp": _best_ip_text(device),
             "hostAdapterIp": "",
             "cameraMac": _best_mac_text(device),

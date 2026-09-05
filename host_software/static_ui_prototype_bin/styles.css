@@ -1437,6 +1437,43 @@ body.model-advanced .model-overview-panel {
   color: #fecdd3;
 }
 
+.focus-readout {
+  display: grid;
+  gap: 10px;
+}
+
+.focus-score-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.focus-score-row strong {
+  font-size: 1.45rem;
+  line-height: 1;
+  color: #e0f2fe;
+}
+
+.focus-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.focus-bar div {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #60a5fa, #34d399);
+  transition: width 160ms ease;
+}
+
+.focus-readout[data-status="error"] .focus-bar div {
+  background: #fb7185;
+}
+
 .button-row.compact {
   justify-content: flex-end;
   margin: 0;

@@ -65,6 +65,10 @@ const state = {
   multispectralPreviewFetching: false,
   multispectralPreviewTimer: null,
   multispectralPreviewFrameUrl: "",
+  multispectralFocusRunning: false,
+  multispectralFocusFetching: false,
+  multispectralFocusTimer: null,
+  multispectralFocusMaxScore: 0,
   serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
@@ -211,6 +215,8 @@ const checkStatusText = {
   warning: "需注意",
   failed: "失败",
   not_connected: "未连接",
+  dependency_missing: "缺少依赖",
+  no_serial_port: "未发现串口",
   sdk_missing: "SDK 未安装",
   unsupported: "暂不支持",
   manual_required: "需要确认",
@@ -219,20 +225,20 @@ const checkStatusText = {
 const deviceRoleConfig = {
   MAIN_CONTROLLER: {
     kind: "serial",
-    select: "mainControllerSelect",
-    status: "mainControllerBindingStatus",
+    selects: ["mainControllerSelect"],
+    statuses: ["mainControllerBindingStatus"],
     label: "主控制器",
   },
   RGB_CAMERA: {
     kind: "uvc",
-    select: "rgbCameraSelect",
-    status: "rgbCameraBindingStatus",
+    selects: ["rgbCameraSelect", "cameraRgbDeviceSelect"],
+    statuses: ["rgbCameraBindingStatus", "cameraRgbBindingStatus"],
     label: "RGB",
   },
   MULTISPECTRAL_CAMERA: {
     kind: "dvp2",
-    select: "multispectralCameraSelect",
-    status: "multispectralCameraBindingStatus",
+    selects: ["multispectralCameraSelect", "cameraMultispectralDeviceSelect"],
+    statuses: ["multispectralCameraBindingStatus", "cameraMultispectralBindingStatus"],
     label: "多光谱",
   },
 };
@@ -241,9 +247,18 @@ function $(selector) {
   return document.querySelector(selector);
 }
 
+function $$(selector) {
+  return Array.from(document.querySelectorAll(selector));
+}
+
 function setText(id, value) {
   const node = document.getElementById(id);
-  if (node) node.textContent = value;
+  if (!node) return;
+  if ("value" in node && ["INPUT", "TEXTAREA"].includes(node.tagName)) {
+    node.value = value;
+  } else {
+    node.textContent = value;
+  }
 }
 
 function setInputValueUnlessFocused(id, value) {
@@ -574,11 +589,18 @@ function setCameraSettingsTab(tab) {
   if (state.cameraSettingsTab !== "multispectral" && state.multispectralPreviewRunning) {
     stopMultispectralPreview();
   }
+  if (state.cameraSettingsTab !== "multispectral" && state.multispectralFocusRunning) {
+    stopMultispectralFocus();
+  }
   renderCameraSettingsStatus();
 }
 
 function formatCameraResolution(width, height, separator = " x ") {
   return width && height ? `${width}${separator}${height}` : "--";
+}
+
+function matchedCandidateForRole(role) {
+  return state.deviceBindings?.matches?.[role]?.candidate || null;
 }
 
 function renderCameraSettingsStatus() {
@@ -597,6 +619,17 @@ function renderCameraSettingsStatus() {
       : (rgb.error || "未检测到 RGB 相机");
   setText("rgbCameraStatusText", rgbStatusText);
   setText("rgbCameraTransportText", rgb.transport || "UVC / DirectShow");
+  const rgbCandidate = matchedCandidateForRole("RGB_CAMERA");
+  const rgbMeta = rgbCandidate?.metadata || {};
+  setText("cameraRgbVidPid", rgbMeta.vid && rgbMeta.pid ? `VID_${rgbMeta.vid} / PID_${rgbMeta.pid}` : "未提供");
+  setText(
+    "cameraRgbStableIdentity",
+    rgbCandidate?.stableId
+      ? `${rgbCandidate.stableId} (${rgbMeta.identitySource || "stableId"})`
+      : rgbMeta.potentialStableId
+        ? `仅候选: ${rgbMeta.potentialStableId} (${rgbMeta.mappingConfidence || "unknown"})`
+        : "无可靠稳定身份，需重新验证 index"
+  );
   setText("rgbCameraActualResolutionText", formatCameraResolution(actual.width || rgb.resolution?.width || requested.width, actual.height || rgb.resolution?.height || requested.height));
   setText("rgbCameraActualFpsText", Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")} FPS` : `${requested.fps || 25} FPS`);
   setText("rgbCameraActualFourccText", actual.fourcc || requested.fourcc || "MJPG");
@@ -623,6 +656,9 @@ function renderCameraSettingsStatus() {
         : (multispectral.error || "等待相机供电 / 尚未完成真实连接验证")
   );
   setText("multispectralCameraTransportText", multispectral.transport || "GigE / RJ45");
+  const multiCandidate = matchedCandidateForRole("MULTISPECTRAL_CAMERA");
+  const multiMeta = multiCandidate?.metadata || {};
+  setText("multispectralHostAdapter", multiMeta.hostAdapterName ? `${multiMeta.hostAdapterName} / ${multiMeta.hostAdapterIPv4 || "--"}` : "未匹配");
   setText("multispectralCameraPixelFormatText", multiActual.pixelFormat || multispectral.pixelFormat || "DVP2 SDK");
   setText("multispectralCameraResolutionText", formatCameraResolution(multiActual.width || multispectral.resolution?.width, multiActual.height || multispectral.resolution?.height));
   setInputValueUnlessFocused("multispectralCameraIp", multiActual.cameraIp || "等待设备");
@@ -915,7 +951,7 @@ async function startMultispectralPreview() {
   try {
     const payload = await api("/api/camera/multispectral/preview/start", {
       method: "POST",
-      body: JSON.stringify({ width: 960, height: 540, fps: 8 }),
+      body: JSON.stringify({ width: 960, height: 540, fps: 12, lowLatency: true }),
     });
     const result = payload.result || {};
     applyCameraStatus({ ...(state.cameraStatus || {}), ...(result.status ? { multispectral: result.status } : {}), preview: result.preview });
@@ -923,7 +959,7 @@ async function startMultispectralPreview() {
     renderCameraSettingsStatus();
     scheduleMultispectralPreviewFrames();
     setText("multispectralLivePreviewEmpty", "正在读取多光谱预览");
-    addLog("多光谱实时预览已启动：960x540，最高 8 FPS。");
+    addLog("多光谱低延迟实时预览已启动：960x540，目标 12 FPS。");
   } catch (error) {
     state.multispectralPreviewRunning = false;
     setText("multispectralLivePreviewEmpty", error.message || "多光谱预览启动失败");
@@ -957,7 +993,7 @@ async function stopMultispectralPreview() {
 function scheduleMultispectralPreviewFrames() {
   clearMultispectralPreviewTimer();
   fetchMultispectralPreviewFrame();
-  state.multispectralPreviewTimer = window.setInterval(fetchMultispectralPreviewFrame, 1000 / 8);
+  state.multispectralPreviewTimer = window.setInterval(fetchMultispectralPreviewFrame, 1000 / 15);
 }
 
 function clearMultispectralPreviewTimer() {
@@ -978,6 +1014,7 @@ async function fetchMultispectralPreviewFrame() {
   if (!state.multispectralPreviewRunning) return;
   if (state.multispectralPreviewFetching) return;
   state.multispectralPreviewFetching = true;
+  const fetchStarted = performance.now();
   try {
     const response = await fetch(`/api/camera/multispectral/preview-frame?t=${Date.now()}`);
     if (!response.ok) {
@@ -989,6 +1026,7 @@ async function fetchMultispectralPreviewFrame() {
       throw new Error(message);
     }
     const blob = await response.blob();
+    const browserFetchDurationMs = performance.now() - fetchStarted;
     releaseMultispectralPreviewUrl();
     state.multispectralPreviewFrameUrl = URL.createObjectURL(blob);
     const image = $("#multispectralLivePreview");
@@ -1000,6 +1038,16 @@ async function fetchMultispectralPreviewFrame() {
     const frameMin = response.headers.get("X-Frame-Min");
     const frameMax = response.headers.get("X-Frame-Max");
     const frameMean = response.headers.get("X-Frame-Mean");
+    const frameId = response.headers.get("X-Frame-Id");
+    const sourceTimestamp = response.headers.get("X-Source-Timestamp");
+    const captureMs = response.headers.get("X-Capture-Duration-Ms");
+    const resizeMs = response.headers.get("X-Resize-Duration-Ms");
+    const jpegMs = response.headers.get("X-Jpeg-Encode-Duration-Ms");
+    const serverMs = response.headers.get("X-Server-Total-Ms");
+    const measuredFps = response.headers.get("X-Measured-Preview-Fps");
+    const droppedFrames = response.headers.get("X-Dropped-Frames");
+    const lowLatency = response.headers.get("X-Low-Latency-Preview") === "1";
+    const previewEncoder = response.headers.get("X-Preview-Encoder");
     const meanValue = Number(frameMean);
     const maxValue = Number(frameMax);
     const brightnessHint = Number.isFinite(meanValue) && Number.isFinite(maxValue) && meanValue < 2 && maxValue < 10
@@ -1007,7 +1055,7 @@ async function fetchMultispectralPreviewFrame() {
       : "";
     setText(
       "multispectralPreviewMeta",
-      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""} ${response.headers.get("X-Pixel-Format") || ""}；亮度 min=${frameMin || "--"} max=${frameMax || "--"} mean=${frameMean || "--"}。${brightnessHint}`
+      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""} ${response.headers.get("X-Pixel-Format") || ""}；frameId=${frameId || "--"} timestamp=${sourceTimestamp || "--"}；capture=${captureMs || "--"}ms resize=${resizeMs || "--"}ms jpeg=${jpegMs || "--"}ms server=${serverMs || "--"}ms fetch=${browserFetchDurationMs.toFixed(1)}ms fps=${measuredFps || "--"} drop=${droppedFrames || "0"} encoder=${previewEncoder || "--"}；${lowLatency ? "Low Latency enabled" : "Low Latency off"}；亮度 min=${frameMin || "--"} max=${frameMax || "--"} mean=${frameMean || "--"}。${brightnessHint}`
     );
   } catch (error) {
     const message = cameraFetchErrorMessage(error, "多光谱预览已停止");
@@ -1020,6 +1068,110 @@ async function fetchMultispectralPreviewFrame() {
   } finally {
     state.multispectralPreviewFetching = false;
   }
+}
+
+async function startMultispectralFocus() {
+  state.multispectralFocusRunning = true;
+  state.multispectralFocusMaxScore = 0;
+  renderMultispectralFocusResult(null, null);
+  setText("multispectralFocusStatus", "正在读取原始 DVP2 帧并计算相对清晰度。");
+  scheduleMultispectralFocusFrames();
+  addLog("多光谱对焦检测已启动：使用原始 mono 帧计算 Tenengrad / Laplacian / Edge Density。");
+}
+
+function stopMultispectralFocus() {
+  clearMultispectralFocusTimer();
+  state.multispectralFocusRunning = false;
+  state.multispectralFocusFetching = false;
+  setText("multispectralFocusStatus", "对焦检测已停止；阈值尚未标定，请以相对峰值辅助人工调焦。");
+}
+
+function scheduleMultispectralFocusFrames() {
+  clearMultispectralFocusTimer();
+  fetchMultispectralFocusResult();
+  state.multispectralFocusTimer = window.setInterval(fetchMultispectralFocusResult, 500);
+}
+
+function clearMultispectralFocusTimer() {
+  if (state.multispectralFocusTimer) {
+    window.clearInterval(state.multispectralFocusTimer);
+    state.multispectralFocusTimer = null;
+  }
+}
+
+async function fetchMultispectralFocusResult() {
+  if (!state.multispectralFocusRunning) return;
+  if (state.multispectralFocusFetching) return;
+  state.multispectralFocusFetching = true;
+  try {
+    const payload = await api("/api/camera/multispectral/focus/evaluate", {
+      method: "POST",
+      body: JSON.stringify({ roiMode: "center" }),
+    });
+    renderMultispectralFocusResult(payload.result || {}, null);
+  } catch (error) {
+    renderMultispectralFocusResult(null, error);
+    addLog(error.message || "多光谱对焦检测失败。", "WARN");
+  } finally {
+    state.multispectralFocusFetching = false;
+  }
+}
+
+function renderMultispectralFocusResult(result = null, error = null) {
+  const node = $("#multispectralFocusReadout");
+  if (!node) return;
+  if (error) {
+    node.dataset.status = "error";
+    setText("multispectralFocusScore", "--");
+    setInputValueUnlessFocused("multispectralFocusTenengrad", "--");
+    setInputValueUnlessFocused("multispectralFocusLaplacian", "--");
+    setInputValueUnlessFocused("multispectralFocusEdgeDensity", "--");
+    setText("multispectralFocusStatus", error.message || "对焦检测失败");
+    const bar = $("#multispectralFocusBar");
+    if (bar) bar.style.width = "0%";
+    return;
+  }
+  if (!result) {
+    node.dataset.status = "idle";
+    setText("multispectralFocusScore", "--");
+    setInputValueUnlessFocused("multispectralFocusTenengrad", "--");
+    setInputValueUnlessFocused("multispectralFocusLaplacian", "--");
+    setInputValueUnlessFocused("multispectralFocusEdgeDensity", "--");
+    setInputValueUnlessFocused("multispectralFocusRoi", "center");
+    const bar = $("#multispectralFocusBar");
+    if (bar) bar.style.width = "0%";
+    return;
+  }
+  node.dataset.status = result.status === "ok" ? "ok" : "warning";
+  const metrics = result.metrics || {};
+  const score = Number(result.focusScore);
+  if (Number.isFinite(score)) {
+    state.multispectralFocusMaxScore = Math.max(state.multispectralFocusMaxScore || 0, score);
+  }
+  const maxScore = state.multispectralFocusMaxScore || score || 0;
+  const width = Number.isFinite(score) && maxScore > 0 ? Math.max(2, Math.min(100, (score / maxScore) * 100)) : 0;
+  const bar = $("#multispectralFocusBar");
+  if (bar) bar.style.width = `${width}%`;
+  setText("multispectralFocusScore", formatMetric(score));
+  setInputValueUnlessFocused("multispectralFocusTenengrad", formatMetric(metrics.tenengrad));
+  setInputValueUnlessFocused("multispectralFocusLaplacian", formatMetric(metrics.laplacianVariance));
+  setInputValueUnlessFocused("multispectralFocusEdgeDensity", Number.isFinite(Number(metrics.edgeDensity)) ? Number(metrics.edgeDensity).toFixed(4) : "--");
+  setInputValueUnlessFocused("multispectralFocusRoi", result.roi?.mode || "center");
+  const classification = result.classification === "unknown" ? "阈值尚未标定" : `当前分类：${result.classification}`;
+  const frame = result.frame || {};
+  const capture = result.capture || {};
+  setText(
+    "multispectralFocusStatus",
+    `${classification}；源帧 ${frame.width || "--"} x ${frame.height || "--"} ${frame.dtype || ""} ${frame.pixelFormat || ""}；${capture.previewWasRunning ? "复用当前预览流" : "临时取帧后释放"}。`
+  );
+}
+
+function formatMetric(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  if (Math.abs(number) >= 1000) return number.toFixed(0);
+  if (Math.abs(number) >= 10) return number.toFixed(1);
+  return number.toFixed(3);
 }
 
 function hasActiveSample() {
@@ -1438,6 +1590,7 @@ function renderSerialPorts() {
 
 function candidateLocationText(candidate = {}) {
   const connection = candidate.connection;
+  const meta = candidate.metadata || {};
   if (typeof connection === "string") return connection;
   if (!connection || typeof connection !== "object") return "";
   const parts = [];
@@ -1445,6 +1598,8 @@ function candidateLocationText(candidate = {}) {
   if (connection.deviceIndex !== undefined && connection.deviceIndex !== null) parts.push(`index ${connection.deviceIndex}`);
   if (connection.serial) parts.push(connection.serial);
   if (connection.userId) parts.push(`user ${connection.userId}`);
+  if (meta.ip) parts.push(meta.ip);
+  if (meta.mac) parts.push(meta.mac);
   return parts.join(" · ");
 }
 
@@ -1452,10 +1607,14 @@ function candidateLabel(candidate = {}) {
   const meta = candidate.metadata || {};
   const flags = [];
   if (candidate.stableId) flags.push(candidate.stableId);
+  else if (meta.potentialStableId) flags.push(`候选身份 ${meta.potentialStableId}`);
   const location = candidateLocationText(candidate);
   if (location) flags.push(location);
+  if (meta.mappingConfidence) flags.push(`映射 ${meta.mappingConfidence}`);
+  if (meta.vid && meta.pid) flags.push(`VID_${meta.vid}&PID_${meta.pid}`);
   if (meta.protocolMatched) flags.push("PING");
   if (meta.frameReadable) flags.push("frame");
+  if (meta.recommended) flags.push("推荐规格");
   if (candidate.status === "in_use") flags.push("使用中");
   if (candidate.status === "unavailable") flags.push("不可用");
   return [candidate.displayName || candidate.kind || "Device", flags.join(" · ")].filter(Boolean).join(" / ");
@@ -1468,22 +1627,29 @@ function candidatesForRole(role) {
 
 function renderDeviceDiscovery() {
   Object.entries(deviceRoleConfig).forEach(([role, config]) => {
-    const select = document.getElementById(config.select);
-    if (!select) return;
-    const previous = select.value;
     const candidates = candidatesForRole(role);
-    select.innerHTML = "";
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = candidates.length ? "请选择设备候选" : "未发现候选设备";
-    select.appendChild(empty);
-    candidates.forEach((candidate, index) => {
-      const option = document.createElement("option");
-      option.value = String(index);
-      option.textContent = candidateLabel(candidate);
-      select.appendChild(option);
+    const matched = state.deviceBindings?.matches?.[role]?.candidate || null;
+    const matchedIndex = matched
+      ? candidates.findIndex((candidate) => JSON.stringify(candidate.connection) === JSON.stringify(matched.connection) && candidate.kind === matched.kind)
+      : -1;
+    (config.selects || [config.select]).forEach((selectId) => {
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      const previous = select.value;
+      select.innerHTML = "";
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = candidates.length ? "请选择设备候选" : "未发现候选设备";
+      select.appendChild(empty);
+      candidates.forEach((candidate, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        option.textContent = candidateLabel(candidate);
+        select.appendChild(option);
+      });
+      if (matchedIndex >= 0) select.value = String(matchedIndex);
+      else if ([...select.options].some((option) => option.value === previous)) select.value = previous;
     });
-    if ([...select.options].some((option) => option.value === previous)) select.value = previous;
   });
   renderDeviceBindingStatus();
   const count = (state.deviceDiscovery.candidates || []).length;
@@ -1507,7 +1673,14 @@ function renderDeviceBindingStatus() {
         : "未绑定";
     const location = match?.candidate ? candidateLocationText(match.candidate) : "";
     const name = match?.candidate?.displayName || binding?.displayName || "";
-    setText(config.status, `${config.label}: ${[stateText, name, location].filter(Boolean).join(" · ")}`);
+    const text = `${config.label}: ${[stateText, name, location].filter(Boolean).join(" · ")}`;
+    (config.statuses || [config.status]).forEach((statusId) => setText(statusId, text));
+    if (role === "RGB_CAMERA" && match?.candidate?.connection?.deviceIndex !== undefined) {
+      setInputValueUnlessFocused("cameraDeviceIndex", match.candidate.connection.deviceIndex);
+    }
+    if (role === "MULTISPECTRAL_CAMERA" && match?.candidate?.stableId) {
+      setInputValueUnlessFocused("multispectralCameraSerial", match.candidate.stableId);
+    }
   });
 }
 
@@ -1532,7 +1705,7 @@ async function refreshDeviceDiscovery() {
 
 async function bindSelectedDevice(role) {
   const config = deviceRoleConfig[role];
-  const select = config ? document.getElementById(config.select) : null;
+  const select = config ? (config.selects || [config.select]).map((id) => document.getElementById(id)).find((node) => node && node.value !== "") : null;
   if (!config || !select || select.value === "") {
     addLog("请先选择一个设备候选再绑定。", "WARN");
     return;
@@ -1662,35 +1835,17 @@ async function runUnifiedDeviceCheck() {
   if (startButton) startButton.disabled = true;
 
   try {
-    const statusPayload = await api("/api/device/status");
-    const device = statusPayload.device || {};
-    applyHardwareStatus(device);
-
-    if (!device.connected) {
-      state.devicePrep = {
-        ...state.devicePrep,
-        connect: false,
-        motor: false,
-        light: false,
-        camera: false,
-      };
-      state.deviceCheckDetail = { device };
-      renderDeviceChecks(checksFromHardwareStatus(device), state.deviceCheckDetail);
-      setText("statusNote", "STM32 尚未连接：离线界面可查看，样品采集前需要先完成设备检查。");
-      await syncDevicePreparation();
-      return;
-    }
-
-    const selfTestPayload = await api("/api/device/self-test", {
+    const selfTestPayload = await api("/api/device/check", {
       method: "POST",
-      body: JSON.stringify({ includeMotion: true }),
+      body: "{}",
     });
     const result = selfTestPayload.result || {};
-    const checkedDevice = result.status || device;
+    const checkedDevice = result.status || {};
     applyHardwareStatus(checkedDevice);
     const checks = { ...checksFromHardwareStatus(checkedDevice), ...(result.checks || {}) };
     state.deviceCheckDetail = {
-      includeMotion: true,
+      includeMotion: false,
+      independentDomains: true,
       device: checkedDevice,
       checks,
       trueCaptureReady: false,
@@ -1707,8 +1862,8 @@ async function runUnifiedDeviceCheck() {
     setStepStatus("motor", state.devicePrep.motor ? "done" : "warning");
     setStepStatus("light", state.devicePrep.light ? "done" : "warning");
     setStepStatus("camera", "warning");
-    setText("statusNote", "设备检查完成：离线验证可用；RGB 走 OpenCV/DirectShow 检查，DVP2 走 SDK adapter 检查；真实采集不可用。");
-    addLog("一键设备检查完成：已复用 STM32 状态读取与硬件自检；相机预览与参数能力不等于真实采集就绪。");
+    setText("statusNote", "设备检查完成：STM32、RGB、DVP2 已按独立硬件域分别检查；真实采集不可用。");
+    addLog("一键设备检查完成：STM32 离线不会阻断 RGB/DVP2 检查；相机预览与参数能力不等于真实采集就绪。");
     await syncDevicePreparation();
   } catch (error) {
     const checks = checksFromHardwareStatus(state.hardwareStatus);
@@ -3918,6 +4073,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#applyMultispectralCameraSettings")?.addEventListener("click", applyMultispectralCameraSettings);
   $("#startMultispectralPreview")?.addEventListener("click", startMultispectralPreview);
   $("#stopMultispectralPreview")?.addEventListener("click", stopMultispectralPreview);
+  $("#startMultispectralFocus")?.addEventListener("click", startMultispectralFocus);
+  $("#stopMultispectralFocus")?.addEventListener("click", stopMultispectralFocus);
   $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
   $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
