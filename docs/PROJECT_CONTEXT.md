@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | RGB 彩色相机 | `camera/rgb` 厂商资料显示 Windows AMCAP/UVC 与锐尔威视 USB Camera SDK；用于外观和形态 | PARTIAL/REAL VERIFIED：`camera_service.RgbUvcCamera` 通过 OpenCV `cv2.CAP_DSHOW`/UVC 打开当前电脑 `device_index=1`，请求 `MJPG`、`3840x2160`、`25fps`，实机验证可取 `(2160, 3840, 3)` `uint8` RGB 帧；配置在 `RgbCameraConfig`，不在 adapter 内硬编码；同一逻辑 index 兼容 `VideoCapture(index, CAP_DSHOW)` 与 `VideoCapture(index + CAP_DSHOW)` 两种 DirectShow 打开形式，不扫描或 fallback 到 0；相机设置页“重新检测”调用 `/api/camera/rgb/probe` 执行真实打开/取帧/释放，状态区分 `detected`、`available`、`opened`、`streaming`，释放句柄或停止预览后仍保留已检测/可用状态；`/api/camera/rgb/apply-settings` 可下发并回读参数，`/api/camera/rgb/preview-*` 可做 960x540 JPEG 预览；正式保存和完整采集协调器仍未接入，主采集仍走离线验证 |
 | 黑白多光谱相机 | DO3THINK/度申 GigE/RJ45 工业黑白相机，通过 PC 千兆以太网口和 DVP2 SDK 连接；配合滤光片转轮采集多光谱灰度图 | PARTIAL/REAL ADAPTER：`camera_service.Dvp2MonoCamera` 已基于 `D:\Netease\DVP2 SDK CN\library\Visual C++\include\DVPCamera.h` 和官方示例新增 Python 3.12 `ctypes` 绑定；可发现 `DVPCamera64.dll`，真实枚举目标为 `MGV231M-H2-169.254.25.110`、`UserID=GP23400004963`、SDK serial `DSGP23400004963`、MAC `B4-61-D3-14-6E-18`；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、开始取流、30 帧取图和 PNG 保存，实际帧 `2048x1200`、`Mono8`、`uint8`；相机设置页已接入 DVP2 重新检测、网页 JPEG 预览、曝光/增益下发与回读、设备详情和占用提示。本轮 Codex 复测时当前环境枚举返回 0，因此正式采集保存和 CaptureCoordinator 仍未接入，不能把多光谱预览成功等同于完整采集闭环 |
-| 滤光片转轮 | 文档建议 8-16 孔，STM32 控制 HOME/定位；代码开发配置启用 450/560/670 nm | PARTIAL：已有 `serial_service.py`、`hardware_controller.py`、`device_manager.py` 的两字节 STM32 串口控制层和滤光轮寻零/相对旋转命令；真实运行需连接 STM32 和 pyserial |
+| 滤光片转轮 | 文档建议 8-16 孔，STM32 控制 HOME/定位；代码开发配置启用 450/560/670 nm | PARTIAL：`stm32/` 已导入 STM32F407 固件交付工程；上位机已有 `serial_service.py`、`hardware_controller.py`、`device_manager.py` 两字节控制层。固件当前 AA55/短帧/ASCII 协议与上位机严格两字节协议尚未统一，仍需完成协议适配和完整实机流程联调 |
 | 样品旋转平台 | 围绕水果旋转，用于 RGB + 多光谱多视角采集 | PARTIAL/MOCK：主程序已支持 `sample_rotation` 角度计划、UI 设置、metadata/views.json 记录和离线模拟多 View 文件；没有真实样品台电机控制 |
 | 光源 | 顶部/侧向/底部/紫外/近红外光源，可调亮度并与曝光同步 | PARTIAL：控制层已有 RGB LED 两路和钨灯两路开关命令及互锁；主 UI 光源波段按钮仍是离线自检/日志，没有亮度调节闭环 |
 | 电机/驱动器 | STM32 + 步进驱动器控制滤光轮、可能的样品台/门控 | PARTIAL：滤光片轮和升降门已有 STM32 控制命令；样品旋转平台仍只有计划和 UI，没有真实电机接口 |

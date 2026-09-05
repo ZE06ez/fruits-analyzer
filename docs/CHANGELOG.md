@@ -2,6 +2,12 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-05 STM32F407 固件工程导入
+
+- 修改内容：新增 `stm32/`，导入 STM32F407 电机、风扇、LED 和升降门控制固件、接线/协议文档及固件侧上位机测试工具；保留可烧录的 `zhunong.hex`，其余构建目录继续忽略。
+- 集成状态：固件的 AA55+CRC/短帧/ASCII 混合协议与主上位机严格两字节一问一答协议尚未统一；本次只完成源码同仓和分支交付，不声明已完成应用层协议联调。
+- 分支：`STM32`。
+
 ## 2026-09-04 P1A-2B DVP2 多光谱网页预览与参数控制
 
 - 修改内容：在既有 DVP2 `ctypes` binding 和 `Dvp2MonoCamera` 基础上完成多光谱黑白相机网页预览链路；新增 `/api/camera/multispectral/apply-settings`，支持曝光时间和增益通过 UI -> Backend -> `CameraManager` -> `Dvp2MonoCamera` -> DVP2 SDK 下发并回读实际值；`/api/camera/multispectral/preview/start` 保持同一个 DVP2 实例 open/streaming，`preview-frame` 只读取当前流并输出 960x540 JPEG；预览转换只用于浏览器显示，底层 `CameraFrame` 保留原始 `uint8/uint16` dtype；状态字段拆分 `detected/available/opened/streaming`，`connected` 仅作为 detected 兼容别名；修正相机 IP 严格解析、MAC 显示、`streamFps` 与 `linkSpeedMbps` 分离、当前 `pixelFormat/frameDtype` 与 `supportedPixelFormats` 分离；已发现但无法打开时提示关闭 BasedCam3 或其他相机程序。

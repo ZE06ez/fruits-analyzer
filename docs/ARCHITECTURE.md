@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 ## 总体结构
 
@@ -23,7 +23,14 @@ host_software/static_ui_prototype_bin/
   sample_data/
   trained_models/
   tests/
+
+stm32/
+  工程源码/                  # STM32F407 固件、HAL/CMSIS 与 CMake 工程
+  上位机工具/                # 固件侧协议参考和串口测试脚本
+  *.md                       # 固件交接、接线和通信协议文档
 ```
+
+`stm32/` 是从独立固件交付工程导入的硬件源码。该固件当前使用 AA55+CRC 二进制帧、两字节短帧和 ASCII 文本三种协议，并每 100 ms 主动上报状态；`host_software` 当前串口层使用严格的 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 两字节一问一答协议。两端协议尚未统一，不能把源码同仓视为已经完成上位机联调。
 
 运行时结构：
 
@@ -47,6 +54,7 @@ launcher.py
 | 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用，`trueCapturePrepared` 在完整 CaptureCoordinator、光源/滤光轮/样品台同步和正式保存闭环完成前仍强制为 false | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证，DVP2 adapter 已接入网页预览/参数控制；样品台和完整采集协调器仍为待接入 |
 | 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()` | `state`、设备状态、样品状态、形态任务、预测任务 | 顶栏“当前状态” | 前端派生状态，不新增后端状态源 |
 | STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
+| STM32 固件 | `stm32/工程源码/` | `ctrl_protocol`, `ctrl_motor`, `ctrl_door`, `drv_uart`, `drv_pulse` | USART1 命令、运动与外设控制参数 | STEP/DIR、PWM、推杆控制、串口状态帧 | STM32F407 HAL/CMSIS |
 | 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
 | 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager`, `DeviceManager.self_test()` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*`，self-test `checks` | HardwareController |
 | 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；`CameraStatus` 区分 `detected`、`available`、`opened`、`streaming`；frame 不绑定样品目录 | Python dataclass/protocol |
