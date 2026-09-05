@@ -11,7 +11,7 @@
 #define DOOR_CMD_CLOSE   1u   /* 关闭门:推杆伸出 */
 #define DOOR_CMD_STOP    2u   /* 立即停止(刹车) */
 #define DOOR_REVERSE_MS  100u /* 换向刹车死区(文档要求 ≥100ms) */
-#define DOOR_TIMEOUT_MS  28000u /* 单次动作超时自动停机(实测全行程 24s + 4s 余量) */
+#define DOOR_TIMEOUT_MS  28000u /* 单次连续动作超时;2026-09-05 实测单程约20s,保留约8s余量 */
 
 /* 方向定义(首次点动实测,反了交换下面两行):
    关闭=伸出:IN1=1,IN2=0 */
