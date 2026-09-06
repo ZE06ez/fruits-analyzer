@@ -34,6 +34,7 @@ EXCLUDE_REASONS = {
 }
 PUBLISHED_STATUSES = {"Published", "Default", "Production"}
 MODEL_STATUSES_VISIBLE_TO_STATION = tuple(sorted(PUBLISHED_STATUSES))
+DATASET_PRODUCTION_REFERENCE_ERROR = "DATASET_HAS_PRODUCTION_MODEL_REFERENCES"
 
 
 class ModelStudioError(RuntimeError):
@@ -437,6 +438,129 @@ class ModelStudioService:
         if not row:
             raise ModelStudioError(f"dataset not found: {dataset_id}")
         return dict(row)
+
+    def dataset_references(self, dataset_id: str) -> dict:
+        dataset = self.get_dataset(dataset_id)
+        with self.connect() as conn:
+            samples = [dict(row) for row in conn.execute(
+                "SELECT sample_id,sample_name,local_path,source_path,include_status FROM samples WHERE dataset_id=? ORDER BY sample_id",
+                (dataset_id,),
+            )]
+            versions = [dict(row) for row in conn.execute(
+                "SELECT dataset_version_id,version,version_name,sample_count,label_count,created_at FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC",
+                (dataset_id,),
+            )]
+            experiments = [dict(row) for row in conn.execute(
+                "SELECT experiment_id,experiment_name,target,status,dataset_version_id,created_at FROM training_experiments WHERE dataset_id=? ORDER BY created_at DESC",
+                (dataset_id,),
+            )]
+            experiment_ids = [row["experiment_id"] for row in experiments]
+            jobs: list[dict] = []
+            if experiment_ids:
+                placeholders = ",".join("?" for _ in experiment_ids)
+                jobs = [dict(row) for row in conn.execute(
+                    f"SELECT job_id,experiment_id,status,step,created_at,finished_at FROM jobs WHERE experiment_id IN ({placeholders}) ORDER BY created_at DESC",
+                    experiment_ids,
+                )]
+            models = [self._enrich_model(dict(row)) for row in conn.execute(
+                """
+                SELECT * FROM models
+                WHERE deleted_at IS NULL
+                  AND (dataset_id=? OR dataset_version_id IN (SELECT dataset_version_id FROM dataset_versions WHERE dataset_id=?))
+                ORDER BY is_default DESC,status,created_at DESC
+                """,
+                (dataset_id, dataset_id),
+            )]
+        model_status_counts: dict[str, int] = {}
+        for model in models:
+            status = "Default" if model.get("isDefault") else model.get("status") or "Unknown"
+            model_status_counts[status] = model_status_counts.get(status, 0) + 1
+        blocking_models = [
+            model for model in models
+            if model.get("isDefault") or model.get("status") in PUBLISHED_STATUSES
+        ]
+        return {
+            "dataset": dataset,
+            "samples": samples,
+            "versions": versions,
+            "experiments": experiments,
+            "jobs": jobs,
+            "models": models,
+            "summary": {
+                "samples": len(samples),
+                "versions": len(versions),
+                "experiments": len(experiments),
+                "jobs": len(jobs),
+                "models": len(models),
+                "modelStatusCounts": model_status_counts,
+            },
+            "blockingModels": blocking_models,
+            "canDeletePermanently": not blocking_models,
+            "blockCode": DATASET_PRODUCTION_REFERENCE_ERROR if blocking_models else "",
+            "blockReason": "该数据集仍被已发布/默认模型引用，请先处理这些模型。" if blocking_models else "",
+        }
+
+    def archive_dataset(self, dataset_id: str) -> dict:
+        dataset = self.get_dataset(dataset_id)
+        with self.connect() as conn:
+            conn.execute("UPDATE datasets SET archived=1, updated_at=? WHERE dataset_id=?", (_now(), dataset_id))
+        self.log("dataset.archive", "dataset", dataset_id, f"Dataset archived: {dataset.get('dataset_name') or dataset_id}")
+        return self.get_dataset(dataset_id)
+
+    def delete_dataset_permanently(self, dataset_id: str, *, confirm: str = "") -> dict:
+        refs = self.dataset_references(dataset_id)
+        dataset = refs["dataset"]
+        dataset_name = dataset.get("dataset_name") or dataset_id
+        if confirm != dataset_name:
+            raise ModelStudioError("permanent delete requires exact dataset name confirmation")
+        if refs["blockingModels"]:
+            raise ModelStudioError(DATASET_PRODUCTION_REFERENCE_ERROR)
+        model_paths: list[Path] = []
+        for model in refs["models"]:
+            model_paths.extend(self._model_artifact_paths(model))
+        artifact_paths = self._dataset_artifact_paths(dataset_id, refs["experiments"], refs["versions"])
+        dataset_path = Path(dataset.get("local_path") or dataset.get("storage_path") or "")
+        for path in _unique_paths([*model_paths, *artifact_paths]):
+            if path.exists() and not (self._is_managed_model_path(path) or self._is_managed_artifact_path(path)):
+                raise ModelStudioError(f"refusing to delete unmanaged artifact path: {path}")
+        if dataset_path and dataset_path.exists():
+            self._assert_managed_dataset_path(dataset_path)
+        with self._lock:
+            with self.connect() as conn:
+                experiment_ids = [row["experiment_id"] for row in refs["experiments"]]
+                model_ids = [row["model_id"] for row in refs["models"]]
+                if experiment_ids:
+                    placeholders = ",".join("?" for _ in experiment_ids)
+                    conn.execute(f"DELETE FROM jobs WHERE experiment_id IN ({placeholders})", experiment_ids)
+                if model_ids:
+                    placeholders = ",".join("?" for _ in model_ids)
+                    conn.execute(f"DELETE FROM models WHERE model_id IN ({placeholders})", model_ids)
+                conn.execute("DELETE FROM training_experiments WHERE dataset_id=?", (dataset_id,))
+                conn.execute("DELETE FROM dataset_versions WHERE dataset_id=?", (dataset_id,))
+                conn.execute("DELETE FROM labels WHERE dataset_id=?", (dataset_id,))
+                conn.execute("DELETE FROM samples WHERE dataset_id=?", (dataset_id,))
+                conn.execute("DELETE FROM datasets WHERE dataset_id=?", (dataset_id,))
+            deleted_paths: list[str] = []
+            for path in _unique_paths([*model_paths, *artifact_paths]):
+                if path.exists():
+                    if self._is_managed_model_path(path):
+                        self._delete_managed_model_path(path)
+                    elif self._is_managed_artifact_path(path):
+                        self._delete_managed_artifact_path(path)
+                    else:
+                        raise ModelStudioError(f"refusing to delete unmanaged artifact path: {path}")
+                    deleted_paths.append(str(path))
+            if dataset_path and dataset_path.exists():
+                deleted_paths.append(str(self._delete_managed_dataset_path(dataset_path)))
+        self.log("dataset.delete", "dataset", dataset_id, f"Dataset permanently deleted: {dataset_name}")
+        return {
+            "datasetId": dataset_id,
+            "datasetName": dataset_name,
+            "deleted": True,
+            "deletedPaths": deleted_paths,
+            "preservedSourcePath": dataset.get("import_source_path") or "",
+            "summary": refs["summary"],
+        }
 
     def validate_sample_folder(self, source_path: str | Path) -> dict:
         root = Path(source_path).expanduser()
@@ -1256,9 +1380,14 @@ class ModelStudioService:
         model = self.get_model(model_id)
         if model["status"] == "Default" or model.get("is_default"):
             raise ModelStudioError("default model cannot be permanently deleted; set another default or archive flow first")
+        if self._model_owns_default_legacy(model):
+            raise ModelStudioError("current model still owns the default legacy bundle; set another compatible model as default first")
         if confirm != model_id:
             raise ModelStudioError("permanent delete requires model_id confirmation")
         paths = self._model_artifact_paths(model)
+        for path in paths:
+            if path.exists() and not self._is_managed_model_path(path):
+                raise ModelStudioError(f"refusing to delete unmanaged model path: {path}")
         with self._lock:
             with self.connect() as conn:
                 conn.execute("DELETE FROM models WHERE model_id=?", (model_id,))
@@ -1695,14 +1824,70 @@ class ModelStudioService:
         legacy = self.production_dir / model["target"]
         if (model.get("status") == "Default" or model.get("is_default")) and legacy not in paths:
             paths.append(legacy)
-        return paths
+        return _unique_paths(paths)
 
     def _delete_managed_model_path(self, path: Path) -> None:
         resolved = path.resolve()
-        allowed_roots = [self.model_dir.resolve(), (self.production_dir / "published").resolve()]
-        if not any(root == resolved or root in resolved.parents for root in allowed_roots):
+        if not self._is_managed_model_path(resolved):
             raise ModelStudioError(f"refusing to delete unmanaged model path: {path}")
         shutil.rmtree(resolved, ignore_errors=True)
+
+    def _is_managed_model_path(self, path: Path) -> bool:
+        resolved = path.resolve()
+        allowed_roots = [self.model_dir.resolve(), (self.production_dir / "published").resolve()]
+        return any(root in resolved.parents for root in allowed_roots)
+
+    def _is_managed_artifact_path(self, path: Path) -> bool:
+        resolved = path.resolve()
+        root = self.artifact_dir.resolve()
+        return root in resolved.parents
+
+    def _delete_managed_artifact_path(self, path: Path) -> Path:
+        resolved = path.resolve()
+        if not self._is_managed_artifact_path(resolved):
+            raise ModelStudioError(f"refusing to delete unmanaged artifact path: {path}")
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+        else:
+            resolved.unlink(missing_ok=True)
+        return resolved
+
+    def _delete_managed_dataset_path(self, path: Path) -> Path:
+        resolved = self._assert_managed_dataset_path(path)
+        shutil.rmtree(resolved, ignore_errors=True)
+        return resolved
+
+    def _assert_managed_dataset_path(self, path: Path) -> Path:
+        resolved = path.resolve()
+        root = self.dataset_store_dir.resolve()
+        if root not in resolved.parents:
+            raise ModelStudioError(f"refusing to delete unmanaged dataset path: {path}")
+        return resolved
+
+    def _dataset_artifact_paths(self, dataset_id: str, experiments: list[dict], versions: list[dict]) -> list[Path]:
+        paths = [self.artifact_dir / "features" / dataset_id]
+        experiment_ids = {row["experiment_id"] for row in experiments if row.get("experiment_id")}
+        version_ids = {row["dataset_version_id"] for row in versions if row.get("dataset_version_id")}
+        with self.connect() as conn:
+            for row in conn.execute("SELECT feature_csv FROM training_experiments WHERE dataset_id=?", (dataset_id,)):
+                if row["feature_csv"]:
+                    paths.append(Path(row["feature_csv"]))
+        for item in self.artifact_dir.rglob("*"):
+            text = str(item)
+            if dataset_id in text or any(exp_id in text for exp_id in experiment_ids) or any(ver_id in text for ver_id in version_ids):
+                paths.append(item)
+        return _unique_paths(paths)
+
+    def _model_owns_default_legacy(self, model: dict) -> bool:
+        legacy = self.production_dir / model["target"]
+        metadata_path = legacy / "metadata.json"
+        if not metadata_path.exists():
+            return False
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return metadata.get("model_id") == model.get("model_id")
 
     def _update_sample_feature(self, dataset_id: str, sample_id: str, feature: dict) -> None:
         with self.connect() as conn:
@@ -1880,6 +2065,20 @@ def _calibration_count(sample_dir: Path, kind: str) -> int:
     if not folder.exists():
         return 0
     return len([path for path in folder.iterdir() if path.is_file()])
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path:
+            continue
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
 
 
 def _now() -> str:

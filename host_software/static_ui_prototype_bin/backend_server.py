@@ -1131,6 +1131,10 @@ def create_handler(
                         archived=params.get("archived", [""])[0],
                     )})
                     return
+                if path.startswith("datasets/") and path.endswith("/references"):
+                    dataset_id = path.split("/")[-2]
+                    self.json_response({"ok": True, "references": studio.dataset_references(dataset_id)})
+                    return
                 if path == "dataset-versions":
                     dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
                     self.json_response({"ok": True, "versions": studio.list_dataset_versions(dataset_id)})
@@ -1229,6 +1233,17 @@ def create_handler(
                     if storage_path:
                         payload["storage_path"] = str(resolve_user_path(storage_path, app_dir))
                     self.json_response({"ok": True, "dataset": studio.create_dataset(payload)})
+                    return
+                if path == "datasets/archive":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    self.json_response({"ok": True, "dataset": studio.archive_dataset(dataset_id)})
+                    return
+                if path == "datasets/delete":
+                    dataset_id = payload.get("datasetId") or payload.get("dataset_id")
+                    self.json_response({"ok": True, "result": studio.delete_dataset_permanently(
+                        dataset_id,
+                        confirm=payload.get("confirm") or payload.get("confirmation") or "",
+                    )})
                     return
                 if path == "samples/import":
                     dataset_id = payload.get("datasetId") or payload.get("dataset_id")

@@ -2,6 +2,15 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-06 Model Studio Dataset / Model Delete Completion
+
+- 修改内容：补齐 Dataset Archive 与 Permanent Delete 闭环。新增 `dataset_references()`、`archive_dataset()`、`delete_dataset_permanently()`，以及 `GET /api/model-studio/datasets/<dataset_id>/references`、`POST /api/model-studio/datasets/archive`、`POST /api/model-studio/datasets/delete`。Dataset Permanent Delete 需要 Dataset Name 确认；Published / Default / Production 模型引用会返回 `DATASET_HAS_PRODUCTION_MODEL_REFERENCES` 并阻止删除；无生产引用时可级联清理 samples、labels、dataset_versions、training_experiments、jobs、Candidate/Validated/Archived models 和受管 artifacts。
+- 修改内容：补齐 Model Delete UI 闭环。Model Card 改为“查看 / 重训 / 更多”，更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示合理操作；Delete Permanently 使用红色危险样式和 DOM confirm modal，Default 模型禁用删除并提示先设置另一个兼容默认模型。Published 非 Default 删除会提示删除后不再出现在检测工作站。
+- 修改内容：强化 DB / Files 一致性与路径保护。Model/Dataset 删除前先校验待删路径必须落在 `model_studio_data/datasets/`、`model_studio/artifacts/`、`model_studio/models/` 或 `trained_models/published/<model_id>` 等受管边界内；不删除外部 `source_path` / `import_source_path`；仍对应 legacy `trained_models/<target>` default bundle 的模型禁止直接永久删除。
+- 修改内容：Dataset List 行和 Dataset Summary 均新增明确的“归档”和“永久删除”入口；删除完成后刷新 Dashboard、Dataset List、Training selection、Model Registry 和主工作台 `/api/quality-models` 可见性。
+- 修改文件：`host_software/static_ui_prototype_bin/model_studio/service.py`、`host_software/static_ui_prototype_bin/model_studio/static/index.html`、`host_software/static_ui_prototype_bin/model_studio/static/model_studio.js`、`host_software/static_ui_prototype_bin/model_studio/static/model_studio.css`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/tests/test_model_studio_service.py`、`host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`、`AGENTS.md`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32、相机、DVP2 preview、RGB preview、CaptureCoordinator、SampleStage、`/api/capture/start`、`trueCapturePrepared`、PLSR/SVR/RF 训练算法或光谱特征数学。
+
 ## 2026-09-06 Model Studio Dataset / Training / Model Lifecycle Refinement
 
 - 修改内容：将 Model Studio 一级信息架构整理为 Dashboard / Datasets / Training / Models / Settings。Dashboard 只保留 Dataset、Sample、运行中训练、Published Models 和 Needs Attention；SQLite 路径、滤光片配置和 operation logs 移到 Settings。

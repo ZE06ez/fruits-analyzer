@@ -89,6 +89,28 @@ function fmt(value, digits = 4) {
   return Number.isFinite(num) ? num.toFixed(digits) : String(value);
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+
+function isDefaultModel(model) {
+  return Boolean(model?.isDefault || model?.is_default || model?.status === "Default");
+}
+
+function isPublishedModel(model) {
+  return ["Published", "Default", "Production"].includes(model?.status);
+}
+
+function closeMenus() {
+  document.querySelectorAll(".more-menu[open]").forEach((menu) => menu.removeAttribute("open"));
+}
+
 function selectedDataset() {
   return studio.datasets.find((ds) => ds.dataset_id === studio.selectedDatasetId) || null;
 }
@@ -180,6 +202,10 @@ function renderDatasetSummary() {
   }
   const versionButton = $("#createDatasetVersion");
   if (versionButton) versionButton.disabled = !dataset || sampleCount <= 0;
+  const archiveButton = $("#archiveDataset");
+  if (archiveButton) archiveButton.disabled = !dataset || Number(dataset?.archived || 0) === 1;
+  const deleteButton = $("#deleteDatasetPermanently");
+  if (deleteButton) deleteButton.disabled = !dataset;
   renderPreparationWorkflow();
 }
 
@@ -252,22 +278,43 @@ async function loadDatasets() {
   studio.datasets = payload.datasets || [];
   const rows = studio.datasets.map((ds) => `
     <tr data-dataset="${ds.dataset_id}">
-      <td><b>${ds.dataset_name}</b><br><small>${ds.dataset_id}</small></td>
-      <td>${ds.fruit_type || "--"}</td>
-      <td>${ds.variety || "generic"}</td>
+      <td><b>${escapeHtml(ds.dataset_name)}</b><br><small>${escapeHtml(ds.dataset_id)}</small></td>
+      <td>${escapeHtml(ds.fruit_type || "--")}</td>
+      <td>${escapeHtml(ds.variety || "generic")}</td>
       <td>${ds.sample_count || 0}</td>
       <td>${ds.label_count || 0}<br><small>SSC ${ds.labelCompleteness?.ssc || 0} · TA ${ds.labelCompleteness?.ta || 0} · pH ${ds.labelCompleteness?.ph || 0}</small></td>
-      <td>${(ds.versions || []).map((v) => v.version_name).join(", ") || "--"}</td>
+      <td>${escapeHtml((ds.versions || []).map((v) => v.version_name).join(", ") || "--")}</td>
       <td>${Number(ds.archived || 0) ? badge("Archived") : Number(ds.dirty || 0) ? badge("Dirty") : badge("Clean")}</td>
-      <td><small>${ds.local_path || ds.storage_path}</small></td>
+      <td><small>${escapeHtml(ds.local_path || ds.storage_path)}</small></td>
+      <td>
+        <div class="row-actions">
+          <button type="button" data-dataset-detail="${ds.dataset_id}">查看详情</button>
+          <details class="more-menu">
+            <summary>更多</summary>
+            <div class="more-panel">
+              <button type="button" data-dataset-import="${ds.dataset_id}">添加样品</button>
+              <button type="button" data-dataset-version="${ds.dataset_id}">创建版本</button>
+              <button type="button" data-dataset-detail="${ds.dataset_id}">查看详情</button>
+              <span class="menu-separator"></span>
+              <button type="button" data-dataset-archive="${ds.dataset_id}" ${Number(ds.archived || 0) ? "disabled" : ""}>归档</button>
+              <button type="button" class="danger-menu-item" data-dataset-delete="${ds.dataset_id}">永久删除</button>
+            </div>
+          </details>
+        </div>
+      </td>
     </tr>
   `).join("");
-  $("#datasetRows").innerHTML = rows || `<tr><td colspan="8" class="empty">暂无数据集</td></tr>`;
+  $("#datasetRows").innerHTML = rows || `<tr><td colspan="9" class="empty">暂无数据集</td></tr>`;
   const select = $("#datasetSelect");
-  select.innerHTML = studio.datasets.map((ds) => `<option value="${ds.dataset_id}">${ds.dataset_name}</option>`).join("");
+  select.innerHTML = studio.datasets.map((ds) => `<option value="${escapeHtml(ds.dataset_id)}">${escapeHtml(ds.dataset_name)}</option>`).join("");
+  if (studio.selectedDatasetId && !studio.datasets.some((ds) => ds.dataset_id === studio.selectedDatasetId)) {
+    studio.selectedDatasetId = "";
+    studio.selectedDatasetVersionId = "";
+  }
   if (!studio.selectedDatasetId && studio.datasets[0]) studio.selectedDatasetId = studio.datasets[0].dataset_id;
   select.value = studio.selectedDatasetId;
-  document.querySelectorAll("[data-dataset]").forEach((row) => row.addEventListener("click", async () => {
+  document.querySelectorAll("[data-dataset]").forEach((row) => row.addEventListener("click", async (event) => {
+    if (event.target.closest("button, details, summary")) return;
     studio.selectedDatasetId = row.dataset.dataset;
     studio.selectedDatasetVersionId = "";
     studio.latestQuality = null;
@@ -277,8 +324,128 @@ async function loadDatasets() {
     await loadSamples().catch(() => {});
     renderDatasetSummary();
   }));
+  document.querySelectorAll("[data-dataset-detail]").forEach((button) => button.addEventListener("click", () => {
+    studio.selectedDatasetId = button.dataset.datasetDetail;
+    closeMenus();
+    renderDatasetSummary();
+    setPrepStep("quality");
+  }));
+  document.querySelectorAll("[data-dataset-import]").forEach((button) => button.addEventListener("click", () => {
+    studio.selectedDatasetId = button.dataset.datasetImport;
+    closeMenus();
+    setPrepStep("import");
+  }));
+  document.querySelectorAll("[data-dataset-version]").forEach((button) => button.addEventListener("click", () => {
+    studio.selectedDatasetId = button.dataset.datasetVersion;
+    closeMenus();
+    setPrepStep("version");
+  }));
+  document.querySelectorAll("[data-dataset-archive]").forEach((button) => button.addEventListener("click", () => archiveDataset(button.dataset.datasetArchive).catch((error) => toast(error.message))));
+  document.querySelectorAll("[data-dataset-delete]").forEach((button) => button.addEventListener("click", () => deleteDatasetPermanently(button.dataset.datasetDelete).catch((error) => toast(error.message))));
   await loadDatasetVersions().catch(() => {});
   renderDatasetSummary();
+}
+
+async function archiveDataset(datasetId = studio.selectedDatasetId) {
+  if (!datasetId) throw new Error("请先选择 Dataset");
+  closeMenus();
+  await api("/api/model-studio/datasets/archive", { method: "POST", body: JSON.stringify({ datasetId }) });
+  toast("Dataset 已归档，历史版本和模型仍保留");
+  if (studio.selectedDatasetId === datasetId && ($("#datasetArchivedFilter")?.value || "0") === "0") {
+    studio.selectedDatasetId = "";
+    studio.selectedDatasetVersionId = "";
+  }
+  await refreshAll();
+}
+
+async function deleteDatasetPermanently(datasetId = studio.selectedDatasetId) {
+  if (!datasetId) throw new Error("请先选择 Dataset");
+  closeMenus();
+  const payload = await api(`/api/model-studio/datasets/${encodeURIComponent(datasetId)}/references`);
+  const refs = payload.references;
+  const dataset = refs.dataset;
+  const confirmed = await confirmPermanentDelete({
+    title: "永久删除 Dataset",
+    dangerText: "归档可以保留历史；永久删除不可恢复，并会清理该 Dataset 的受管实验数据。",
+    confirmLabel: "Dataset Name",
+    confirmValue: dataset.dataset_name,
+    disabled: !refs.canDeletePermanently,
+    blockReason: refs.blockReason || "",
+    summaryHtml: datasetDeleteSummary(refs),
+  });
+  if (!confirmed) return;
+  await api("/api/model-studio/datasets/delete", { method: "POST", body: JSON.stringify({ datasetId, confirm: dataset.dataset_name }) });
+  toast("Dataset 已永久删除");
+  if (studio.selectedDatasetId === datasetId) {
+    studio.selectedDatasetId = "";
+    studio.selectedDatasetVersionId = "";
+    studio.selectedSampleId = "";
+    studio.latestQuality = null;
+    switchView("datasets");
+  }
+  await refreshAll();
+}
+
+function datasetDeleteSummary(refs) {
+  const dataset = refs.dataset || {};
+  const summary = refs.summary || {};
+  const blocking = refs.blockingModels || [];
+  const modelRows = blocking.map((model) => `
+    <tr><td>${escapeHtml(model.display_name || model.model_name)}</td><td>${escapeHtml(model.target || "--")}</td><td>${escapeHtml(model.fruit_type || "--")}</td><td>${escapeHtml(model.variety || "generic")}</td><td>${escapeHtml(isDefaultModel(model) ? "Default" : model.status)}</td></tr>
+  `).join("");
+  return `
+    <dl class="modal-summary">
+      <dt>Dataset Name</dt><dd>${escapeHtml(dataset.dataset_name || "--")}</dd>
+      <dt>Fruit Type</dt><dd>${escapeHtml(dataset.fruit_type || "--")}</dd>
+      <dt>Variety</dt><dd>${escapeHtml(dataset.variety || "generic")}</dd>
+      <dt>Samples</dt><dd>${summary.samples || 0}</dd>
+      <dt>Versions</dt><dd>${summary.versions || 0}</dd>
+      <dt>Experiments</dt><dd>${summary.experiments || 0}</dd>
+      <dt>Models</dt><dd>${summary.models || 0}</dd>
+    </dl>
+    ${blocking.length ? `<div class="dependency-block"><strong>阻止删除的模型</strong><table><thead><tr><th>Model Name</th><th>Target</th><th>Fruit</th><th>Variety</th><th>Status</th></tr></thead><tbody>${modelRows}</tbody></table></div>` : ""}
+  `;
+}
+
+function confirmPermanentDelete({ title, dangerText, confirmLabel, confirmValue, summaryHtml, disabled = false, blockReason = "" }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-backdrop";
+    overlay.innerHTML = `
+      <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmDeleteTitle">
+        <div class="modal-head">
+          <h3 id="confirmDeleteTitle">${escapeHtml(title)}</h3>
+          <button type="button" class="icon-button" data-cancel-delete title="关闭">×</button>
+        </div>
+        <p class="danger-copy">${escapeHtml(dangerText)}</p>
+        ${blockReason ? `<p class="block-reason">${escapeHtml(blockReason)}</p>` : ""}
+        <div class="modal-body">${summaryHtml || ""}</div>
+        <label class="block-label">${escapeHtml(confirmLabel)}
+          <input id="deleteConfirmInput" autocomplete="off" placeholder="${escapeHtml(confirmValue)}" ${disabled ? "disabled" : ""} />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" data-cancel-delete>取消</button>
+          <button type="button" class="danger-button" data-confirm-delete disabled>永久删除</button>
+        </div>
+      </section>
+    `;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector("#deleteConfirmInput");
+    const confirmButton = overlay.querySelector("[data-confirm-delete]");
+    const cleanup = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.querySelectorAll("[data-cancel-delete]").forEach((button) => button.addEventListener("click", () => cleanup(false)));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) cleanup(false);
+    });
+    input?.addEventListener("input", () => {
+      confirmButton.disabled = disabled || input.value !== confirmValue;
+    });
+    confirmButton.addEventListener("click", () => cleanup(true));
+    input?.focus();
+  });
 }
 
 async function createDataset() {
@@ -684,53 +851,27 @@ async function loadModels() {
     <article class="registry-card" data-model-card="${model.model_id}">
       <div class="registry-card-head">
         <div>
-          <h4>${model.display_name || model.model_name}</h4>
-          <small title="${model.model_id}">${model.model_id}</small>
+          <h4>${escapeHtml(model.display_name || model.model_name)}</h4>
+          <small title="${escapeHtml(model.model_id)}">${escapeHtml(model.model_id)}</small>
         </div>
         <span>${badge(model.status)} ${model.isDefault ? '<span class="badge good">★ Default</span>' : ""}</span>
       </div>
-      <div class="model-line">${model.fruit_type || "--"} / ${model.variety || "generic"} · ${model.target.toUpperCase()}</div>
-      <div class="model-line">${model.model_type} · ${model.preprocessing} · ${model.dataset_version_label || model.dataset_version_id || "--"}</div>
+      <div class="model-line">${escapeHtml(model.fruit_type || "--")} / ${escapeHtml(model.variety || "generic")} · ${escapeHtml(model.target.toUpperCase())}</div>
+      <div class="model-line">${escapeHtml(model.model_type)} · ${escapeHtml(model.preprocessing)} · ${escapeHtml(model.dataset_version_label || model.dataset_version_id || "--")}</div>
       <div class="metric-row"><span>R² <b>${fmt(model.r2)}</b></span><span>RMSE <b>${fmt(model.rmse)}</b></span><span>MAE <b>${fmt(model.mae)}</b></span><span>RPD <b>${fmt(model.rpd)}</b></span></div>
       <div class="warning-row">${warnings}</div>
       <div class="card-actions">
-        <button data-detail="${model.model_id}">查看</button>
-        <button data-publish="${model.model_id}">发布</button>
-        <button data-retrain="${model.model_id}">重训</button>
-        <select data-more="${model.model_id}">
-          <option value="">更多</option>
-          <option value="validate">标记 Validated</option>
-          <option value="default">设为 Default</option>
-          <option value="export">导出</option>
-          <option value="archive">Archive</option>
-          <option value="delete">Permanent Delete</option>
-        </select>
+        <button type="button" data-detail="${model.model_id}">查看</button>
+        <button type="button" data-retrain="${model.model_id}">重训</button>
+        <details class="more-menu">
+          <summary>更多</summary>
+          <div class="more-panel">${modelMoreActions(model)}</div>
+        </details>
       </div>
     </article>`;
   }).join("") || `<div class="empty">暂无模型</div>`;
   document.querySelectorAll("[data-detail]").forEach((button) => {
     button.addEventListener("click", async () => showModelDetail(button.dataset.detail));
-  });
-  document.querySelectorAll("[data-validate]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api("/api/model-studio/models/validate", { method: "POST", body: JSON.stringify(publishPayload(button.dataset.validate)) });
-      toast("模型已标记为 Validated");
-      await loadModels();
-    });
-  });
-  document.querySelectorAll("[data-publish]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api("/api/model-studio/models/publish", { method: "POST", body: JSON.stringify(publishPayload(button.dataset.publish)) });
-      toast($("#publishAsDefault").checked ? "模型已发布并设为默认" : "模型已发布");
-      await refreshAll();
-    });
-  });
-  document.querySelectorAll("[data-default]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api("/api/model-studio/models/default", { method: "POST", body: JSON.stringify({ modelId: button.dataset.default }) });
-      toast("默认模型已更新");
-      await refreshAll();
-    });
   });
   document.querySelectorAll("[data-retrain]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -740,40 +881,101 @@ async function loadModels() {
       toast("已创建重训实验，旧模型未被覆盖");
     });
   });
-  document.querySelectorAll("[data-export]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const payload = await api("/api/model-studio/models/export", { method: "POST", body: JSON.stringify({ modelId: button.dataset.export }) });
-      toast(payload.bundle.bundlePath);
-    });
+  document.querySelectorAll("[data-model-action]").forEach((button) => {
+    button.addEventListener("click", () => runModelAction(button.dataset.modelAction, button.dataset.modelId).catch((error) => toast(error.message)));
   });
-  document.querySelectorAll("[data-archive]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api("/api/model-studio/models/archive", { method: "POST", body: JSON.stringify({ modelId: button.dataset.archive }) });
-      toast("模型已归档");
-      await loadModels();
-    });
+}
+
+function modelMoreActions(model) {
+  const actions = [];
+  if (model.status === "Candidate") {
+    actions.push(menuButton(model, "validate", "Validate"));
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
+  } else if (model.status === "Validated") {
+    actions.push(menuButton(model, "publish", "Publish"));
+    actions.push(menuButton(model, "archive", "Archive"));
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
+  } else if (model.status === "Published" || model.status === "Production") {
+    actions.push(menuButton(model, "default", "Set Default"));
+    actions.push(menuButton(model, "export", "Export"));
+    actions.push(menuButton(model, "archive", "Archive"));
+    actions.push('<span class="menu-separator"></span>');
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
+  } else if (isDefaultModel(model)) {
+    actions.push(menuButton(model, "export", "Export"));
+    actions.push(menuButton(model, "archive", "Archive", "", true, "当前模型是默认模型，请先将另一个兼容模型设为默认。"));
+    actions.push('<span class="menu-separator"></span>');
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item", true, "当前模型是默认模型，请先将另一个兼容模型设为默认。"));
+  } else if (model.status === "Archived") {
+    actions.push(menuButton(model, "export", "Export"));
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
+  } else {
+    actions.push(menuButton(model, "archive", "Archive"));
+    actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
+  }
+  return actions.join("");
+}
+
+function menuButton(model, action, label, className = "", disabled = false, title = "") {
+  return `<button type="button" class="${className}" data-model-action="${action}" data-model-id="${escapeHtml(model.model_id)}" ${disabled ? "disabled" : ""} title="${escapeHtml(title)}">${label}</button>`;
+}
+
+async function runModelAction(action, modelId) {
+  closeMenus();
+  if (action === "validate") {
+    await api("/api/model-studio/models/validate", { method: "POST", body: JSON.stringify(publishPayload(modelId)) });
+    toast("模型已标记为 Validated");
+  }
+  if (action === "publish") {
+    await api("/api/model-studio/models/publish", { method: "POST", body: JSON.stringify(publishPayload(modelId)) });
+    toast($("#publishAsDefault")?.checked ? "模型已发布并设为默认" : "模型已发布");
+  }
+  if (action === "default") {
+    await api("/api/model-studio/models/default", { method: "POST", body: JSON.stringify({ modelId }) });
+    toast("默认模型已更新");
+  }
+  if (action === "export") {
+    const payload = await api("/api/model-studio/models/export", { method: "POST", body: JSON.stringify({ modelId }) });
+    toast(payload.bundle.bundlePath);
+  }
+  if (action === "archive") {
+    await api("/api/model-studio/models/archive", { method: "POST", body: JSON.stringify({ modelId }) });
+    toast("模型已归档，文件保留");
+  }
+  if (action === "delete") {
+    await deleteModelPermanently(modelId);
+  }
+  await refreshAll();
+}
+
+async function deleteModelPermanently(modelId) {
+  const payload = await api(`/api/model-studio/models/${encodeURIComponent(modelId)}`);
+  const model = payload.model;
+  const defaultBlocked = isDefaultModel(model);
+  const warning = isPublishedModel(model)
+    ? "删除后该模型将不再出现在检测工作站。永久删除不可恢复。"
+    : "永久删除会移除数据库记录和当前模型拥有的受管模型文件，不可恢复。";
+  const confirmed = await confirmPermanentDelete({
+    title: "永久删除 Model",
+    dangerText: defaultBlocked ? "当前模型是默认模型，请先将另一个兼容模型设为默认。" : warning,
+    confirmLabel: "Model ID",
+    confirmValue: model.model_id,
+    disabled: defaultBlocked,
+    blockReason: defaultBlocked ? "当前模型是默认模型，请先将另一个兼容模型设为默认。" : "",
+    summaryHtml: `
+      <dl class="modal-summary">
+        <dt>Model Name</dt><dd>${escapeHtml(model.display_name || model.model_name)}</dd>
+        <dt>Target</dt><dd>${escapeHtml(model.target || "--")}</dd>
+        <dt>Fruit</dt><dd>${escapeHtml(model.fruit_type || "--")}</dd>
+        <dt>Variety</dt><dd>${escapeHtml(model.variety || "generic")}</dd>
+        <dt>Status</dt><dd>${escapeHtml(isDefaultModel(model) ? "Default" : model.status)}</dd>
+        <dt>Model Dir</dt><dd>${escapeHtml(model.fileStatus?.modelDir || model.model_dir || "--")}</dd>
+      </dl>
+    `,
   });
-  document.querySelectorAll("[data-more]").forEach((select) => {
-    select.addEventListener("change", async () => {
-      const action = select.value;
-      const modelId = select.dataset.more;
-      select.value = "";
-      if (!action) return;
-      if (action === "validate") await api("/api/model-studio/models/validate", { method: "POST", body: JSON.stringify(publishPayload(modelId)) });
-      if (action === "default") await api("/api/model-studio/models/default", { method: "POST", body: JSON.stringify({ modelId }) });
-      if (action === "export") {
-        const payload = await api("/api/model-studio/models/export", { method: "POST", body: JSON.stringify({ modelId }) });
-        toast(payload.bundle.bundlePath);
-      }
-      if (action === "archive") await api("/api/model-studio/models/archive", { method: "POST", body: JSON.stringify({ modelId }) });
-      if (action === "delete") {
-        const confirmId = window.prompt("Permanent Delete 会删除数据库记录和受管模型文件。请输入 model_id 确认：", "");
-        if (confirmId) await api("/api/model-studio/models/delete", { method: "POST", body: JSON.stringify({ modelId, confirm: confirmId }) });
-      }
-      if (action !== "export") toast(`模型操作完成：${action}`);
-      await refreshAll();
-    });
-  });
+  if (!confirmed) return;
+  await api("/api/model-studio/models/delete", { method: "POST", body: JSON.stringify({ modelId, confirm: model.model_id }) });
+  toast("模型已永久删除");
 }
 
 async function showModelDetail(modelId) {
@@ -821,6 +1023,8 @@ async function refreshAll() {
 document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#createDataset").addEventListener("click", () => createDataset().catch((error) => toast(error.message)));
+  $("#archiveDataset")?.addEventListener("click", () => archiveDataset().catch((error) => toast(error.message)));
+  $("#deleteDatasetPermanently")?.addEventListener("click", () => deleteDatasetPermanently().catch((error) => toast(error.message)));
   $("#selectDatasetSource").addEventListener("click", () => selectDatasetSource().catch((error) => {
     if (error.payload?.cancelled) return toast("已取消选择，原路径保持不变");
     toast(error.message);

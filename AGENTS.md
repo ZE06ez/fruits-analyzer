@@ -33,6 +33,7 @@
 - 支持不同水果/品种/指标使用不同模型；注意 `generic` 品种兜底。
 - Model Studio 中 Working Dataset 是可编辑数据资产，Dataset Version 是不可变训练快照；新增样品、Exclude、标签修改只能影响后续新版本，不能改旧版本。
 - 噪声样品优先 Exclude，不要直接物理删除；已被 Dataset Version、Experiment 或 Model lineage 引用的 Sample 禁止 Permanent Delete。
+- Dataset Archive 与 Permanent Delete 必须明确分开；Archive 保留样品、版本、实验、模型和 lineage。Dataset Permanent Delete 只能在没有 Published/Default/Production 模型引用时执行，可级联清理 Candidate/Validated/Archived 实验模型和受管 artifacts，但禁止删除用户外部 source directory。
 - Training Experiment 只对应一个 target；Start Training 必须按当前 Dataset Version、target、algorithm、preprocessing、validation 创建或校验配置，不能静默复用旧 target 的 experiment。
 - Model lifecycle 为 Candidate / Validated / Published / Archived；Default 是 Published 模型的自动选择角色。Archived 不进入主工作台模型选择，Default 模型禁止直接 Permanent Delete。
 - 新增或修改重要架构后，同步更新 `docs/PROJECT_CONTEXT.md` 和 `docs/ARCHITECTURE.md`。

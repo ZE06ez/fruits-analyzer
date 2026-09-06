@@ -517,6 +517,76 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(started["experiment"]["target"], "ta")
         self.assertEqual(started["job"]["dataset_version_id"], "api_v1")
 
+    def test_model_studio_dataset_delete_and_archive_routes_refresh_lists(self):
+        dataset = self.post_json("/api/model-studio/datasets", {
+            "datasetName": "API Delete Dataset",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+        })["dataset"]
+        refs = self.get_json(f"/api/model-studio/datasets/{dataset['dataset_id']}/references")["references"]
+        self.assertTrue(refs["canDeletePermanently"])
+        self.assertEqual(refs["summary"]["models"], 0)
+
+        archived = self.post_json("/api/model-studio/datasets/archive", {"datasetId": dataset["dataset_id"]})["dataset"]
+        self.assertEqual(archived["archived"], 1)
+        active = self.get_json("/api/model-studio/datasets", {"archived": "0"})
+        self.assertNotIn(dataset["dataset_id"], [item["dataset_id"] for item in active["datasets"]])
+        all_datasets = self.get_json("/api/model-studio/datasets", {"archived": "all"})
+        self.assertIn(dataset["dataset_id"], [item["dataset_id"] for item in all_datasets["datasets"]])
+
+        result = self.post_json("/api/model-studio/datasets/delete", {
+            "datasetId": dataset["dataset_id"],
+            "confirm": dataset["dataset_name"],
+        })["result"]
+        self.assertTrue(result["deleted"])
+        all_after = self.get_json("/api/model-studio/datasets", {"archived": "all"})
+        self.assertNotIn(dataset["dataset_id"], [item["dataset_id"] for item in all_after["datasets"]])
+
+    def test_model_studio_model_delete_route_updates_quality_models(self):
+        model_id = "api_delete_model"
+        model_dir = self.studio.model_dir / "candidates" / "api" / model_id
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "model.joblib").write_bytes(b"fake")
+        (model_dir / "metadata.json").write_text(json.dumps({
+            "model_id": model_id,
+            "target": "ssc",
+            "model_type": "SVR",
+            "preprocessing": "SNV",
+        }), encoding="utf-8")
+        with self.studio.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,model_dir,metadata_json,created_at,published_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    model_id,
+                    model_id,
+                    "API Delete Model",
+                    "ssc",
+                    "blueberry",
+                    "Duke",
+                    "SVR",
+                    "SNV",
+                    "v1",
+                    "Published",
+                    0,
+                    str(model_dir),
+                    "{}",
+                    "2026-01-01 00:00:00",
+                    "2026-01-01 00:00:00",
+                ),
+            )
+        self.studio.publish_model(model_id, {"displayName": "API Delete Model"})
+        before = self.get_json("/api/quality-models", {"fruitType": "blueberry", "variety": "Duke"})
+        self.assertIn(model_id, [item["model_id"] for item in before["ssc"]])
+        deleted = self.post_json("/api/model-studio/models/delete", {"modelId": model_id, "confirm": model_id})["result"]
+        self.assertTrue(deleted["deleted"])
+        after = self.get_json("/api/quality-models", {"fruitType": "blueberry", "variety": "Duke"})
+        self.assertNotIn(model_id, [item["model_id"] for item in after["ssc"]])
+        registry = self.get_json("/api/model-studio/models")
+        self.assertNotIn(model_id, [item["model_id"] for item in registry["models"]])
+
     def test_manual_directory_validation_rejects_same_missing_and_parent_escape(self):
         self.create_sample("手动目录非法01")
         dataset = self.make_dataset("manual_invalid", "color_images", "spectral_images")

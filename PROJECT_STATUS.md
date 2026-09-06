@@ -44,7 +44,7 @@ P1B-3.7 后，设备发现和设备检查按 STM32、RGB、DVP2 三个硬件域�
 
 ## 当前模型训练状态
 
-Model Studio 已支持 Dataset、本地托管样品、后续 Add Samples、`labels.csv`/手动标签、Include/Exclude 噪声样品、引用保护的 Permanent Delete、数据质量检查、不可变 Dataset Version、Version Diff、特征提取、Training Experiment / Run / Model Variant、PLSR/SVR/RF、RAW/SNV/MSC、模型比较、Candidate/Validated/Published/Archived 生命周期、Published 模型手动选择、Default 模型自动选择、Retrain lineage 和引用保护的 Model Permanent Delete。主程序可按水果/品种/target 选择 Default 或 generic fallback 模型，Published 非 Default 模型也可手动选择；Archived 模型不进入检测工作站自动/手动选择。当前仓库没有可直接上线的真实 Production 模型，缺模型时预测返回 `model_missing`，不会生成假数值。
+Model Studio 已支持 Dataset、本地托管样品、后续 Add Samples、`labels.csv`/手动标签、Include/Exclude 噪声样品、引用保护的 Sample Permanent Delete、Dataset Archive、带生产模型依赖保护的 Dataset Permanent Delete、数据质量检查、不可变 Dataset Version、Version Diff、特征提取、Training Experiment / Run / Model Variant、PLSR/SVR/RF、RAW/SNV/MSC、模型比较、Candidate/Validated/Published/Archived 生命周期、Published 模型手动选择、Default 模型自动选择、Retrain lineage 和引用保护的 Model Permanent Delete。Dataset Permanent Delete 会阻止 Published/Default/Production 模型引用，允许级联清理 Candidate/Validated/Archived 实验垃圾数据，并只删除 Model Studio 受管目录。主程序可按水果/品种/target 选择 Default 或 generic fallback 模型，Published 非 Default 模型也可手动选择；Archived 模型不进入检测工作站自动/手动选择。当前仓库没有可直接上线的真实 Production 模型，缺模型时预测返回 `model_missing`，不会生成假数值。
 
 ## 当前 UI 状态
 
@@ -54,7 +54,7 @@ Model Studio 已支持 Dataset、本地托管样品、后续 Add Samples、`labe
 
 下一阶段重点应在 P1B-7.5A.1 已绑定 profile 的基础上，做真实滤光轮 AA55 通信、fan duty、LED3、door actuator、safe_stop 和 +22.5°/-22.5° 低速运动的现场验收。样品旋转台仍是独立控制板，不属于当前 STM32 滤光轮电机；P1B-7.5B 之后再单独接入。需要继续保持 `devicePrepared` 与 `trueCapturePrepared` 的语义区分，不能因为受保护内部方法可用就放行完整真实采集。
 
-Model Studio 侧当前已整理为 Dashboard / Datasets / Training / Models / Settings 信息架构。科研数据维护原则为 Working Dataset 可编辑、Dataset Version 冻结不可变；新增样品、标签修改和 Exclude 会让 Working Dataset 标记 dirty，训练必须使用 Dataset Version。旧版本、实验和模型 lineage 引用过的样品不能物理删除，只能从后续版本中 Exclude。
+Model Studio 侧当前已整理为 Dashboard / Datasets / Training / Models / Settings 信息架构。科研数据维护原则为 Working Dataset 可编辑、Dataset Version 冻结不可变；新增样品、标签修改和 Exclude 会让 Working Dataset 标记 dirty，训练必须使用 Dataset Version。旧版本、实验和模型 lineage 引用过的样品不能物理删除，只能从后续版本中 Exclude。Dataset Archive 保留全部历史；Dataset Permanent Delete 仅用于清理无生产引用的实验垃圾数据，删除前会列出 samples / versions / experiments / jobs / models，并保护 Published / Default 模型引用。
 
 ## 已知问题
 
