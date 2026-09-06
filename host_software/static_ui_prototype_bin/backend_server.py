@@ -18,7 +18,13 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from camera_service import CameraError
 from capture_coordinator import CaptureCoordinatorError
 from device_discovery import DeviceRegistry
-from device_manager import CameraIntegrationRequired, DeviceManager
+from device_manager import (
+    CameraIntegrationRequired,
+    DeviceBusyError,
+    DeviceManager,
+    DeviceNotConnectedError,
+    UnsupportedCapabilityError,
+)
 from PIL import Image, ImageDraw
 from rotation_plan import build_capture_rotation_plan, mark_plan_completed
 
@@ -486,11 +492,18 @@ def create_handler(
                 "connected": False,
                 "port": "",
                 "fanOn": False,
+                "fanDuty": 0,
                 "door": "unknown",
                 "wheelPosition": None,
                 "wheelHomed": False,
+                "wheelPositionDeg": None,
+                "wheelTargetDeg": None,
+                "wheelMotorState": "unknown",
                 "rgbLed1On": False,
                 "rgbLed2On": False,
+                "rgbLed3On": False,
+                "ledMask": 0,
+                "led3Duty": 0,
                 "tungsten1On": False,
                 "tungsten2On": False,
                 "errorCode": None,
@@ -753,7 +766,76 @@ def create_handler(
                         "device": device_manager.fault_clear(),
                     })
                 except Exception as exc:
-                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/fan":
+                payload = self.read_json()
+                try:
+                    if "enabled" not in payload or not isinstance(payload.get("enabled"), bool):
+                        raise ValueError("enabled must be true or false")
+                    self.json_response({"ok": True, "result": device_manager.set_fan(payload["enabled"])})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/led":
+                payload = self.read_json()
+                try:
+                    if int(payload.get("channel", 0)) != 3:
+                        raise ValueError("Only LED channel 3 is supported in this UI")
+                    if "enabled" not in payload or not isinstance(payload.get("enabled"), bool):
+                        raise ValueError("enabled must be true or false")
+                    self.json_response({"ok": True, "result": device_manager.set_led3(payload["enabled"])})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/actuator":
+                payload = self.read_json()
+                try:
+                    action = str(payload.get("action") or "").strip()
+                    duration_ms = payload.get("durationMs")
+                    if action == "extend":
+                        result = device_manager.actuator_extend(duration_ms)
+                    elif action == "retract":
+                        result = device_manager.actuator_retract(duration_ms)
+                    elif action == "stop":
+                        result = device_manager.actuator_stop()
+                    else:
+                        raise ValueError("action must be extend, retract, or stop")
+                    self.json_response({"ok": True, "result": result})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/wheel/move-relative":
+                payload = self.read_json()
+                try:
+                    slots_raw = payload.get("slots", 1)
+                    if isinstance(slots_raw, bool):
+                        raise ValueError("slots must be an integer from 1 to 15")
+                    result = device_manager.move_filter_wheel(
+                        str(payload.get("direction") or ""),
+                        int(slots_raw),
+                    )
+                    self.json_response({"ok": True, "result": result})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/wheel/stop":
+                try:
+                    self.json_response({"ok": True, "result": device_manager.stop_filter_wheel()})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/wheel/set-origin":
+                payload = self.read_json()
+                try:
+                    if payload.get("operatorConfirmedAligned") is not True:
+                        raise ValueError("operatorConfirmedAligned must be true")
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.set_filter_wheel_origin(True),
+                    })
+                except Exception as exc:
+                    self.device_error_response(exc)
                 return
             if parsed.path == "/api/devices/bind":
                 payload = self.read_json()
@@ -2003,6 +2085,25 @@ def create_handler(
             self.end_headers()
             self.wfile.write(data)
             self.wfile.flush()
+
+        def device_error_response(self, exc: Exception) -> None:
+            message = str(exc)
+            if isinstance(exc, ValueError):
+                status = 400
+                code = "invalid_payload"
+            elif isinstance(exc, DeviceNotConnectedError):
+                status = 409
+                code = "not_connected"
+            elif isinstance(exc, DeviceBusyError):
+                status = 409
+                code = "device_busy"
+            elif isinstance(exc, UnsupportedCapabilityError):
+                status = 409
+                code = "unsupported_capability"
+            else:
+                status = 503
+                code = "hardware_failure"
+            self.json_response({"ok": False, "error": code, "message": message}, status=status)
 
         def binary_response(self, data: bytes, content_type: str, headers: dict[str, str] | None = None, status: int = 200) -> None:
             self.send_response(status)

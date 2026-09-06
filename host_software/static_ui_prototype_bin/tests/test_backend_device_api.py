@@ -267,6 +267,10 @@ class FakeDeviceManager:
         self.port = ""
         self.self_test_motion = None
         self.emergency_stopped = False
+        self.fan_on = False
+        self.led3_on = False
+        self.actuator_busy = False
+        self.wheel_moves = []
         self.camera_manager = FakeCameraManager()
         self.capture_coordinator = FakeCalibrationCoordinator()
         self.discovery_candidates = [
@@ -299,14 +303,24 @@ class FakeDeviceManager:
         return {
             "connected": self.connected,
             "port": self.port,
-            "fanOn": self.connected,
+            "fanOn": self.fan_on,
+            "fanDuty": 100 if self.fan_on else 0,
             "door": "closed" if self.connected else "unknown",
             "wheelPosition": 0 if self.connected else None,
             "wheelHomed": self.connected,
             "rgbLed1On": False,
             "rgbLed2On": False,
+            "rgbLed3On": self.led3_on,
+            "ledMask": 0x04 if self.led3_on else 0,
+            "led3Duty": 100 if self.led3_on else 0,
             "tungsten1On": False,
             "tungsten2On": False,
+            "wheelPositionDeg": 0.0 if self.connected else None,
+            "wheelTargetDeg": 0.0 if self.connected else None,
+            "wheelMotorState": "idle" if self.connected else "unknown",
+            "statusRevision": 1 if self.connected else None,
+            "statusReceivedMonotonic": 1.0 if self.connected else None,
+            "actuatorBusy": self.actuator_busy,
             "errorCode": 0 if self.connected else None,
             "emergencyStopped": self.emergency_stopped,
             "cameras": self.camera_manager.status(),
@@ -353,7 +367,8 @@ class FakeDeviceManager:
         self.self_test_motion = include_motion
         return {
             "passed": True,
-            "includeMotion": include_motion,
+            "includeMotion": False,
+            "motionRequestedIgnored": bool(include_motion),
             "status": self._status(),
             "checks": {
                 "controller": {"status": "passed", "label": "STM32 控制器", "message": "PING 通过"},
@@ -387,8 +402,48 @@ class FakeDeviceManager:
         return self._status()
 
     def fault_clear(self):
-        self.emergency_stopped = False
-        return self._status()
+        raise RuntimeError("当前 STM32 firmware 不支持远程 Fault Clear")
+
+    def set_fan(self, enabled):
+        self.fan_on = bool(enabled)
+        return {"commandAccepted": True, "fanOn": self.fan_on, "fanDuty": 100 if self.fan_on else 0, "status": self._status()}
+
+    def set_led3(self, enabled):
+        self.led3_on = bool(enabled)
+        return {"commandAccepted": True, "ledMask": 0x04 if self.led3_on else 0, "led3Duty": 100 if self.led3_on else 0, "status": self._status()}
+
+    def actuator_extend(self, duration_ms=None):
+        self.actuator_busy = True
+        return {"commandAccepted": True, "action": "extend", "durationMs": duration_ms or 1000, "autoStopScheduled": True, "motionCompleted": False, "endpointFeedbackVerified": False, "status": self._status()}
+
+    def actuator_retract(self, duration_ms=None):
+        self.actuator_busy = True
+        return {"commandAccepted": True, "action": "retract", "durationMs": duration_ms or 1000, "autoStopScheduled": True, "motionCompleted": False, "endpointFeedbackVerified": False, "status": self._status()}
+
+    def actuator_stop(self):
+        self.actuator_busy = False
+        return {"commandAccepted": True, "action": "stop", "motionCompleted": False, "endpointFeedbackVerified": False, "status": self._status()}
+
+    def move_filter_wheel(self, direction, slots):
+        self.wheel_moves.append((direction, slots))
+        return {
+            "direction": direction,
+            "slots": slots,
+            "slotDelta": slots if direction == "counterclockwise" else -slots,
+            "degrees": (slots if direction == "counterclockwise" else -slots) * 22.5,
+            "motionCompleted": True,
+            "failureReason": "",
+            "command": {"ok": True, "motionCompleted": True, "failureReason": "", "statusFresh": True},
+            "status": self._status(),
+        }
+
+    def stop_filter_wheel(self):
+        return {"commandAccepted": True, "motionCompleted": False, "status": self._status()}
+
+    def set_filter_wheel_origin(self, operator_confirmed_aligned):
+        if not operator_confirmed_aligned:
+            raise ValueError("operatorConfirmedAligned must be true")
+        return {"commandAccepted": True, "originEstablished": True, "automaticHoming": False, "message": "逻辑零点已建立", "status": self._status()}
 
     def capture_status(self):
         return {"status": "not_ready", "progress": 0, "message": "完整真实采集协调器尚未接入"}
@@ -477,6 +532,8 @@ class BackendDeviceApiTests(unittest.TestCase):
         self_test = self.post_json("/api/device/self-test", {"includeMotion": True})
         self.assertTrue(self_test["result"]["passed"])
         self.assertTrue(self.device.self_test_motion)
+        self.assertFalse(self_test["result"]["includeMotion"])
+        self.assertTrue(self_test["result"]["motionRequestedIgnored"])
         self.assertEqual(self_test["result"]["checks"]["controller"]["status"], "passed")
         self.assertEqual(self_test["result"]["checks"]["rgbCamera"]["status"], "not_connected")
         self.assertEqual(self_test["result"]["checks"]["multispectralCamera"]["status"], "passed")
@@ -487,6 +544,36 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertEqual(independent["result"]["checks"]["controller"]["status"], "not_connected")
         self.assertEqual(independent["result"]["checks"]["rgbCamera"]["status"], "passed")
         self.assertEqual(independent["result"]["checks"]["multispectralCamera"]["status"], "passed")
+
+    def test_stm32_web_hardware_control_apis(self):
+        self.post_json("/api/device/connect", {"port": "COM3"})
+
+        fan = self.post_json("/api/device/fan", {"enabled": True})["result"]
+        self.assertTrue(fan["fanOn"])
+        self.assertEqual(fan["fanDuty"], 100)
+
+        led = self.post_json("/api/device/led", {"channel": 3, "enabled": True})["result"]
+        self.assertEqual(led["ledMask"], 0x04)
+        self.assertEqual(led["led3Duty"], 100)
+
+        actuator = self.post_json("/api/device/actuator", {"action": "extend", "durationMs": 1000})["result"]
+        self.assertTrue(actuator["autoStopScheduled"])
+        self.assertFalse(actuator["motionCompleted"])
+        self.assertFalse(actuator["endpointFeedbackVerified"])
+        stopped = self.post_json("/api/device/actuator", {"action": "stop"})["result"]
+        self.assertEqual(stopped["action"], "stop")
+
+        wheel = self.post_json("/api/device/wheel/move-relative", {"direction": "clockwise", "slots": 1})["result"]
+        self.assertEqual(wheel["slotDelta"], -1)
+        self.assertTrue(wheel["command"]["statusFresh"])
+        self.assertEqual(self.device.wheel_moves[-1], ("clockwise", 1))
+        origin = self.post_json("/api/device/wheel/set-origin", {"operatorConfirmedAligned": True})["result"]
+        self.assertTrue(origin["originEstablished"])
+        self.assertFalse(origin["automaticHoming"])
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.post_json("/api/device/led", {"channel": 1, "enabled": True})
+        self.assertEqual(context.exception.code, 400)
 
     def test_capture_start_reports_camera_integration_gap(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
@@ -703,6 +790,25 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn('addEventListener("click", applyMultispectralCameraSettings)', app_js)
         self.assertNotIn("http://127.0.0.1", app_js)
         self.assertNotIn("http://localhost", app_js)
+
+    def test_stm32_web_ui_exposes_real_controls_not_fake_hardware_logs(self):
+        app_js = (Path(__file__).parents[1] / "app.js").read_text(encoding="utf-8")
+        html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("id=\"wheelCounterclockwise\"", html)
+        self.assertIn("id=\"wheelClockwise\"", html)
+        self.assertIn("id=\"wheelSetOrigin\"", html)
+        self.assertIn("id=\"actuatorExtend\"", html)
+        self.assertIn("id=\"led3OnButton\"", html)
+        self.assertIn("/api/device/wheel/move-relative", app_js)
+        self.assertIn("/api/device/actuator", app_js)
+        self.assertIn("/api/device/fan", app_js)
+        self.assertIn("/api/device/led", app_js)
+        self.assertNotIn("平台正转", html)
+        self.assertNotIn("平台反转", html)
+        self.assertNotIn("升降复位", html)
+        self.assertNotIn("hardwareMotionSelfTest", html)
+        self.assertNotIn("hardwareMotionSelfTest", app_js)
 
 
 if __name__ == "__main__":

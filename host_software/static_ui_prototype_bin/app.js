@@ -1405,16 +1405,21 @@ function renderHardwareStatus() {
   const port = hardware.port || "";
   const doorNames = {
     unknown: "未知",
-    open: "已升起",
-    closed: "已关闭",
+    open: "缩回/0",
+    closed: "伸出/1",
     moving: "运动中",
     error: "异常",
   };
-  setText("deviceFanState", `风扇: ${hardware.fanOn ? "开启" : connected ? "关闭" : "--"}`);
-  setText("deviceDoorState", `门: ${doorNames[hardware.door] || hardware.door || "--"}`);
-  setText("deviceWheelState", `滤光轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "--"}`);
+  const fanDuty = hardware.fanDuty ?? (hardware.fanOn ? 100 : 0);
+  const ledMask = hardware.ledMask ?? 0;
+  const wheelText = hardware.wheelPositionDeg != null
+    ? `${Number(hardware.wheelPositionDeg).toFixed(2)}° / ${hardware.wheelMotorState || "unknown"}`
+    : hardware.wheelHomed ? `slot ${hardware.wheelPosition}` : connected ? "待 fresh STATUS" : "--";
+  setText("deviceFanState", `风扇: ${hardware.fanOn ? "开启" : connected ? "关闭" : "--"}${connected ? ` (${fanDuty}%)` : ""}`);
+  setText("deviceDoorState", `推杆: ${doorNames[hardware.door] || hardware.door || "--"}`);
+  setText("deviceWheelState", `滤光轮: ${wheelText}`);
   setText("deviceRgbLedState", connected
-    ? `RGB LED: 1路${hardware.rgbLed1On ? "开" : "关"} / 2路${hardware.rgbLed2On ? "开" : "关"}`
+    ? `RGB LED: 1路${hardware.rgbLed1On ? "开" : "关"} / 2路${hardware.rgbLed2On ? "开" : "关"} / 3路${hardware.rgbLed3On ? "开" : "关"} (mask ${ledMask})`
     : "RGB LED: --");
   setText("deviceTungstenState", connected
     ? `钨灯: 1路${hardware.tungsten1On ? "开" : "关"} / 2路${hardware.tungsten2On ? "开" : "关"}`
@@ -1423,18 +1428,39 @@ function renderHardwareStatus() {
   setText("deviceConnectionHint", connected
     ? `已连接 ${port}。真实采集仍需等待完整采集协调器。`
     : "未连接 STM32 时仍可按离线调试流程验证软件界面。");
-  setText("doorLiftState", `升降门: ${doorNames[hardware.door] || hardware.door || "未连接"}`);
-  setText("filterWheelState", `滤光片轮: ${hardware.wheelHomed ? `位置 ${hardware.wheelPosition}` : connected ? "未寻零" : "待连接"}`);
+  setText("doorLiftState", `推杆: ${doorNames[hardware.door] || hardware.door || "未连接"}（无端点反馈）`);
+  setText("filterWheelState", `滤光片轮: ${wheelText}`);
+  setText("hardwareActionState", connected
+    ? `STATUS rev ${hardware.statusRevision ?? "--"}；推杆${hardware.actuatorBusy ? "定时动作中" : "空闲"}`
+    : "硬件动作: 待连接");
   const sampleStage = connected
     ? "样品台: 未接入控制"
     : "样品台: 未连接";
   setText("sampleRotationState", sampleStage);
+  const profile = hardware.stm32FirmwareProfile || {};
+  const controlReady = connected && profile.currentFirmwareProfileValidated !== false;
   $("#connectDevice") && ($("#connectDevice").disabled = connected);
   $("#disconnectDevice") && ($("#disconnectDevice").disabled = !connected);
-  $("#faultClearDevice") && ($("#faultClearDevice").disabled = !connected);
+  $("#faultClearDevice") && ($("#faultClearDevice").disabled = true);
+  $("#faultClearDevice") && ($("#faultClearDevice").title = "当前 STM32 firmware 不支持远程 Fault Clear");
   $("#refreshDeviceStatus") && ($("#refreshDeviceStatus").disabled = !connected);
   $("#hardwareSelfTest") && ($("#hardwareSelfTest").disabled = !connected);
-  $("#hardwareMotionSelfTest") && ($("#hardwareMotionSelfTest").disabled = !connected);
+  [
+    "#fanOnButton",
+    "#fanOffButton",
+    "#led3OnButton",
+    "#led3OffButton",
+    "#actuatorExtend",
+    "#actuatorRetract",
+    "#wheelCounterclockwise",
+    "#wheelClockwise",
+    "#wheelSetOrigin",
+  ].forEach((selector) => {
+    const el = $(selector);
+    if (el) el.disabled = !controlReady || Boolean(hardware.actuatorBusy && selector !== "#wheelSetOrigin");
+  });
+  $("#actuatorStop") && ($("#actuatorStop").disabled = !connected);
+  $("#wheelStop") && ($("#wheelStop").disabled = !connected);
 }
 
 function defaultDeviceChecks(status = "pending") {
@@ -1459,18 +1485,18 @@ function checksFromHardwareStatus(device = state.hardwareStatus) {
   };
   checks.door = {
     status: connected ? (device.door === "error" ? "failed" : ["open", "closed"].includes(device.door) ? "passed" : "warning") : "not_connected",
-    label: "升降门",
-    message: connected ? `门状态: ${device.door || "unknown"}` : "需要连接 STM32",
+    label: "推杆",
+    message: connected ? `推杆命令状态: ${device.door || "unknown"}，无端点反馈` : "需要连接 STM32",
   };
   checks.fan = {
-    status: connected ? (device.fanOn ? "passed" : "warning") : "not_connected",
+    status: connected ? "manual_required" : "not_connected",
     label: "风扇",
-    message: connected ? (device.fanOn ? "风扇已开启" : "风扇未开启") : "需要连接 STM32",
+    message: connected ? `当前 duty: ${device.fanDuty ?? "--"}` : "需要连接 STM32",
   };
   checks.filterWheel = {
     status: connected ? (device.wheelHomed ? "passed" : "manual_required") : "not_connected",
     label: "滤光轮",
-    message: connected ? (device.wheelHomed ? `位置 ${device.wheelPosition}` : "尚未寻零") : "需要连接 STM32",
+    message: connected ? (device.wheelPositionDeg != null ? `逻辑位置 ${Number(device.wheelPositionDeg).toFixed(2)}°` : "需要人工设定逻辑零点或移动验证") : "需要连接 STM32",
   };
   checks.rgbCamera = cameraCheckFromStatus("rgb", cameras.rgb, "RGB 相机");
   checks.multispectralCamera = cameraCheckFromStatus("multispectral", cameras.multispectral, "多光谱相机");
@@ -1816,10 +1842,9 @@ async function runHardwareSelfTest(includeMotion = false) {
       renderDeviceChecks({ ...checksFromHardwareStatus(payload.result.status || state.hardwareStatus), ...payload.result.checks }, state.deviceCheckDetail);
     }
     state.devicePrep.connect = true;
-    if (includeMotion) state.devicePrep.motor = true;
-    setStepStatus(includeMotion ? "motor" : "connect", "done");
-    setText("statusNote", includeMotion ? "滤光片轮寻零自检通过。" : "STM32 通信自检通过。");
-    addLog(includeMotion ? "硬件自检通过：PING、风扇开启、滤光片轮寻零已执行。" : "硬件通信自检通过：PING 与风扇开启已执行。");
+    setStepStatus("connect", "done");
+    setText("statusNote", "STM32 通信自检通过。");
+    addLog("硬件通信自检通过：PING 与 fresh STATUS 已执行；未开启风扇，未移动滤光轮。");
     await syncDevicePreparation();
   } catch (error) {
     addLog(error.message || "硬件自检失败。", "ERROR");
@@ -1888,16 +1913,7 @@ async function runUnifiedDeviceCheck() {
 }
 
 async function faultClearDevice() {
-  try {
-    const payload = await api("/api/device/fault-clear", {
-      method: "POST",
-      body: "{}",
-    });
-    applyHardwareStatus(payload.device || {});
-    addLog("STM32 故障状态已请求清除。");
-  } catch (error) {
-    addLog(error.message || "清除故障失败。", "ERROR");
-  }
+  addLog("当前 STM32 firmware 不支持远程 Fault Clear；请现场断电/复位后重新连接。", "WARN");
 }
 
 async function emergencyStopDevice() {
@@ -1909,8 +1925,8 @@ async function emergencyStopDevice() {
       });
       applyHardwareStatus(payload.device || {});
       setPill("motorStatus", "电机: 已安全停止", "warn");
-      setPill("lightStatus", "光源: 已关闭", "warn");
-      addLog("紧急停止已发送到 STM32。", "WARN");
+      setPill("lightStatus", "LED: 已关闭", "warn");
+      addLog("紧急停止已发送到 STM32：滤光轮 STOP、推杆 STOP、LED 关闭；风扇按安全策略保持开启。", "WARN");
       return;
     } catch (error) {
       addLog(error.message || "发送急停失败，已进入本地停止状态。", "ERROR");
@@ -1959,6 +1975,75 @@ function renderCurrentSample() {
   updateAnalysisButtonStates();
   updateShapeMode();
   renderSystemStatus();
+}
+
+async function postHardwareAction(path, body, successMessage) {
+  try {
+    const payload = await api(path, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    });
+    const result = payload.result || {};
+    applyHardwareStatus(result.status || payload.device || state.hardwareStatus);
+    if (successMessage) addLog(successMessage(result));
+    return result;
+  } catch (error) {
+    addLog(error.message || "硬件命令执行失败。", "ERROR");
+    throw error;
+  }
+}
+
+async function setFan(enabled) {
+  await postHardwareAction("/api/device/fan", { enabled }, (result) => (
+    `风扇${enabled ? "开启" : "关闭"}命令已执行，fresh STATUS duty=${result.fanDuty ?? "--"}。`
+  ));
+}
+
+async function setLed3(enabled) {
+  await postHardwareAction("/api/device/led", { channel: 3, enabled }, (result) => (
+    `LED3 ${enabled ? "开启" : "关闭"}命令已执行，fresh STATUS mask=${result.ledMask ?? "--"}。`
+  ));
+}
+
+function actuatorDurationMs() {
+  const raw = Number($("#actuatorDurationMs")?.value || 1000);
+  if (!Number.isFinite(raw)) return 1000;
+  return Math.max(100, Math.min(5000, Math.round(raw)));
+}
+
+async function runActuator(action) {
+  const durationMs = action === "stop" ? undefined : actuatorDurationMs();
+  await postHardwareAction("/api/device/actuator", { action, durationMs }, (result) => {
+    if (action === "stop") return "推杆停止命令已发送。";
+    return `推杆${action === "extend" ? "伸出" : "缩回"}命令已接受，${result.durationMs}ms 后由后端定时 STOP；ACK 不代表端点到位。`;
+  });
+}
+
+function wheelSlots() {
+  const raw = Number($("#wheelSlotsInput")?.value || 1);
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(1, Math.min(15, Math.round(raw)));
+}
+
+async function moveWheel(direction) {
+  await postHardwareAction("/api/device/wheel/move-relative", { direction, slots: wheelSlots() }, (result) => {
+    const cmd = result.command || {};
+    const finalStatus = cmd.statusAfter || {};
+    const final = finalStatus.position_deg ?? finalStatus.positionDeg ?? "--";
+    const reason = result.failureReason || cmd.failureReason || "";
+    if (reason) return `滤光轮移动未通过 fresh STATUS 验证：${reason}，final=${final}。`;
+    return `滤光轮${direction === "clockwise" ? "顺时针" : "逆时针"}移动完成：${result.slots} slot，final=${final}。`;
+  });
+}
+
+async function stopWheel() {
+  await postHardwareAction("/api/device/wheel/stop", {}, () => "滤光轮 STOP 已发送。");
+}
+
+async function setWheelOrigin() {
+  const ok = window.confirm("请先人工将 1 号滤光片准确对准光路。确认对准后才可设置逻辑零点。");
+  if (!ok) return;
+  await postHardwareAction("/api/device/wheel/set-origin", { operatorConfirmedAligned: true }, () => "逻辑零点已建立；这不是自动寻零。");
 }
 
 function updateAnalysisButtonStates() {
@@ -2035,7 +2120,7 @@ async function api(path, options = {}) {
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) {
-    const error = new Error(payload.error || payload.message || `HTTP ${response.status}`);
+    const error = new Error(payload.message || payload.error || `HTTP ${response.status}`);
     error.payload = payload;
     throw error;
   }
@@ -2659,7 +2744,8 @@ function switchView(view, stepKey = null) {
 
 async function runDeviceTest(type) {
   if (type === "motor" && state.hardwareStatus.connected) {
-    await runHardwareSelfTest(true);
+    await refreshHardwareStatus();
+    addLog("已读取滤光轮 fresh/缓存状态；运动验证请使用顺时针/逆时针按钮。");
     return;
   }
   const map = {
@@ -4090,7 +4176,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     button.addEventListener("click", () => bindSelectedDevice(button.dataset.bindDeviceRole));
   });
   $("#hardwareSelfTest")?.addEventListener("click", () => runHardwareSelfTest(false));
-  $("#hardwareMotionSelfTest")?.addEventListener("click", () => runHardwareSelfTest(true));
+  $("#fanOnButton")?.addEventListener("click", () => setFan(true).catch(() => {}));
+  $("#fanOffButton")?.addEventListener("click", () => setFan(false).catch(() => {}));
+  $("#led3OnButton")?.addEventListener("click", () => setLed3(true).catch(() => {}));
+  $("#led3OffButton")?.addEventListener("click", () => setLed3(false).catch(() => {}));
+  $("#actuatorExtend")?.addEventListener("click", () => runActuator("extend").catch(() => {}));
+  $("#actuatorRetract")?.addEventListener("click", () => runActuator("retract").catch(() => {}));
+  $("#actuatorStop")?.addEventListener("click", () => runActuator("stop").catch(() => {}));
+  $("#wheelCounterclockwise")?.addEventListener("click", () => moveWheel("counterclockwise").catch(() => {}));
+  $("#wheelClockwise")?.addEventListener("click", () => moveWheel("clockwise").catch(() => {}));
+  $("#wheelStop")?.addEventListener("click", () => stopWheel().catch(() => {}));
+  $("#wheelSetOrigin")?.addEventListener("click", () => setWheelOrigin().catch(() => {}));
 
   $("#startWorkflow")?.addEventListener("click", () => {
     if (!requireDevicePreparation()) return;
