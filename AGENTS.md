@@ -31,6 +31,10 @@
 - `trained_models/<target>/` 只有存在 `model.joblib` 和 `metadata.json` 时才代表可用默认模型。
 - Production/Default 模型必须通过 Model Studio 人工发布，不能由训练任务自动替换。
 - 支持不同水果/品种/指标使用不同模型；注意 `generic` 品种兜底。
+- Model Studio 中 Working Dataset 是可编辑数据资产，Dataset Version 是不可变训练快照；新增样品、Exclude、标签修改只能影响后续新版本，不能改旧版本。
+- 噪声样品优先 Exclude，不要直接物理删除；已被 Dataset Version、Experiment 或 Model lineage 引用的 Sample 禁止 Permanent Delete。
+- Training Experiment 只对应一个 target；Start Training 必须按当前 Dataset Version、target、algorithm、preprocessing、validation 创建或校验配置，不能静默复用旧 target 的 experiment。
+- Model lifecycle 为 Candidate / Validated / Published / Archived；Default 是 Published 模型的自动选择角色。Archived 不进入主工作台模型选择，Default 模型禁止直接 Permanent Delete。
 - 新增或修改重要架构后，同步更新 `docs/PROJECT_CONTEXT.md` 和 `docs/ARCHITECTURE.md`。
 - 新增重大需求后，同步更新 `docs/REQUIREMENTS.md`。
 - 完成重大功能后，同步更新 `docs/CHANGELOG.md`。

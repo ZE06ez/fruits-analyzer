@@ -21,6 +21,19 @@ from training.train import train_one
 TARGETS = {"ssc", "ta", "ph"}
 MODEL_ALIASES = {"PLSR": "PLSR", "SVR": "SVR", "RF": "RF", "Random Forest": "RF"}
 PREPROCESSING = {"RAW", "SNV", "MSC"}
+EXCLUDE_REASONS = {
+    "Image Blur",
+    "Missing Band",
+    "Calibration Error",
+    "Label Error",
+    "Damaged Fruit",
+    "Outlier",
+    "Capture Error",
+    "Manual Exclusion",
+    "Other",
+}
+PUBLISHED_STATUSES = {"Published", "Default", "Production"}
+MODEL_STATUSES_VISIBLE_TO_STATION = tuple(sorted(PUBLISHED_STATUSES))
 
 
 class ModelStudioError(RuntimeError):
@@ -224,6 +237,8 @@ class ModelStudioService:
                 "import_source_path": "TEXT",
                 "dirty": "INTEGER DEFAULT 0",
                 "latest_version_id": "TEXT",
+                "archived": "INTEGER DEFAULT 0",
+                "updated_at": "TEXT",
             },
             "dataset_versions": {
                 "sample_snapshot_json": "TEXT",
@@ -262,6 +277,7 @@ class ModelStudioService:
                 "description": "TEXT",
                 "tags": "TEXT",
                 "notes": "TEXT",
+                "deleted_at": "TEXT",
             },
         }
         for table, columns in migrations.items():
@@ -274,12 +290,14 @@ class ModelStudioService:
         conn.execute("UPDATE samples SET sample_name=sample_id WHERE sample_name IS NULL OR sample_name=''")
         conn.execute("UPDATE datasets SET local_path=storage_path WHERE local_path IS NULL OR local_path=''")
         conn.execute("UPDATE datasets SET dirty=COALESCE(dirty, 0)")
+        conn.execute("UPDATE datasets SET archived=COALESCE(archived, 0)")
+        conn.execute("UPDATE datasets SET updated_at=created_at WHERE updated_at IS NULL OR updated_at=''")
         conn.execute("UPDATE models SET display_name=model_name WHERE display_name IS NULL OR display_name=''")
         conn.execute("UPDATE models SET is_default=0 WHERE is_default IS NULL")
 
     def dashboard(self) -> dict:
         with self.connect() as conn:
-            dataset_count = conn.execute("SELECT COUNT(*) FROM datasets").fetchone()[0]
+            dataset_count = conn.execute("SELECT COUNT(*) FROM datasets WHERE COALESCE(archived,0)=0").fetchone()[0]
             sample_count = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
             label_count = conn.execute(
                 "SELECT COUNT(*) FROM labels WHERE ssc IS NOT NULL OR ta IS NOT NULL OR ph IS NOT NULL"
@@ -290,11 +308,15 @@ class ModelStudioService:
             published_count = conn.execute("SELECT COUNT(*) FROM models WHERE status IN ('Published','Default','Production')").fetchone()[0]
             default_count = conn.execute("SELECT COUNT(*) FROM models WHERE status='Default' OR is_default=1").fetchone()[0]
             review_count = conn.execute("SELECT COUNT(*) FROM models WHERE status='Candidate'").fetchone()[0]
+            running_count = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('Queued','Preparing','Training')").fetchone()[0]
+            dirty_datasets = conn.execute("SELECT COUNT(*) FROM datasets WHERE COALESCE(dirty,0)=1 AND COALESCE(archived,0)=0").fetchone()[0]
+            failed_jobs = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='Failed'").fetchone()[0]
             production = [dict(row) for row in conn.execute(
-                "SELECT * FROM models WHERE status IN ('Published','Default','Production') ORDER BY target, published_at DESC"
+                "SELECT * FROM models WHERE status IN ('Published','Default','Production') AND deleted_at IS NULL ORDER BY target, published_at DESC"
             )]
             recent_jobs = [dict(row) for row in conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 5")]
-            recent_datasets = [dict(row) for row in conn.execute("SELECT * FROM datasets ORDER BY created_at DESC LIMIT 5")]
+            recent_datasets = [dict(row) for row in conn.execute("SELECT * FROM datasets WHERE COALESCE(archived,0)=0 ORDER BY updated_at DESC, created_at DESC LIMIT 5")]
+            candidates = [dict(row) for row in conn.execute("SELECT * FROM models WHERE status='Candidate' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 8")]
         return {
             "databasePath": str(self.database_path),
             "counts": {
@@ -308,21 +330,66 @@ class ModelStudioService:
                 "productionModels": published_count,
                 "defaultModels": default_count,
                 "modelsNeedingReview": review_count,
+                "runningTraining": running_count,
+                "dirtyDatasets": dirty_datasets,
+                "failedTraining": failed_jobs,
             },
             "productionModels": production,
             "recentJobs": recent_jobs,
             "recentDatasets": recent_datasets,
+            "needsAttention": self._dashboard_attention(dirty_datasets, failed_jobs, candidates),
             "filterConfig": [band.to_dict() for band in load_filter_config()],
         }
 
-    def list_datasets(self) -> list[dict]:
+    def list_datasets(self, *, query: str = "", fruit_type: str = "", variety: str = "", dirty: str = "", archived: str = "") -> list[dict]:
+        params: list[object] = []
+        where = "WHERE 1=1"
+        if query:
+            where += " AND (dataset_name LIKE ? OR dataset_id LIKE ?)"
+            params.extend([f"%{query}%", f"%{query}%"])
+        if fruit_type:
+            where += " AND lower(COALESCE(fruit_type,''))=lower(?)"
+            params.append(fruit_type)
+        if variety:
+            where += " AND lower(COALESCE(variety,'generic'))=lower(?)"
+            params.append(_normalize_variety(variety))
+        if dirty in {"0", "1"}:
+            where += " AND COALESCE(dirty,0)=?"
+            params.append(int(dirty))
+        if archived in {"0", "1"}:
+            where += " AND COALESCE(archived,0)=?"
+            params.append(int(archived))
+        elif archived != "all":
+            where += " AND COALESCE(archived,0)=0"
         with self.connect() as conn:
-            rows = [dict(row) for row in conn.execute("SELECT * FROM datasets ORDER BY created_at DESC")]
+            rows = [dict(row) for row in conn.execute(f"SELECT * FROM datasets {where} ORDER BY updated_at DESC, created_at DESC", params)]
             versions = {}
             for row in conn.execute("SELECT * FROM dataset_versions ORDER BY dataset_id, version DESC"):
                 versions.setdefault(row["dataset_id"], []).append(dict(row))
+            label_stats = {
+                row["dataset_id"]: dict(row) for row in conn.execute(
+                    """
+                    SELECT dataset_id,
+                      SUM(CASE WHEN ssc IS NOT NULL THEN 1 ELSE 0 END) AS ssc_count,
+                      SUM(CASE WHEN ta IS NOT NULL THEN 1 ELSE 0 END) AS ta_count,
+                      SUM(CASE WHEN ph IS NOT NULL THEN 1 ELSE 0 END) AS ph_count,
+                      SUM(CASE WHEN include_status='Excluded' THEN 1 ELSE 0 END) AS excluded_count
+                    FROM samples GROUP BY dataset_id
+                    """
+                )
+            }
         for dataset in rows:
             dataset["versions"] = versions.get(dataset["dataset_id"], [])
+            stats = label_stats.get(dataset["dataset_id"], {})
+            sample_count = int(dataset.get("sample_count") or 0)
+            dataset["workingSampleCount"] = sample_count
+            dataset["excludedSampleCount"] = int(stats.get("excluded_count") or 0)
+            dataset["labelCompleteness"] = {
+                "ssc": int(stats.get("ssc_count") or 0),
+                "ta": int(stats.get("ta_count") or 0),
+                "ph": int(stats.get("ph_count") or 0),
+                "sampleCount": sample_count,
+            }
         return rows
 
     def create_dataset(self, payload: dict) -> dict:
@@ -344,8 +411,8 @@ class ModelStudioService:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO datasets(dataset_id,dataset_name,fruit_type,variety,description,created_at,storage_path,local_path,import_source_path,enabled_wavelengths)
-                VALUES(?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO datasets(dataset_id,dataset_name,fruit_type,variety,description,created_at,updated_at,storage_path,local_path,import_source_path,enabled_wavelengths)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     dataset_id,
@@ -353,6 +420,7 @@ class ModelStudioService:
                     payload.get("fruit_type") or payload.get("fruitType") or "",
                     _normalize_variety(payload.get("variety") or ""),
                     payload.get("description") or "",
+                    now,
                     now,
                     str(local_path),
                     str(local_path),
@@ -390,7 +458,7 @@ class ModelStudioService:
         root = Path(source_path).expanduser() if source_path else Path(default_source or dataset["storage_path"])
         if not root.exists() or not root.is_dir():
             raise ModelStudioError(f"sample path does not exist: {root}")
-        duplicate_policy = duplicate_policy if duplicate_policy in {"skip", "new", "cancel"} else "skip"
+        duplicate_policy = duplicate_policy if duplicate_policy in {"skip", "replace", "new", "cancel"} else "skip"
         local_root = Path(dataset.get("local_path") or dataset["storage_path"]).expanduser()
         samples_root = local_root / "samples"
         samples_root.mkdir(parents=True, exist_ok=True)
@@ -424,8 +492,19 @@ class ModelStudioService:
                 if duplicate_policy == "skip":
                     skipped += 1
                     continue
-            sample_id = sample_dir.name if not duplicate else self._unique_sample_id(dataset_id, sample_dir.name)
-            local_sample_dir = self._unique_sample_path(samples_root, sample_id)
+            replacing = bool(duplicate and duplicate_policy == "replace")
+            if replacing:
+                refs = self.sample_references(dataset_id, duplicate["sample_id"])
+                if refs["blocked"]:
+                    raise ModelStudioError(f"sample is referenced by historical artifacts and cannot be replaced: {duplicate['sample_id']}")
+            sample_id = sample_dir.name if not duplicate else (duplicate["sample_id"] if replacing else self._unique_sample_id(dataset_id, sample_dir.name))
+            local_sample_dir = Path(duplicate.get("local_path") or duplicate.get("storage_path")) if replacing else self._unique_sample_path(samples_root, sample_id)
+            if replacing and local_sample_dir.exists():
+                local_root = (Path(dataset.get("local_path") or dataset["storage_path"]) / "samples").resolve()
+                resolved = local_sample_dir.resolve()
+                if local_root == resolved or local_root not in resolved.parents:
+                    raise ModelStudioError("refusing to replace a path outside the managed dataset samples folder")
+                shutil.rmtree(resolved)
             shutil.copytree(sample_dir, local_sample_dir)
             calibration_statuses.append(str(report["calibration_status"]))
             row = {
@@ -452,10 +531,10 @@ class ModelStudioService:
                 warnings.append(f"{sample_dir.name}: " + "; ".join(import_report.get("warnings") or []))
             self._upsert_sample(row)
             imported += 1
-            new_count += 1
+            new_count += 0 if replacing else 1
         self._refresh_dataset_counts(dataset_id, calibration_statuses)
         self._mark_dataset_dirty(dataset_id)
-        self.log("samples.import", "dataset", dataset_id, f"Imported {imported} samples")
+        self.log("samples.import", "dataset", dataset_id, f"Imported {imported} samples with duplicate_policy={duplicate_policy}")
         return {
             "dataset": self.get_dataset(dataset_id),
             "imported": imported,
@@ -532,6 +611,9 @@ class ModelStudioService:
         dataset = self.get_dataset(dataset_id)
         local_path = Path(sample.get("local_path") or sample.get("storage_path") or "")
         source_path = Path(sample.get("source_path") or "") if sample.get("source_path") else None
+        refs = self.sample_references(dataset_id, sample_id)
+        if refs["blocked"]:
+            raise ModelStudioError("sample is referenced by Dataset Version, Experiment, or Model lineage; exclude it instead of permanent delete")
         with self.connect() as conn:
             conn.execute("DELETE FROM labels WHERE dataset_id=? AND sample_id=?", (dataset_id, sample_id))
             conn.execute("DELETE FROM samples WHERE dataset_id=? AND sample_id=?", (dataset_id, sample_id))
@@ -570,6 +652,66 @@ class ModelStudioService:
         for row in rows:
             row["label_status"] = _label_status(row)
         return {"total": total, "items": rows, "limit": limit, "offset": offset}
+
+    def filter_samples(
+        self,
+        dataset_id: str,
+        *,
+        limit: int = 80,
+        offset: int = 0,
+        query: str = "",
+        include_status: str = "",
+        label_status: str = "",
+        calibration: str = "",
+        quality: str = "",
+    ) -> dict:
+        params: list[object] = [dataset_id]
+        where = "WHERE dataset_id=?"
+        if query:
+            where += " AND (sample_id LIKE ? OR COALESCE(sample_name,'') LIKE ?)"
+            params.extend([f"%{query}%", f"%{query}%"])
+        if include_status and include_status != "all":
+            where += " AND include_status=?"
+            params.append(include_status)
+        if calibration and calibration != "all":
+            where += " AND COALESCE(calibration_status,'')=?"
+            params.append(calibration)
+        if quality and quality != "all":
+            where += " AND COALESCE(data_status,'')=?"
+            params.append(quality)
+        with self.connect() as conn:
+            rows = [dict(row) for row in conn.execute(
+                f"SELECT * FROM samples {where} ORDER BY sample_id LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            )]
+        filtered = []
+        for row in rows:
+            row["label_status"] = _label_status(row)
+            if label_status and label_status != "all" and row["label_status"] != label_status:
+                continue
+            filtered.append(row)
+        return {"total": len(filtered), "items": filtered, "limit": limit, "offset": offset}
+
+    def sample_references(self, dataset_id: str, sample_id: str) -> dict:
+        refs = {"versions": [], "experiments": [], "models": []}
+        with self.connect() as conn:
+            for row in conn.execute("SELECT dataset_version_id,version_name,sample_ids FROM dataset_versions WHERE dataset_id=?", (dataset_id,)):
+                ids = json.loads(row["sample_ids"] or "[]")
+                if sample_id in ids:
+                    refs["versions"].append({"datasetVersionId": row["dataset_version_id"], "versionName": row["version_name"]})
+            version_ids = [item["datasetVersionId"] for item in refs["versions"]]
+            if version_ids:
+                placeholders = ",".join("?" for _ in version_ids)
+                refs["experiments"] = [dict(row) for row in conn.execute(
+                    f"SELECT experiment_id,experiment_name,target,dataset_version_id FROM training_experiments WHERE dataset_version_id IN ({placeholders})",
+                    version_ids,
+                )]
+                refs["models"] = [dict(row) for row in conn.execute(
+                    f"SELECT model_id,display_name,model_name,target,status,dataset_version_id FROM models WHERE dataset_version_id IN ({placeholders}) AND deleted_at IS NULL",
+                    version_ids,
+                )]
+        refs["blocked"] = bool(refs["versions"] or refs["experiments"] or refs["models"])
+        return refs
 
     def get_sample(self, dataset_id: str, sample_id: str) -> dict:
         with self.connect() as conn:
@@ -704,14 +846,14 @@ class ModelStudioService:
                     (dataset_id,),
                 )
             }
-            label_count = conn.execute(
-                "SELECT COUNT(*) FROM labels WHERE dataset_id=? AND (ssc IS NOT NULL OR ta IS NOT NULL OR ph IS NOT NULL)",
-                (dataset_id,),
-            ).fetchone()[0]
             latest = conn.execute("SELECT * FROM dataset_versions WHERE dataset_id=? ORDER BY version DESC LIMIT 1", (dataset_id,)).fetchone()
             version_no = int(latest["version"]) + 1 if latest else 1
             parent_version = latest["dataset_version_id"] if latest else None
             sample_ids = [row["sample_id"] for row in samples]
+            label_count = sum(
+                1 for sample_id in sample_ids
+                if labels.get(sample_id) and any(labels[sample_id].get(target) is not None for target in ("ssc", "ta", "ph"))
+            )
             sample_snapshot = []
             label_snapshot = {}
             for sample in samples:
@@ -765,7 +907,7 @@ class ModelStudioService:
                     snapshot_hash,
                 ),
             )
-            conn.execute("UPDATE datasets SET dirty=0, latest_version_id=? WHERE dataset_id=?", (version_id, dataset_id))
+            conn.execute("UPDATE datasets SET dirty=0, latest_version_id=?, updated_at=? WHERE dataset_id=?", (version_id, _now(), dataset_id))
         self.log("dataset.version.create", "dataset", dataset_id, f"{dataset['dataset_name']} {version_name} created")
         return self.get_dataset_version(version_id)
 
@@ -775,6 +917,44 @@ class ModelStudioService:
         if not row:
             raise ModelStudioError(f"dataset version not found: {dataset_version_id}")
         return dict(row)
+
+    def dataset_version_diff(self, from_version_id: str, to_version_id: str) -> dict:
+        before = self.get_dataset_version(from_version_id)
+        after = self.get_dataset_version(to_version_id)
+        before_samples = {
+            item["sample_id"]: item for item in json.loads(before.get("sample_snapshot_json") or "[]")
+            if isinstance(item, dict) and item.get("sample_id")
+        }
+        after_samples = {
+            item["sample_id"]: item for item in json.loads(after.get("sample_snapshot_json") or "[]")
+            if isinstance(item, dict) and item.get("sample_id")
+        }
+        before_labels = json.loads(before.get("label_snapshot_json") or "{}")
+        after_labels = json.loads(after.get("label_snapshot_json") or "{}")
+        added = sorted(set(after_samples) - set(before_samples))
+        removed = sorted(set(before_samples) - set(after_samples))
+        label_changes = []
+        for sample_id in sorted(set(before_labels) & set(after_labels)):
+            old = before_labels.get(sample_id) or {}
+            new = after_labels.get(sample_id) or {}
+            changes = {}
+            for target in ("ssc", "ta", "ph"):
+                if old.get(target) != new.get(target):
+                    changes[target] = {"from": old.get(target), "to": new.get(target)}
+            if changes:
+                label_changes.append({"sampleId": sample_id, "changes": changes})
+        return {
+            "from": {"datasetVersionId": before["dataset_version_id"], "versionName": before["version_name"]},
+            "to": {"datasetVersionId": after["dataset_version_id"], "versionName": after["version_name"]},
+            "summary": {
+                "addedSamples": len(added),
+                "removedOrExcludedSamples": len(removed),
+                "changedLabels": len(label_changes),
+            },
+            "addedSamples": added,
+            "removedOrExcludedSamples": removed,
+            "labelChanges": label_changes,
+        }
 
     def resolve_dataset_version(self, dataset_id: str, dataset_version_id: str | None = None) -> dict:
         if dataset_version_id:
@@ -787,6 +967,8 @@ class ModelStudioService:
 
     def update_sample_status(self, dataset_id: str, sample_id: str, include_status: str, reason: str = "") -> dict:
         status = include_status if include_status in {"Included", "Excluded", "Needs Review"} else "Included"
+        if status == "Excluded" and reason and reason not in EXCLUDE_REASONS:
+            reason = "Other"
         with self.connect() as conn:
             conn.execute(
                 "UPDATE samples SET include_status=?, exclude_reason=? WHERE dataset_id=? AND sample_id=?",
@@ -835,6 +1017,11 @@ class ModelStudioService:
         self.log("experiment.create", "experiment", experiment_id, f"Experiment created: {name}")
         return self.get_experiment(experiment_id)
 
+    def create_experiment_and_training_job(self, payload: dict) -> dict:
+        experiment = self.create_experiment(payload)
+        job = self.create_training_job(experiment["experiment_id"])
+        return {"experiment": experiment, "job": job}
+
     def clone_experiment(self, experiment_id: str, name: str | None = None) -> dict:
         source = self.get_experiment(experiment_id)
         payload = {
@@ -869,7 +1056,17 @@ class ModelStudioService:
 
     def list_experiments(self) -> list[dict]:
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute("SELECT * FROM training_experiments ORDER BY created_at DESC")]
+            rows = [dict(row) for row in conn.execute("SELECT * FROM training_experiments ORDER BY created_at DESC")]
+            jobs = {}
+            for row in conn.execute("SELECT * FROM jobs ORDER BY created_at DESC"):
+                jobs.setdefault(row["experiment_id"], []).append(self._decode_job(dict(row)))
+        for row in rows:
+            row["models"] = json.loads(row.pop("models_json") or "[]")
+            row["preprocessing"] = json.loads(row.pop("preprocessing_json") or "[]")
+            row["runs"] = jobs.get(row["experiment_id"], [])
+            row["runCount"] = len(row["runs"])
+            row["variantCount"] = len(row["models"]) * len(row["preprocessing"])
+        return rows
 
     def get_experiment(self, experiment_id: str) -> dict:
         with self.connect() as conn:
@@ -946,7 +1143,8 @@ class ModelStudioService:
 
     def list_models(self) -> list[dict]:
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute("SELECT * FROM models ORDER BY created_at DESC")]
+            rows = [dict(row) for row in conn.execute("SELECT * FROM models WHERE deleted_at IS NULL ORDER BY created_at DESC")]
+        return [self._enrich_model(row) for row in rows]
 
     def validate_model(self, model_id: str, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -1002,6 +1200,7 @@ class ModelStudioService:
                     "model_version": version,
                     "status": "Published",
                     "published_at": _now(),
+                    "source_model_dir": str(src),
                     "fruit_type": model.get("fruit_type") or "",
                     "variety": _normalize_variety(model.get("variety") or ""),
                 })
@@ -1023,7 +1222,8 @@ class ModelStudioService:
                       version=COALESCE(NULLIF(?, ''), version),
                       description=COALESCE(NULLIF(?, ''), description),
                       tags=COALESCE(NULLIF(?, ''), tags),
-                      notes=COALESCE(NULLIF(?, ''), notes)
+                      notes=COALESCE(NULLIF(?, ''), notes),
+                      metadata_json=?
                     WHERE model_id=?
                     """,
                     (
@@ -1036,6 +1236,7 @@ class ModelStudioService:
                         payload.get("description") or "",
                         payload.get("tags") or "",
                         payload.get("notes") or "",
+                        json.dumps(metadata, ensure_ascii=False),
                         model_id,
                     ),
                 )
@@ -1050,6 +1251,22 @@ class ModelStudioService:
             conn.execute("UPDATE models SET status='Archived' WHERE model_id=?", (model_id,))
         self.log("model.archive", "model", model_id, "Model archived")
         return self.get_model(model_id)
+
+    def delete_model_permanently(self, model_id: str, *, confirm: str = "") -> dict:
+        model = self.get_model(model_id)
+        if model["status"] == "Default" or model.get("is_default"):
+            raise ModelStudioError("default model cannot be permanently deleted; set another default or archive flow first")
+        if confirm != model_id:
+            raise ModelStudioError("permanent delete requires model_id confirmation")
+        paths = self._model_artifact_paths(model)
+        with self._lock:
+            with self.connect() as conn:
+                conn.execute("DELETE FROM models WHERE model_id=?", (model_id,))
+            for path in paths:
+                if path.exists():
+                    self._delete_managed_model_path(path)
+        self.log("model.delete", "model", model_id, "Model permanently deleted")
+        return {"modelId": model_id, "deleted": True, "deletedPaths": [str(path) for path in paths]}
 
     def set_default_model(self, model_id: str) -> dict:
         with self._lock:
@@ -1074,7 +1291,7 @@ class ModelStudioService:
 
     def list_published_models(self, *, fruit_type: str = "", variety: str = "", target: str = "") -> list[dict]:
         params: list[object] = []
-        where = "WHERE status IN ('Published','Default','Production')"
+        where = "WHERE status IN ('Published','Default','Production') AND deleted_at IS NULL"
         if target:
             where += " AND target=?"
             params.append(target.lower())
@@ -1086,7 +1303,7 @@ class ModelStudioService:
                 params.append(_normalize_variety(variety))
         with self.connect() as conn:
             rows = [dict(row) for row in conn.execute(f"SELECT * FROM models {where} ORDER BY is_default DESC, published_at DESC", params)]
-        return rows
+        return [self._enrich_model(row) for row in rows]
 
     def model_catalog(self, *, fruit_type: str = "", variety: str = "") -> dict:
         with self.connect() as conn:
@@ -1094,13 +1311,13 @@ class ModelStudioService:
                 row["fruit_type"] for row in conn.execute(
                     """
                     SELECT DISTINCT fruit_type FROM models
-                    WHERE status IN ('Published','Default','Production') AND COALESCE(fruit_type,'')!=''
+                    WHERE status IN ('Published','Default','Production') AND deleted_at IS NULL AND COALESCE(fruit_type,'')!=''
                     ORDER BY fruit_type
                     """
                 )
             ]
             variety_params: list[object] = []
-            variety_where = "WHERE status IN ('Published','Default','Production')"
+            variety_where = "WHERE status IN ('Published','Default','Production') AND deleted_at IS NULL"
             if fruit_type:
                 variety_where += " AND lower(fruit_type)=lower(?)"
                 variety_params.append(fruit_type)
@@ -1139,10 +1356,44 @@ class ModelStudioService:
 
     def get_model(self, model_id: str) -> dict:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM models WHERE model_id=?", (model_id,)).fetchone()
+            row = conn.execute("SELECT * FROM models WHERE model_id=? AND deleted_at IS NULL", (model_id,)).fetchone()
         if not row:
             raise ModelStudioError(f"model not found: {model_id}")
-        return dict(row)
+        return self._enrich_model(dict(row))
+
+    def model_registry(self, *, query: str = "", fruit_type: str = "", variety: str = "", target: str = "", status: str = "", algorithm: str = "", preprocessing: str = "") -> dict:
+        params: list[object] = []
+        where = "WHERE deleted_at IS NULL"
+        if query:
+            where += " AND (model_id LIKE ? OR model_name LIKE ? OR COALESCE(display_name,'') LIKE ?)"
+            params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
+        if fruit_type:
+            where += " AND lower(COALESCE(fruit_type,''))=lower(?)"
+            params.append(fruit_type)
+        if variety:
+            where += " AND lower(COALESCE(variety,'generic'))=lower(?)"
+            params.append(_normalize_variety(variety))
+        if target:
+            where += " AND target=?"
+            params.append(target.lower())
+        if status and status != "all":
+            where += " AND status=?"
+            params.append(status)
+        if algorithm:
+            where += " AND model_type=?"
+            params.append(MODEL_ALIASES.get(algorithm, algorithm))
+        if preprocessing:
+            where += " AND preprocessing=?"
+            params.append(preprocessing.upper())
+        with self.connect() as conn:
+            rows = [self._enrich_model(dict(row)) for row in conn.execute(f"SELECT * FROM models {where} ORDER BY fruit_type,variety,target,is_default DESC,created_at DESC", params)]
+        tree: dict[str, dict] = {}
+        for model in rows:
+            fruit = model.get("fruit_type") or "unspecified"
+            var = _normalize_variety(model.get("variety") or "")
+            target_key = model["target"]
+            tree.setdefault(fruit, {}).setdefault(var, {}).setdefault(target_key, []).append(model)
+        return {"models": rows, "tree": tree}
 
     def logs(self, limit: int = 100) -> list[dict]:
         with self.connect() as conn:
@@ -1322,7 +1573,7 @@ class ModelStudioService:
 
     def _mark_dataset_dirty(self, dataset_id: str) -> None:
         with self.connect() as conn:
-            conn.execute("UPDATE datasets SET dirty=1 WHERE dataset_id=?", (dataset_id,))
+            conn.execute("UPDATE datasets SET dirty=1, updated_at=? WHERE dataset_id=?", (_now(), dataset_id))
 
     def _clear_default_in_scope(self, conn: sqlite3.Connection, model: dict) -> None:
         conn.execute(
@@ -1373,9 +1624,85 @@ class ModelStudioService:
             if calibration_statuses:
                 calibration = "complete" if all(item == "complete" for item in calibration_statuses) else "missing"
             conn.execute(
-                "UPDATE datasets SET sample_count=?, label_count=?, calibration_status=? WHERE dataset_id=?",
-                (sample_count, label_count, calibration, dataset_id),
+                "UPDATE datasets SET sample_count=?, label_count=?, calibration_status=?, updated_at=? WHERE dataset_id=?",
+                (sample_count, label_count, calibration, _now(), dataset_id),
             )
+
+    def _dashboard_attention(self, dirty_count: int, failed_jobs: int, candidates: list[dict]) -> list[dict]:
+        items = []
+        if dirty_count:
+            items.append({"kind": "dataset_dirty", "severity": "warning", "message": f"{dirty_count} Dataset has working changes"})
+        if failed_jobs:
+            items.append({"kind": "training_failed", "severity": "error", "message": f"{failed_jobs} Training run failed"})
+        if candidates:
+            items.append({"kind": "candidate_review", "severity": "warning", "message": f"{len(candidates)} Candidate models waiting for review"})
+        return items
+
+    def _enrich_model(self, model: dict) -> dict:
+        model["lifecycleStatus"] = "Published" if model.get("status") == "Production" else model.get("status")
+        model["isDefault"] = bool(model.get("is_default") or model.get("status") == "Default")
+        model["stationVisible"] = model.get("status") in PUBLISHED_STATUSES
+        warnings = []
+        sample_count = None
+        metadata = {}
+        try:
+            metadata = json.loads(model.get("metadata_json") or "{}")
+        except Exception:
+            metadata = {}
+        sample_count = metadata.get("sample_count")
+        if sample_count is None and model.get("dataset_version_id"):
+            try:
+                sample_count = int(self.get_dataset_version(model["dataset_version_id"]).get("sample_count") or 0)
+            except Exception:
+                sample_count = None
+        if sample_count is not None and int(sample_count) < 10:
+            warnings.append("Insufficient Samples")
+        if model.get("r2") is not None and float(model["r2"]) < 0:
+            warnings.append("Poor Validation")
+        if metadata.get("calibrated") is False or metadata.get("calibration_required") and not metadata.get("calibrated"):
+            warnings.append("Calibration Incomplete")
+        if model.get("status") == "Candidate":
+            warnings.append("Experimental")
+        model["qualityWarnings"] = warnings
+        model["lineage"] = {
+            "datasetId": model.get("dataset_id") or "",
+            "datasetVersionId": model.get("dataset_version_id") or "",
+            "datasetVersionLabel": model.get("dataset_version_label") or "",
+            "experimentId": model.get("experiment_id") or "",
+            "runId": model.get("job_id") or "",
+            "parentModelId": model.get("parent_model_id") or "",
+        }
+        path = Path(model.get("model_dir") or "")
+        model["fileStatus"] = {
+            "modelJoblib": bool((path / "model.joblib").exists()),
+            "metadataJson": bool((path / "metadata.json").exists()),
+            "modelDir": str(path),
+        }
+        return model
+
+    def _model_artifact_paths(self, model: dict) -> list[Path]:
+        paths = [Path(model["model_dir"])]
+        try:
+            metadata = json.loads(model.get("metadata_json") or "{}")
+            source = metadata.get("source_model_dir")
+            if source:
+                paths.append(Path(source))
+        except Exception:
+            pass
+        published = self.production_dir / "published" / model["model_id"]
+        if published not in paths:
+            paths.append(published)
+        legacy = self.production_dir / model["target"]
+        if (model.get("status") == "Default" or model.get("is_default")) and legacy not in paths:
+            paths.append(legacy)
+        return paths
+
+    def _delete_managed_model_path(self, path: Path) -> None:
+        resolved = path.resolve()
+        allowed_roots = [self.model_dir.resolve(), (self.production_dir / "published").resolve()]
+        if not any(root == resolved or root in resolved.parents for root in allowed_roots):
+            raise ModelStudioError(f"refusing to delete unmanaged model path: {path}")
+        shutil.rmtree(resolved, ignore_errors=True)
 
     def _update_sample_feature(self, dataset_id: str, sample_id: str, feature: dict) -> None:
         with self.connect() as conn:

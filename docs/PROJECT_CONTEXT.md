@@ -202,7 +202,7 @@ UI
 | 多光谱特征提取 | DONE | 暗/白校正、ROI 均值、波长校验 |
 | RAW/SNV/MSC | DONE | `preprocessing.py` |
 | PLSR/SVR/RF 训练 | DONE | `training/train.py` 与测试 |
-| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已有；Dataset 已本地托管并复制导入样品，实际项目数据库暂无真实训练数据 |
+| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、引用保护 Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、Archive/Delete、Retrain lineage；实际项目数据库暂无真实训练数据 |
 | Production 模型人工发布 | DONE | `publish_model()`/`set_default_model()`；复制到 `trained_models/<target>` |
 | 主程序按果种/品种选模型 | DONE | `/api/quality-models`、`resolve_model_id()`、`_select_registry_model()` |
 | SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；当前无生产模型时返回缺失 |

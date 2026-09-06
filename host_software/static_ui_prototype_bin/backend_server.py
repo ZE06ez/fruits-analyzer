@@ -1123,11 +1123,23 @@ def create_handler(
                     self.json_response({"ok": True, "dashboard": studio.dashboard()})
                     return
                 if path == "datasets":
-                    self.json_response({"ok": True, "datasets": studio.list_datasets()})
+                    self.json_response({"ok": True, "datasets": studio.list_datasets(
+                        query=params.get("query", [""])[0],
+                        fruit_type=params.get("fruitType", params.get("fruit_type", [""]))[0],
+                        variety=params.get("variety", [""])[0],
+                        dirty=params.get("dirty", [""])[0],
+                        archived=params.get("archived", [""])[0],
+                    )})
                     return
                 if path == "dataset-versions":
                     dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
                     self.json_response({"ok": True, "versions": studio.list_dataset_versions(dataset_id)})
+                    return
+                if path == "dataset-version-diff":
+                    self.json_response({"ok": True, "diff": studio.dataset_version_diff(
+                        params.get("from", params.get("fromVersionId", [""]))[0],
+                        params.get("to", params.get("toVersionId", [""]))[0],
+                    )})
                     return
                 if path == "samples":
                     dataset_id = params.get("datasetId", params.get("dataset_id", [""]))[0]
@@ -1137,13 +1149,23 @@ def create_handler(
                         return
                     self.json_response({
                         "ok": True,
-                        "samples": studio.list_samples(
+                        "samples": studio.filter_samples(
                             dataset_id,
                             limit=int(params.get("limit", ["50"])[0]),
                             offset=int(params.get("offset", ["0"])[0]),
                             query=params.get("query", [""])[0],
+                            include_status=params.get("includeStatus", params.get("include_status", [""]))[0],
+                            label_status=params.get("labelStatus", params.get("label_status", [""]))[0],
+                            calibration=params.get("calibration", [""])[0],
+                            quality=params.get("quality", [""])[0],
                         ),
                     })
+                    return
+                if path == "samples/references":
+                    self.json_response({"ok": True, "references": studio.sample_references(
+                        params.get("datasetId", params.get("dataset_id", [""]))[0],
+                        params.get("sampleId", params.get("sample_id", [""]))[0],
+                    )})
                     return
                 if path == "select-sample-folder":
                     initial = params.get("initial", [""])[0] or default_save_root(app_dir)
@@ -1167,7 +1189,19 @@ def create_handler(
                     self.json_response({"ok": True, "job": studio.get_job(path.split("/")[-1])})
                     return
                 if path == "models":
-                    self.json_response({"ok": True, "models": studio.list_models()})
+                    registry = studio.model_registry(
+                        query=params.get("query", [""])[0],
+                        fruit_type=params.get("fruitType", params.get("fruit_type", [""]))[0],
+                        variety=params.get("variety", [""])[0],
+                        target=params.get("target", [""])[0],
+                        status=params.get("status", [""])[0],
+                        algorithm=params.get("algorithm", [""])[0],
+                        preprocessing=params.get("preprocessing", [""])[0],
+                    )
+                    self.json_response({"ok": True, "models": registry["models"], "registry": registry})
+                    return
+                if path.startswith("models/") and len(path.split("/")) == 2:
+                    self.json_response({"ok": True, "model": studio.get_model(path.split("/")[-1])})
                     return
                 if path == "published-models":
                     self.json_response({"ok": True, "models": studio.list_published_models(
@@ -1247,6 +1281,10 @@ def create_handler(
                 if path == "experiments":
                     self.json_response({"ok": True, "experiment": studio.create_experiment(payload)})
                     return
+                if path == "training/start":
+                    result = studio.create_experiment_and_training_job(payload)
+                    self.json_response({"ok": True, "experiment": result["experiment"], "job": result["job"]})
+                    return
                 if path == "experiments/clone":
                     self.json_response({"ok": True, "experiment": studio.clone_experiment(
                         payload.get("experimentId") or payload.get("experiment_id"),
@@ -1287,6 +1325,13 @@ def create_handler(
                 if path == "models/archive":
                     model_id = payload.get("modelId") or payload.get("model_id")
                     self.json_response({"ok": True, "model": studio.archive_model(model_id)})
+                    return
+                if path == "models/delete":
+                    model_id = payload.get("modelId") or payload.get("model_id")
+                    self.json_response({"ok": True, "result": studio.delete_model_permanently(
+                        model_id,
+                        confirm=payload.get("confirm") or payload.get("confirmation") or "",
+                    )})
                     return
                 self.json_response({"ok": False, "error": "Unknown Model Studio API."}, status=404)
             except Exception as exc:
@@ -1452,6 +1497,8 @@ def create_handler(
             other_dirs_raw = params.get("otherDirs", [""])[0] or params.get("otherImageDirs", [""])[0] or ""
             strict_dirs = params.get("strictImageDirs", ["0"])[0] in {"1", "true", "True", "yes"}
             source = params.get("source", [""])[0]
+            scope_fruit_type = params.get("fruitType", params.get("fruit_type", [""]))[0].strip()
+            scope_variety = (params.get("variety", [""])[0] or "generic").strip() or "generic"
             if source == "current":
                 current = session.snapshot().get("currentCaptureDir", "")
                 if current and not dataset_dir:
@@ -1500,6 +1547,27 @@ def create_handler(
                     report["sampleMetadata"] = metadata
                     if session.snapshot().get("hasSample"):
                         session.apply_sample_metadata(metadata)
+                metadata_fruit = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
+                metadata_variety = str(metadata.get("variety") or "").strip()
+                scope_missing = not (metadata_fruit and metadata_variety) and not scope_fruit_type
+                if scope_fruit_type:
+                    report["sampleScope"] = {"fruitType": scope_fruit_type, "variety": scope_variety, "source": "user"}
+                    session.update_model_selection({
+                        "fruitType": scope_fruit_type,
+                        "variety": scope_variety,
+                        "selectedSscModelId": self.resolve_creation_model_id(scope_fruit_type, scope_variety, "ssc"),
+                        "selectedTaModelId": self.resolve_creation_model_id(scope_fruit_type, scope_variety, "ta"),
+                        "selectedPhModelId": self.resolve_creation_model_id(scope_fruit_type, scope_variety, "ph"),
+                    })
+                elif metadata_fruit:
+                    report["sampleScope"] = {"fruitType": metadata_fruit, "variety": metadata_variety or "generic", "source": "metadata"}
+                elif report.get("valid"):
+                    catalog = self.require_model_studio().model_catalog() if self.require_model_studio() else {"fruitTypes": [], "varieties": []}
+                    report["requiresSampleScope"] = True
+                    report["sampleScopeOptions"] = {
+                        "fruitTypes": catalog.get("fruitTypes") or [],
+                        "varieties": catalog.get("varieties") or [],
+                    }
                 if report.get("valid") and session.snapshot().get("hasSample"):
                     session.set_analysis_data_dir(report["datasetDir"])
                     session.set_image_directories(

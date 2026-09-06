@@ -535,13 +535,13 @@ host_software/static_ui_prototype_bin/model_studio_data/
 
 主要表：
 
-- `datasets`：`dataset_id`、`dataset_name`、`fruit_type`、`variety`、`storage_path`、`local_path`、`import_source_path`、`dirty`、`latest_version_id`。
+- `datasets`：`dataset_id`、`dataset_name`、`fruit_type`、`variety`、`storage_path`、`local_path`、`import_source_path`、`dirty`、`latest_version_id`、`archived`、`updated_at`。
 - `dataset_versions`：`sample_ids`、`sample_snapshot_json`、`label_snapshot_json`、`snapshot_hash`，用于冻结版本样品和标签。
 - `samples`：`sample_id`、`sample_name`、`source_path`、`local_path`、`storage_path`、RGB/多光谱/校准计数、标签镜像、状态字段。
 - `labels`：SQLite 标签权威来源，保存 `sample_id`、`ssc`、`ta`、`ph`、`updated_at`。
 - `training_experiments`
 - `jobs`
-- `models`
+- `models`：Candidate / Validated / Published / Default / Archived 生命周期，记录 Dataset Version、Experiment、Run、parent model、metrics、tags、notes 和受管模型文件路径。
 - `operation_logs`
 
 训练文件流：
@@ -561,7 +561,11 @@ Sample detail form
   -> model_studio_data/datasets/<dataset_id>/labels.csv
   -> datasets.dirty = 1
 
-Sample delete action
+Sample include/exclude/delete
+  -> update_sample_status()
+  -> Excluded samples stay in managed storage and do not enter new Dataset Version
+  -> sample_references()
+  -> referenced samples are blocked from permanent delete
   -> delete_sample()
   -> delete labels + sample row
   -> optional delete managed local copy under Dataset samples/
@@ -573,21 +577,35 @@ Dataset local storage
   -> sample_snapshot_json + label_snapshot_json
   -> generate_features()
   -> model_studio/artifacts/features/<dataset_version>_features.csv
+  -> create_experiment()
   -> create_training_job()
   -> training.train_one()
   -> model_studio/models/candidates/<experiment>/<target>_<pre>_<model>/
   -> models.status = Candidate
+  -> Model Compare shows Algorithm + Preprocessing variants
   -> publish_model()
   -> trained_models/published/<model_id>/
   -> optional setDefault
   -> trained_models/<target>/
+  -> retrain_from_model(parent_model_id)
+  -> new Experiment / Run / Model without overwriting old model
 ```
 
 模型发布约束：
 
 - Candidate 不会自动进入主程序。
-- Published 可被选择，但 Default 才会作为对应 fruit_type/variety/target 的自动默认。
+- Published 可被主检测工作站手动选择，但 Default 才会作为对应 fruit_type/variety/target 的自动默认。
+- Archived 保留数据库记录、模型文件和 lineage，但不进入 `/api/quality-models`，因此不参与主检测工作站自动或手动选择。
+- Permanent Delete 必须先确认模型不是 Default，再同步删除 SQLite models 记录、受管 candidate/published artifacts；已作为 legacy `trained_models/<target>` 的 Default 不能直接删除。
 - `trained_models/<target>/` 是 legacy/default fallback，不代表所有已发布模型。
+
+Model Studio 一级 UI 结构：
+
+```text
+Dashboard -> Datasets -> Training -> Models -> Settings
+```
+
+Dataset 页面内部承载 Samples、Versions、Quality、Experiments。Training 页面按 Data / Configure / Train / Compare & Publish 展示；一个 Experiment 只对应一个 target，一个 Run 是一次 jobs 执行，一个 Model Variant 是 Algorithm + Preprocessing 的模型结果。Dataset Version 通过 `sample_snapshot_json` 和 `label_snapshot_json` 保持不可变，并可用 `dataset_version_diff()` 比较 added / removed-or-excluded / label-changed。
 
 ## 依赖关系
 

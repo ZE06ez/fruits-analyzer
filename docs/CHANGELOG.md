@@ -2,6 +2,19 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-06 Model Studio Dataset / Training / Model Lifecycle Refinement
+
+- 修改内容：将 Model Studio 一级信息架构整理为 Dashboard / Datasets / Training / Models / Settings。Dashboard 只保留 Dataset、Sample、运行中训练、Published Models 和 Needs Attention；SQLite 路径、滤光片配置和 operation logs 移到 Settings。
+- 修改内容：强化 Dataset lifecycle。Working Dataset 可继续 Add Samples、保存标签、Include/Exclude 样品并标记 dirty；Dataset Version 继续冻结 `sample_snapshot_json` / `label_snapshot_json` / `snapshot_hash`，新增 `dataset_version_diff()` 显示 added、removed-or-excluded 和 label changes。重复样品导入支持 Skip、Replace Working Copy、Create New Sample ID、Cancel；Replace 在样品已被历史 Version/Experiment/Model 引用时拒绝。
+- 修改内容：强化 Sample 维护和删除保护。Exclude reason 固定为 Image Blur、Missing Band、Calibration Error、Label Error、Damaged Fruit、Outlier、Capture Error、Manual Exclusion、Other；被 Dataset Version、Experiment 或 Model lineage 引用过的 Sample 禁止 Permanent Delete，只能 Exclude。
+- 修改内容：修复 Training target 串用风险。前端 Start Training 不再复用旧 `studio.selectedExperimentId`，而是按当前 Dataset Version、target、algorithm、preprocessing、validation 创建新的 Experiment 并启动 Run；后端新增 `create_experiment_and_training_job()` 和 `/api/model-studio/training/start`。
+- 修改内容：整理 Experiment / Run / Model Variant 表达。Experiment 是一个 target 的训练配置，Run 是一次 `jobs` 执行，Model Variant 是 Algorithm + Preprocessing 的一个模型结果；训练结果比较页继续按 RMSE 展示，并为低样本、负 R2、未校准、Candidate 显示质量警告。
+- 修改内容：重做 Model Registry 展示为 Model Card grid，并提供 search/filter、model detail lineage、Published/Default/Archived 生命周期、Archive 与 Permanent Delete 分离。Permanent Delete 需要 model_id 确认，Default 禁止直接删除，删除时同步清理 SQLite 记录和受管 candidate/published artifacts。
+- 修改内容：Retrain 从旧模型带出 `parent_model_id` 创建新的 Experiment / Run / Model，不覆盖旧模型。Published 非 Default 模型继续可被主工作台手动选择；Archived 模型不进入 `/api/quality-models`。
+- 修改内容：主工作台加载兼容模型后，在预测前显示真实模型名、version、algorithm、preprocessing 和“已选择，等待预测”，不再误显示“未接入”。手动本地样品目录若缺少 `fruit_type` / `variety` metadata，`/api/sample-folder` 返回 `requiresSampleScope`，前端要求用户选择 scope 后再加载兼容模型。
+- 修改文件：`host_software/static_ui_prototype_bin/model_studio/service.py`、`host_software/static_ui_prototype_bin/model_studio/static/index.html`、`host_software/static_ui_prototype_bin/model_studio/static/model_studio.js`、`host_software/static_ui_prototype_bin/model_studio/static/model_studio.css`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/tests/test_model_studio_service.py`、`host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`、`PROJECT_STATUS.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`、`AGENTS.md`。
+- 是否影响原有功能：不修改 STM32、相机、DVP2 preview、RGB preview、CaptureCoordinator、SampleStage、`/api/capture/start` 或 `trueCapturePrepared`。不修改 PLSR/SVR/RF、RAW/SNV/MSC 或光谱特征数学；本轮只处理 Model Studio 管理、UI、lifecycle、lineage 和主工作台模型展示。
+
 ## 2026-09-06 P1B-7.5A.1 STM32 Current Firmware Profile Bound
 
 - 修改内容：按当前 STM32 firmware profile 绑定上位机 AA55 production adapter。`stm32_protocol.py` 新增 `CURRENT_STM32_FIRMWARE_PROFILE` 和 `CURRENT_FILTER_WHEEL_MAPPING`，固化 `AA 55 CMD PLEN PAYLOAD CRCH CRCL`、CRC16-CCITT-FALSE 覆盖 `CMD+PLEN+PAYLOAD`、ACK `echo_cmd,result`、STATUS 18 bytes、INFO 13 bytes，以及命令号 `MOVE_ABS=0x01`、`MOVE_REL=0x02`、`STOP=0x03`、`SET_POS_PID=0x04`、`SET_VEL_PID=0x05`、`SET_PROFILE=0x06`、`SET_CONFIG=0x07`、`QUERY_STATUS=0x08`、`SET_ORIGIN=0x09`、`RESET=0x0F`、`FAN_SET=0x10`、`DOOR_SET=0x11`、`LED_SET=0x12`、`RSP_ACK=0x80`、`RSP_STATUS=0x81`、`RSP_INFO=0x82`。STATUS decode 读取 state/err/position_deg/velocity_rpm/target_deg/fan duty/LED1-3 duty；INFO decode 读取 firmwareVersion/ppr/maxRpm/acc。
