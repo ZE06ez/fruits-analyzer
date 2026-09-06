@@ -2966,6 +2966,37 @@ function selectedModelFromCatalog(target, selectedId = "") {
   return modelById(models, selectedId) || catalog.defaults?.[target] || models[0] || null;
 }
 
+function modelDescriptor(model = null) {
+  if (!model) return "";
+  return [model.version || model.model_version, model.model_type, model.preprocessing].filter(Boolean).join(" · ");
+}
+
+function renderSelectedPredictionModels() {
+  const ssc = selectedModelFromCatalog("ssc", state.selectedSscModelId);
+  if (ssc) {
+    setText("sscModelName", ssc.display_name || ssc.model_name || "SSC 预测模型");
+    setText("sscModelVersion", modelDescriptor(ssc) || "已发布模型");
+    setText("sscModelStatus", "已选择，等待预测");
+  } else {
+    setText("sscModelName", "SSC 预测模型");
+    setText("sscModelVersion", "未配置模型");
+    if (hasActiveSample()) setText("sscModelStatus", "无兼容模型");
+  }
+  const ta = selectedModelFromCatalog("ta", state.selectedTaModelId);
+  const ph = selectedModelFromCatalog("ph", state.selectedPhModelId);
+  const acid = ta || ph;
+  if (acid) {
+    const names = [ta ? `TA: ${ta.display_name || ta.model_name}` : "", ph ? `pH: ${ph.display_name || ph.model_name}` : ""].filter(Boolean);
+    setText("acidModelName", names.join(" / ") || "TA / pH 预测模型");
+    setText("acidModelVersion", modelDescriptor(acid) || "已发布模型");
+    setText("acidModelStatus", "已选择，等待预测");
+  } else {
+    setText("acidModelName", "TA / pH 预测模型");
+    setText("acidModelVersion", "未配置模型");
+    if (hasActiveSample()) setText("acidModelStatus", "无兼容模型");
+  }
+}
+
 function isGenericModelForCurrentVariety(model = null) {
   const currentVariety = String(state.variety || "generic").trim().toLowerCase() || "generic";
   const modelVariety = String(model?.variety || "generic").trim().toLowerCase() || "generic";
@@ -3050,6 +3081,7 @@ async function loadQualityModels() {
   state.selectedPhModelId = $("#phModelSelect")?.value || "";
   updateAnalysisButtonStates();
   renderModelOverview();
+  renderSelectedPredictionModels();
   return payload;
 }
 
@@ -3252,6 +3284,7 @@ function clearTasteResult() {
 
 function clearSscPrediction() {
   renderSscResult({});
+  renderSelectedPredictionModels();
   state.sampleSession.sscResult = null;
   clearTasteResult();
   setStepStatus("sugar", "waiting");
@@ -3259,6 +3292,7 @@ function clearSscPrediction() {
 
 function clearAcidPrediction() {
   renderAcidResult({}, {});
+  renderSelectedPredictionModels();
   state.sampleSession.taResult = null;
   state.sampleSession.phResult = null;
   clearTasteResult();
@@ -3542,7 +3576,19 @@ async function loadSampleFolder(datasetDir, {
     strictImageDirs: strictImageDirs ? "1" : "0",
     source,
   });
-  const report = await api(`/api/sample-folder?${query.toString()}`);
+  let report = await api(`/api/sample-folder?${query.toString()}`);
+  if (report.requiresSampleScope) {
+    const fruit = window.prompt("当前样品目录 metadata.json 缺少水果类型。请输入 Fruit Type（例如 blueberry）：", state.fruitType || "");
+    if (fruit && fruit.trim()) {
+      const variety = window.prompt("请输入 Variety（通用品种可填 generic）：", state.variety || "generic") || "generic";
+      query.set("fruitType", fruit.trim());
+      query.set("variety", variety.trim() || "generic");
+      report = await api(`/api/sample-folder?${query.toString()}`);
+      state.fruitType = report.sampleScope?.fruitType || fruit.trim();
+      state.variety = report.sampleScope?.variety || variety.trim() || "generic";
+      await loadQualityModels().catch((error) => addLog(error.message || "模型目录加载失败。", "WARN"));
+    }
+  }
   renderDataCheck(report);
   updateSampleSessionFromReport(report);
   if (source === "current" && report.status === "missing") {

@@ -66,13 +66,13 @@ function switchView(view) {
   document.querySelectorAll(".nav").forEach((nav) => nav.classList.toggle("active", nav.dataset.view === view));
   const names = {
     dashboard: "总览 Dashboard",
-    datasets: "数据集",
+    datasets: "Datasets",
     samples: "样品与标签",
-    workspace: "训练工作区",
+    workspace: "Training",
     features: "特征工程",
-    experiments: "训练实验",
-    models: "模型库",
-    logs: "任务日志",
+    experiments: "Training",
+    models: "Models",
+    settings: "Settings",
   };
   text("activeViewName", names[view] || view);
   text("pageTitle", names[view] || view);
@@ -217,19 +217,21 @@ function switchSampleTab(tab) {
 async function loadDashboard() {
   const payload = await api("/api/model-studio/dashboard");
   const dashboard = payload.dashboard;
-  text("dbPath", `SQLite: ${dashboard.databasePath}`);
+  text("dbPath", "Model Studio");
+  text("settingsDbPath", dashboard.databasePath);
   text("countDatasets", dashboard.counts.datasets);
-  text("countVersions", dashboard.counts.datasetVersions || 0);
   text("countSamples", dashboard.counts.samples);
-  text("countLabels", dashboard.counts.labels);
-  text("countExperiments", dashboard.counts.experiments);
-  text("countJobs", dashboard.counts.trainingJobs || 0);
+  text("countRunning", dashboard.counts.runningTraining || 0);
   text("countProduction", dashboard.counts.publishedModels || dashboard.counts.productionModels || 0);
-  text("countDefault", dashboard.counts.defaultModels || 0);
-  text("countReview", dashboard.counts.modelsNeedingReview || 0);
+  text("countAttention", (dashboard.needsAttention || []).length);
   $("#productionModels").innerHTML = dashboard.productionModels.length
-    ? dashboard.productionModels.map((model) => `<div class="model-card"><b>${model.target.toUpperCase()}</b> ${model.model_type} · ${model.preprocessing} · ${model.version}<br><small>${model.model_name}</small></div>`).join("")
+    ? dashboard.productionModels.slice(0, 8).map((model) => `<div class="model-card compact-card"><b>${model.display_name || model.model_name}</b><span>${model.fruit_type || "--"} / ${model.variety || "generic"} · ${model.target.toUpperCase()}</span><small>${model.model_type} · ${model.preprocessing} · ${model.version}</small></div>`).join("")
     : "暂无已发布模型";
+  $("#attentionList").innerHTML = (dashboard.needsAttention || []).length
+    ? dashboard.needsAttention.map((item) => `<div class="quality-row ${item.severity === "error" ? "failed" : "warning"}"><span>${item.kind}</span><b>${item.message}</b></div>`).join("")
+    : "暂无需要处理的问题";
+  $("#recentDatasets").innerHTML = (dashboard.recentDatasets || []).map((ds) => `<div class="compact-card"><b>${ds.dataset_name}</b><span>${ds.fruit_type || "--"} / ${ds.variety || "generic"} · ${ds.sample_count || 0} samples</span></div>`).join("") || `<div class="empty compact">暂无数据集</div>`;
+  $("#recentTraining").innerHTML = (dashboard.recentJobs || []).map((job) => `<div class="compact-card"><b>${job.status} · Run #${job.run_number || 1}</b><span>${job.message || job.experiment_id}</span></div>`).join("") || `<div class="empty compact">暂无训练</div>`;
   $("#filterRows").innerHTML = dashboard.filterConfig.map((band) => `
     <tr>
       <td>${band.filter_position}</td><td>${band.wavelength_nm} nm</td><td>${band.bandwidth_nm ?? "--"}</td>
@@ -239,7 +241,14 @@ async function loadDashboard() {
 }
 
 async function loadDatasets() {
-  const payload = await api("/api/model-studio/datasets");
+  const params = new URLSearchParams({
+    query: $("#datasetSearch")?.value.trim() || "",
+    fruitType: $("#datasetFruitFilter")?.value.trim() || "",
+    variety: $("#datasetVarietyFilter")?.value.trim() || "",
+    dirty: $("#datasetDirtyFilter")?.value || "",
+    archived: $("#datasetArchivedFilter")?.value || "0",
+  });
+  const payload = await api(`/api/model-studio/datasets?${params.toString()}`);
   studio.datasets = payload.datasets || [];
   const rows = studio.datasets.map((ds) => `
     <tr data-dataset="${ds.dataset_id}">
@@ -247,9 +256,9 @@ async function loadDatasets() {
       <td>${ds.fruit_type || "--"}</td>
       <td>${ds.variety || "generic"}</td>
       <td>${ds.sample_count || 0}</td>
-      <td>${ds.label_count || 0}</td>
+      <td>${ds.label_count || 0}<br><small>SSC ${ds.labelCompleteness?.ssc || 0} · TA ${ds.labelCompleteness?.ta || 0} · pH ${ds.labelCompleteness?.ph || 0}</small></td>
       <td>${(ds.versions || []).map((v) => v.version_name).join(", ") || "--"}</td>
-      <td>${Number(ds.dirty || 0) ? badge("Dataset Changed") : badge(ds.calibration_status)}</td>
+      <td>${Number(ds.archived || 0) ? badge("Archived") : Number(ds.dirty || 0) ? badge("Dirty") : badge("Clean")}</td>
       <td><small>${ds.local_path || ds.storage_path}</small></td>
     </tr>
   `).join("");
@@ -292,8 +301,13 @@ async function importSamples() {
   const sourcePath = $("#sourceSamplePath")?.value.trim() || "";
   text("sampleImportReport", "正在导入样品...");
   let result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath, duplicatePolicy: "skip" }) });
-  if (result.result.conflicts && window.confirm("该样品可能已经存在。是否作为新样品导入？")) {
-    result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath, duplicatePolicy: "new" }) });
+  if (result.result.conflicts) {
+    const choice = window.prompt("发现重复样品。输入 skip / replace / new / cancel：", "skip");
+    const duplicatePolicy = String(choice || "skip").trim().toLowerCase();
+    if (duplicatePolicy === "cancel") return;
+    if (["replace", "new"].includes(duplicatePolicy)) {
+      result = await api("/api/model-studio/samples/import", { method: "POST", body: JSON.stringify({ datasetId, sourcePath, duplicatePolicy }) });
+    }
   }
   $("#sampleImportReport").textContent = JSON.stringify(result.result, null, 2);
   toast(`新样品 ${result.result.newSamples} · 已有 ${result.result.existingSamples} · 冲突 ${result.result.conflicts}`);
@@ -353,6 +367,7 @@ async function loadDatasetVersions() {
   text("wsDatasetVersion", latest ? latest.version_name : "--");
   text("wsSamples", latest ? latest.sample_count : "--");
   text("wsLabels", latest ? latest.label_count : "--");
+  renderTrainingConfigSummary();
 }
 
 async function createDatasetVersion() {
@@ -369,8 +384,15 @@ async function createDatasetVersion() {
 
 async function loadSamples() {
   const datasetId = currentDatasetId();
-  const query = encodeURIComponent($("#sampleQuery").value.trim());
-  const payload = await api(`/api/model-studio/samples?datasetId=${encodeURIComponent(datasetId)}&query=${query}&limit=80`);
+  const query = $("#sampleQuery").value.trim();
+  const params = new URLSearchParams({
+    datasetId,
+    query,
+    limit: "80",
+    includeStatus: $("#sampleIncludeFilter")?.value || "",
+    labelStatus: $("#sampleLabelFilter")?.value || "",
+  });
+  const payload = await api(`/api/model-studio/samples?${params.toString()}`);
   const items = payload.samples.items || [];
   const selected = studio.datasets.find((ds) => ds.dataset_id === datasetId);
   text("sampleDatasetName", selected ? selected.dataset_name : datasetId);
@@ -548,20 +570,7 @@ function drawSpectrum(wavelengths) {
 }
 
 async function createExperiment() {
-  const datasetId = currentDatasetId();
-  studio.selectedDatasetVersionId = $("#datasetVersionSelect")?.value || studio.selectedDatasetVersionId;
-  const models = [...document.querySelectorAll('input[name="modelType"]:checked')].map((item) => item.value);
-  const preprocessing = [...document.querySelectorAll('input[name="preprocess"]:checked')].map((item) => item.value);
-  const payload = {
-    datasetId,
-    datasetVersionId: studio.selectedDatasetVersionId,
-    experimentName: $("#experimentName").value.trim(),
-    target: $("#targetSelect").value,
-    description: $("#experimentDescription").value.trim(),
-    models,
-    preprocessing,
-    validationMethod: $("#validationMethod").value,
-  };
+  const payload = trainingConfigPayload();
   const result = await api("/api/model-studio/experiments", { method: "POST", body: JSON.stringify(payload) });
   studio.selectedExperimentId = result.experiment.experiment_id;
   toast("训练实验已创建");
@@ -569,12 +578,48 @@ async function createExperiment() {
 }
 
 async function startTraining() {
-  if (!studio.selectedExperimentId) {
-    await createExperiment();
-  }
-  const result = await api("/api/model-studio/jobs", { method: "POST", body: JSON.stringify({ experimentId: studio.selectedExperimentId }) });
+  const config = trainingConfigPayload();
+  const result = await api("/api/model-studio/training/start", { method: "POST", body: JSON.stringify(config) });
+  studio.selectedExperimentId = result.experiment.experiment_id;
   toast("训练任务已启动");
   pollJob(result.job.job_id);
+}
+
+function trainingConfigPayload() {
+  const datasetId = currentDatasetId();
+  studio.selectedDatasetVersionId = $("#datasetVersionSelect")?.value || studio.selectedDatasetVersionId;
+  return {
+    datasetId,
+    datasetVersionId: studio.selectedDatasetVersionId,
+    experimentName: $("#experimentName").value.trim(),
+    target: $("#targetSelect").value,
+    description: $("#experimentDescription").value.trim(),
+    models: [...document.querySelectorAll('input[name="modelType"]:checked')].map((item) => item.value),
+    preprocessing: [...document.querySelectorAll('input[name="preprocess"]:checked')].map((item) => item.value),
+    validationMethod: $("#validationMethod").value,
+  };
+}
+
+function renderTrainingConfigSummary() {
+  const node = $("#trainingConfigSummary");
+  if (!node) return;
+  try {
+    const config = trainingConfigPayload();
+    const dataset = selectedDataset();
+    const variants = (config.models.length || 0) * (config.preprocessing.length || 0);
+    node.textContent = [
+      `Dataset: ${dataset?.dataset_name || config.datasetId || "--"}`,
+      `Dataset Version: ${config.datasetVersionId || "--"}`,
+      `Fruit / Variety: ${dataset?.fruit_type || "--"} / ${dataset?.variety || "generic"}`,
+      `Target: ${String(config.target || "").toUpperCase()}`,
+      `Algorithms: ${config.models.join(", ") || "--"}`,
+      `Preprocessing: ${config.preprocessing.join(", ") || "--"}`,
+      `Validation: ${config.validationMethod}`,
+      `Expected Model Variants: ${variants}`,
+    ].join("\n");
+  } catch (_error) {
+    node.textContent = "选择 Dataset Version 和训练配置后开始 Run。";
+  }
 }
 
 async function cloneExperiment() {
@@ -625,24 +670,47 @@ function renderJob(job) {
 }
 
 async function loadModels() {
-  const payload = await api("/api/model-studio/models");
-  $("#modelRows").innerHTML = (payload.models || []).map((model) => `
-    <tr>
-      <td><b>${model.display_name || model.model_name}</b><br><small>${model.model_id}</small></td>
-      <td>${model.fruit_type || "--"}</td><td>${model.variety || "generic"}</td>
-      <td>${model.target.toUpperCase()}</td><td>${model.model_type}</td><td>${model.preprocessing}</td>
-      <td>${model.dataset_version_label || model.dataset_version_id || "--"}</td>
-      <td>${model.version}</td><td>${fmt(model.r2)}</td><td>${fmt(model.rmse)}</td><td>${badge(model.status)}</td>
-      <td>
-        <button data-validate="${model.model_id}">验证</button>
+  const params = new URLSearchParams({
+    query: $("#modelSearch")?.value.trim() || "",
+    fruitType: $("#modelFruitFilter")?.value.trim() || "",
+    variety: $("#modelVarietyFilter")?.value.trim() || "",
+    target: $("#modelTargetFilter")?.value || "",
+    status: $("#modelStatusFilter")?.value || "",
+  });
+  const payload = await api(`/api/model-studio/models?${params.toString()}`);
+  $("#modelRows").innerHTML = (payload.models || []).map((model) => {
+    const warnings = (model.qualityWarnings || []).map((item) => `<span class="badge warn">${item}</span>`).join("");
+    return `
+    <article class="registry-card" data-model-card="${model.model_id}">
+      <div class="registry-card-head">
+        <div>
+          <h4>${model.display_name || model.model_name}</h4>
+          <small title="${model.model_id}">${model.model_id}</small>
+        </div>
+        <span>${badge(model.status)} ${model.isDefault ? '<span class="badge good">★ Default</span>' : ""}</span>
+      </div>
+      <div class="model-line">${model.fruit_type || "--"} / ${model.variety || "generic"} · ${model.target.toUpperCase()}</div>
+      <div class="model-line">${model.model_type} · ${model.preprocessing} · ${model.dataset_version_label || model.dataset_version_id || "--"}</div>
+      <div class="metric-row"><span>R² <b>${fmt(model.r2)}</b></span><span>RMSE <b>${fmt(model.rmse)}</b></span><span>MAE <b>${fmt(model.mae)}</b></span><span>RPD <b>${fmt(model.rpd)}</b></span></div>
+      <div class="warning-row">${warnings}</div>
+      <div class="card-actions">
+        <button data-detail="${model.model_id}">查看</button>
         <button data-publish="${model.model_id}">发布</button>
-        <button data-default="${model.model_id}">设为默认</button>
         <button data-retrain="${model.model_id}">重训</button>
-        <button data-export="${model.model_id}">导出</button>
-        <button class="danger" data-archive="${model.model_id}">归档</button>
-      </td>
-    </tr>
-  `).join("") || `<tr><td colspan="12" class="empty">暂无模型</td></tr>`;
+        <select data-more="${model.model_id}">
+          <option value="">更多</option>
+          <option value="validate">标记 Validated</option>
+          <option value="default">设为 Default</option>
+          <option value="export">导出</option>
+          <option value="archive">Archive</option>
+          <option value="delete">Permanent Delete</option>
+        </select>
+      </div>
+    </article>`;
+  }).join("") || `<div class="empty">暂无模型</div>`;
+  document.querySelectorAll("[data-detail]").forEach((button) => {
+    button.addEventListener("click", async () => showModelDetail(button.dataset.detail));
+  });
   document.querySelectorAll("[data-validate]").forEach((button) => {
     button.addEventListener("click", async () => {
       await api("/api/model-studio/models/validate", { method: "POST", body: JSON.stringify(publishPayload(button.dataset.validate)) });
@@ -685,6 +753,43 @@ async function loadModels() {
       await loadModels();
     });
   });
+  document.querySelectorAll("[data-more]").forEach((select) => {
+    select.addEventListener("change", async () => {
+      const action = select.value;
+      const modelId = select.dataset.more;
+      select.value = "";
+      if (!action) return;
+      if (action === "validate") await api("/api/model-studio/models/validate", { method: "POST", body: JSON.stringify(publishPayload(modelId)) });
+      if (action === "default") await api("/api/model-studio/models/default", { method: "POST", body: JSON.stringify({ modelId }) });
+      if (action === "export") {
+        const payload = await api("/api/model-studio/models/export", { method: "POST", body: JSON.stringify({ modelId }) });
+        toast(payload.bundle.bundlePath);
+      }
+      if (action === "archive") await api("/api/model-studio/models/archive", { method: "POST", body: JSON.stringify({ modelId }) });
+      if (action === "delete") {
+        const confirmId = window.prompt("Permanent Delete 会删除数据库记录和受管模型文件。请输入 model_id 确认：", "");
+        if (confirmId) await api("/api/model-studio/models/delete", { method: "POST", body: JSON.stringify({ modelId, confirm: confirmId }) });
+      }
+      if (action !== "export") toast(`模型操作完成：${action}`);
+      await refreshAll();
+    });
+  });
+}
+
+async function showModelDetail(modelId) {
+  const payload = await api(`/api/model-studio/models/${encodeURIComponent(modelId)}`);
+  const model = payload.model;
+  const lineage = model.lineage || {};
+  window.alert([
+    `${model.display_name || model.model_name}`,
+    `model_id: ${model.model_id}`,
+    `${model.fruit_type || "--"} / ${model.variety || "generic"} / ${model.target.toUpperCase()}`,
+    `${model.model_type} · ${model.preprocessing} · ${model.version}`,
+    `Dataset Version: ${lineage.datasetVersionLabel || lineage.datasetVersionId || "--"}`,
+    `Experiment: ${lineage.experimentId || "--"}`,
+    `Run: ${lineage.runId || "--"}`,
+    `Files: model=${model.fileStatus?.modelJoblib ? "ok" : "missing"}, metadata=${model.fileStatus?.metadataJson ? "ok" : "missing"}`,
+  ].join("\n"));
 }
 
 function publishPayload(modelId) {
@@ -728,6 +833,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#importSamples").addEventListener("click", () => importSamples().catch((error) => toast(error.message)));
   $("#createDatasetVersion").addEventListener("click", () => createDatasetVersion().catch((error) => toast(error.message)));
   $("#refreshDatasets").addEventListener("click", () => loadDatasets().catch((error) => toast(error.message)));
+  ["datasetSearch", "datasetFruitFilter", "datasetVarietyFilter", "datasetDirtyFilter", "datasetArchivedFilter"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", () => loadDatasets().catch((error) => toast(error.message)));
+    document.getElementById(id)?.addEventListener("change", () => loadDatasets().catch((error) => toast(error.message)));
+  });
   $("#datasetSelect").addEventListener("change", () => {
     if (studio.labelDirty && !window.confirm("当前标签尚未保存，是否放弃修改？")) {
       $("#datasetSelect").value = studio.selectedDatasetId;
@@ -739,8 +848,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     studio.latestQuality = null;
     loadDatasetVersions().then(loadSamples).then(renderDatasetSummary).catch((error) => toast(error.message));
   });
-  $("#datasetVersionSelect").addEventListener("change", () => { studio.selectedDatasetVersionId = $("#datasetVersionSelect").value; });
+  $("#datasetVersionSelect").addEventListener("change", () => { studio.selectedDatasetVersionId = $("#datasetVersionSelect").value; renderTrainingConfigSummary(); });
   $("#loadSamples").addEventListener("click", () => loadSamples().catch((error) => toast(error.message)));
+  ["sampleQuery", "sampleIncludeFilter", "sampleLabelFilter"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", () => loadSamples().catch((error) => toast(error.message)));
+    document.getElementById(id)?.addEventListener("change", () => loadSamples().catch((error) => toast(error.message)));
+  });
   $("#selectLabelsCsv").addEventListener("click", () => selectLabelsCsv().catch((error) => {
     if (error.payload?.cancelled) return toast("已取消选择，原路径保持不变");
     toast(error.message);
@@ -759,6 +872,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#startTraining").addEventListener("click", () => startTraining().catch((error) => toast(error.message)));
   $("#cloneExperiment").addEventListener("click", () => cloneExperiment().catch((error) => toast(error.message)));
   $("#refreshJobs").addEventListener("click", () => refreshJobs().catch((error) => toast(error.message)));
+  ["experimentName", "targetSelect", "validationMethod", "experimentDescription"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", renderTrainingConfigSummary);
+    document.getElementById(id)?.addEventListener("change", renderTrainingConfigSummary);
+  });
+  document.querySelectorAll('input[name="modelType"], input[name="preprocess"]').forEach((item) => item.addEventListener("change", renderTrainingConfigSummary));
+  ["modelSearch", "modelFruitFilter", "modelVarietyFilter", "modelTargetFilter", "modelStatusFilter"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", () => loadModels().catch((error) => toast(error.message)));
+    document.getElementById(id)?.addEventListener("change", () => loadModels().catch((error) => toast(error.message)));
+  });
   document.querySelectorAll("[data-prep-step]").forEach((button) => {
     button.addEventListener("click", () => setPrepStep(button.dataset.prepStep));
   });
@@ -772,6 +894,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     setPrepStep("import");
   });
   await refreshAll().catch((error) => toast(error.message));
+  renderTrainingConfigSummary();
   setPrepStep(studio.datasets.length ? (Number(selectedDataset()?.sample_count || 0) > 0 ? "labels" : "import") : "create");
 });
 

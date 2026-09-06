@@ -458,6 +458,65 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(Path(ssc["sample"]["analysis_data_dir"]), dataset)
         self.assertEqual(ssc["result"]["status"], "model_missing")
 
+    def test_manual_folder_without_metadata_requests_sample_scope_then_loads_models(self):
+        self.insert_model("scope_ssc", target="ssc", fruit_type="blueberry", variety="Duke", status="Default", is_default=1)
+        self.create_sample("缺少元数据Scope")
+        dataset = self.make_dataset("manual_no_metadata")
+
+        report = self.get_json(
+            "/api/sample-folder",
+            {"datasetDir": str(dataset), "source": "other", "colorDir": "rgb", "multispectralDirName": "multispectral"},
+        )
+        self.assertTrue(report["valid"])
+        self.assertTrue(report["requiresSampleScope"])
+        self.assertIn("blueberry", [item.lower() for item in report["sampleScopeOptions"]["fruitTypes"]])
+
+        scoped = self.get_json(
+            "/api/sample-folder",
+            {
+                "datasetDir": str(dataset),
+                "source": "other",
+                "colorDir": "rgb",
+                "multispectralDirName": "multispectral",
+                "fruitType": "blueberry",
+                "variety": "Duke",
+            },
+        )
+        self.assertEqual(scoped["sampleScope"], {"fruitType": "blueberry", "variety": "Duke", "source": "user"})
+        status = self.get_json("/api/status")
+        self.assertEqual(status["fruitType"], "blueberry")
+        self.assertEqual(status["variety"], "Duke")
+        self.assertEqual(status["selectedSscModelId"], "scope_ssc")
+
+    def test_model_studio_filters_and_training_start_api_create_new_target_experiment(self):
+        dataset = self.post_json("/api/model-studio/datasets", {
+            "datasetName": "API Dataset",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+        })["dataset"]
+        listed = self.get_json("/api/model-studio/datasets", {"query": "API", "archived": "0"})
+        self.assertEqual(listed["datasets"][0]["dataset_id"], dataset["dataset_id"])
+
+        with self.studio.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO dataset_versions(dataset_version_id,dataset_id,version,version_name,sample_count,sample_ids,label_count,created_at,snapshot_hash,label_snapshot_json,sample_snapshot_json)
+                VALUES('api_v1',?,1,'Dataset V1',1,'["sample_001"]',1,'2026-01-01','hash','{"sample_001":{"ta":0.42}}','[{"sample_id":"sample_001"}]')
+                """,
+                (dataset["dataset_id"],),
+            )
+            conn.execute("UPDATE datasets SET latest_version_id='api_v1' WHERE dataset_id=?", (dataset["dataset_id"],))
+        started = self.post_json("/api/model-studio/training/start", {
+            "datasetId": dataset["dataset_id"],
+            "datasetVersionId": "api_v1",
+            "target": "ta",
+            "models": ["PLSR"],
+            "preprocessing": ["RAW"],
+            "validationMethod": "GroupKFold",
+        })
+        self.assertEqual(started["experiment"]["target"], "ta")
+        self.assertEqual(started["job"]["dataset_version_id"], "api_v1")
+
     def test_manual_directory_validation_rejects_same_missing_and_parent_escape(self):
         self.create_sample("手动目录非法01")
         dataset = self.make_dataset("manual_invalid", "color_images", "spectral_images")

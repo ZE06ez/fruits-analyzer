@@ -70,6 +70,7 @@
 | 预处理支持 RAW、SNV、MSC | 已实现 | `quality_algorithm/preprocessing.py` |
 | 模型训练数据不足时应失败 | 已实现 | `InsufficientTrainingDataset` |
 | Model Studio 管理数据集、标签、特征、训练、候选模型和发布 | 已实现/部分实现 | 代码完整；当前无真实数据 |
+| Dataset 应支持后续继续添加样品并创建新版本 | 已实现 | `import_samples()` 可对已有 Dataset 执行 Add Samples；重复样品支持 Skip、Replace Working Copy、Create New Sample ID、Cancel，其中 Replace 会在样品已被历史 Version/Experiment/Model 引用时拒绝，避免破坏旧快照 |
 | Model Studio Dataset 应使用本地托管仓库，不直接依赖外部原始目录训练 | 已实现 | 样品导入会 COPY 到 `model_studio_data/datasets/<dataset_id>/samples/`，训练读取本地副本 |
 | Model Studio 导入样品前应验证 RGB、多光谱、校准和 metadata | 已实现 | `validate_sample_folder()` 返回 Valid/Warning/Invalid，复用当前目录完整性规则并补充 `metadata.json` 检查 |
 | Model Studio 重复导入样品不得静默覆盖 | 已实现 | 默认跳过重复样品，可选择作为新样品导入 |
@@ -79,11 +80,20 @@
 | 允许部分标签参与对应目标训练 | 已实现 | 空 SSC/TA/pH 保存为 NULL，样品标签状态显示 Missing/Partial/Complete |
 | Dataset Version 应冻结样品和标签快照 | 已实现 | `sample_snapshot_json`/`label_snapshot_json` 记录版本创建时的本地路径和标签值 |
 | 删除 Sample 时不得影响原始拍摄目录 | 已实现 | 可删除数据库记录，或二次确认后删除本地托管副本；不删除 `source_path` |
+| 噪声 Sample 应优先 Exclude 而不是 Delete | 已实现 | `include_status` 支持 Included / Needs Review / Excluded；Exclude reason 支持 Image Blur、Missing Band、Calibration Error、Label Error、Damaged Fruit、Outlier、Capture Error、Manual Exclusion、Other；Excluded 不进入新的 Dataset Version，但历史 Version 保持可复现 |
+| 被历史 Version / Experiment / Model 引用的 Sample 禁止永久删除 | 已实现 | `sample_references()` 会显示引用关系，`delete_sample()` 和 duplicate Replace 会拒绝破坏已有 lineage 的操作 |
+| Dataset Version 应支持 Diff | 已实现 | `dataset_version_diff()` 比较两个不可变快照，输出 added samples、removed/excluded samples 和 SSC/TA/pH label changes |
 | Production/Default 模型必须人工发布 | 已实现 | `publish_model()` / `set_default_model()` |
 | 系统不能自动替换正式模型 | 已实现 | 候选与发布目录隔离 |
+| Model lifecycle 应区分 Candidate / Validated / Published / Archived / Default | 已实现 | `Default` 继续兼容为 Published 模型的自动选择角色；Archived 保留记录和文件但不进入主工作台模型目录 |
+| Model Permanent Delete 必须同步清理 DB 和文件且保护 Default | 已实现 | `/api/model-studio/models/delete` 需要 model_id 确认；Default 禁止直接删除；非 Default 删除会移除 SQLite 记录和受管 candidate/published artifacts |
+| Retrain 不得覆盖旧模型 | 已实现 | `retrain_from_model()` 带出 `parent_model_id` 创建新 Experiment/Run/Model，旧模型保留，由人工决定 Publish / Set Default |
 | 支持不同水果/品种使用不同模型 | 已实现 | 模型目录和 SQLite 按 fruit_type/variety 过滤 |
 | 支持 generic 品种模型兜底 | 已实现 | `model_catalog()` 和 `_select_registry_model()` |
+| Published 非 Default 模型应可被主工作台手动选择 | 已实现 | `/api/quality-models` 返回 Published / Default / Production；Default 只负责自动选择，Archived 不可见 |
 | 普通检测用户不应默认看到 model_id、PLSR/SVR/RF、RAW/SNV/MSC 等高级模型细节 | 已实现 | 采集页新增“检测模型”摘要，默认显示 SSC/TA/pH 模型配置状态；点击“更换模型”后才展开原有模型下拉框 |
+| 已选择模型但尚未预测时不应显示“未接入” | 已实现 | 主工作台加载兼容模型后立即显示真实 display_name、version、algorithm、preprocessing，并标记“已选择，等待预测” |
+| 本地样品目录缺少 fruit_type / variety metadata 时必须提示 Sample Scope | 已实现 | `/api/sample-folder` 对有效但缺 scope 的目录返回 `requiresSampleScope` 和可选 fruit/variety 来源；用户选择后写入当前会话并重新加载兼容模型，不做中英文 alias 猜测 |
 | 保留当前 UI，不为新功能推倒重做 | 已确认 | 本次上下文整理明确为设计约束 |
 | 后续重要架构/需求/功能修改要同步文档 | 已确认 | 见 `AGENTS.md` |
 
