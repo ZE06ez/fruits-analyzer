@@ -10,6 +10,8 @@ host_software/static_ui_prototype_bin/
   backend_server.py
   index.html / styles.css / app.js
   serial_service.py
+  stm32_protocol.py
+  stm32_controller.py
   device_discovery.py
   hardware_controller.py
   device_manager.py
@@ -48,11 +50,14 @@ launcher.py
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
 | 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `requireDevicePreparation()` | 连接/电机/光源/相机/标定检查状态 | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用，`trueCapturePrepared` 在真实滤光轮验收、样品台同步、物理校正验收和完整采集入口完成前仍强制为 false | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证并接入受保护单帧正式保存，DVP2 adapter 已接入网页预览/参数控制、受保护 raw mono 单帧保存、受保护滤光轮+DVP2 多波段 sequence 和受保护 Dark/White calibration sequence；样品台和完整真实采集入口仍为待接入 |
 | 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()` | `state`、设备状态、样品状态、形态任务、预测任务 | 顶栏“当前状态” | 前端派生状态，不新增后端状态源 |
-| STM32 串口 | `serial_service.py` | `SerialService` | CMD/PARAM 两字节命令、串口名、超时 | RESULT、异常 | pyserial |
+| STM32 串口 | `serial_service.py` | `SerialService` | 串口名、超时、旧两字节命令或 raw bytes | 串口 open/read/write/clear buffers、旧两字节 RESULT、异常 | pyserial |
+| STM32 current firmware protocol | `stm32_protocol.py` | `CURRENT_STM32_FIRMWARE_PROFILE`, `CURRENT_FILTER_WHEEL_MAPPING`, `Stm32ProtocolProfile`, `FilterWheelMapping`, `Aa55Codec`, `Aa55StreamParser`, `crc16_ccitt_false()`, `decode_status_payload()`, `decode_info_payload()` | 当前固件 AA55 profile、AA55 byte stream、STATUS/INFO payload | AA55 frame、CRC 校验、partial/multiple/noise/CRC error stream parse、STATUS/INFO 解码边界；MOVE payload 为 float32 LE degrees + rpm，PPR 只作诊断 | dataclass |
+| STM32 current firmware adapter | `stm32_controller.py` | `Stm32ControllerAdapter`, `Stm32CommandResult`, `Stm32SafetyReport` | 单一 `SerialService` owner、`CURRENT_STM32_FIRMWARE_PROFILE`、`CURRENT_FILTER_WHEEL_MAPPING`、语义 fan/LED/door/filter wheel action | ACK echo correlation、STATUS/INFO cache、handshake、PPR consistency diagnostic、command serialization、status-aware mechanical retry、safe_stop 动作报告；可作为 `HardwareController` transport 注入 | SerialService, stm32_protocol |
 | 设备发现与绑定 | `device_discovery.py`, `device_manager.py`, `backend_server.py`, `app.js` | `DeviceDiscovery`, `DeviceRegistry`, `DeviceBinding`, `DeviceCandidate` | 当前串口列表、RGB DirectShow index 扫描、Windows PnP/UVC 元数据、DVP2 SDK 枚举、用户角色选择 | `/api/devices/discover` 返回候选和域诊断；`/api/devices/bindings` 返回 profile 和匹配；`/api/devices/bind` 按角色/kind 校验并保存运行时绑定到 `runtime/hardware_profile.json` | SerialService, CameraManager, DVP2 binding |
-| 硬件控制 | `hardware_controller.py` | `HardwareController` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 两字节命令和状态查询 | SerialService |
+| 硬件控制 | `hardware_controller.py` | `HardwareController`, `CapabilityUnavailableError` | 风扇、升降门、RGB LED、钨灯、滤光轮、急停、故障清除 | 语义动作和状态查询；当前 firmware adapter 声明 tungsten unsupported 时非零钨灯请求明确失败 | SerialService 或 Stm32ControllerAdapter |
 | 设备管理 | `device_manager.py`, `backend_server.py` | `DeviceManager`, `DeviceManager.self_test()` | 串口连接、自检、状态、急停、采集状态 | `/api/device/*`, `/api/capture/*`，self-test `checks` | HardwareController |
-| 采集协调器骨架 | `capture_coordinator.py`, `device_manager.py` | `CaptureCoordinator`, `CaptureRun`, `CaptureStep`, `CaptureStepPlan`, `CaptureReferenceType`, `CalibrationSet`, `MultispectralBandPlan`, `MultispectralCapturePlan`, `run_rgb_capture()`, `run_multispectral_capture()`, `run_multispectral_sequence()`, `run_dark_reference_capture()`, `run_white_reference_capture()`, `validate_calibration_compatibility()` | 注入的 CameraManager/DeviceManager/HardwareController、步骤计划、样品 ID、输出目录、filter config 或显式 band plan、operator confirmation | JSON-friendly snapshot、取消/失败/超时状态、metadata 骨架、best-effort safe stop；P1B-2 已接入 STM32 安全准备链，P1B-3 已接入受保护 RGB 单帧正式 PNG 保存，P1B-4 已接入受保护 DVP2 raw mono 单帧 PNG 保存，P1B-5 已接入受保护滤光轮+DVP2 多波段 sequence，P1B-6 已接入受保护 Dark/White calibration sequence 与 `CalibrationSet`；完整 `/api/capture/start` 仍不开放 | dataclass, Enum, PIL, numpy |
+| 采集协调器骨架 | `capture_coordinator.py`, `device_manager.py` | `CaptureCoordinator`, `CaptureRun`, `CaptureStep`, `CaptureStepPlan`, `CaptureReferenceType`, `CalibrationSet`, `SampleViewPlan`, `SampleMultiViewPlan`, `MultispectralBandPlan`, `MultispectralCapturePlan`, `run_rgb_capture()`, `run_multispectral_capture()`, `run_multispectral_sequence()`, `run_dark_reference_capture()`, `run_white_reference_capture()`, `run_sample_multiview_capture()`, `validate_calibration_compatibility()` | 注入的 CameraManager/DeviceManager/HardwareController/SampleStage、步骤计划、样品 ID、输出目录、filter config 或显式 band plan、operator confirmation | JSON-friendly snapshot、取消/失败/超时状态、metadata 骨架、best-effort safe stop；P1B-2 已接入 STM32 安全准备链，P1B-3 已接入受保护 RGB 单帧正式 PNG 保存，P1B-4 已接入受保护 DVP2 raw mono 单帧 PNG 保存，P1B-5 已接入受保护滤光轮+DVP2 多波段 sequence，P1B-6 已接入受保护 Dark/White calibration sequence 与 `CalibrationSet`，P1B-7 已接入受保护 Sample MultiView 软件编排；完整 `/api/capture/start` 仍不开放 | dataclass, Enum, PIL, numpy |
+| 样品台高层边界 | `sample_stage.py` | `SampleStagePosition`, `UnimplementedSampleStage`, `SimulatedSampleStage` | HOME、目标角度、方向、稳定确认、位置回读 | 硬件模式未接真实 adapter 时返回 `hardware_not_implemented`；simulation 只供 unittest/离线软件编排验证 | dataclass |
 | 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；`CameraStatus` 区分 `detected`、`available`、`opened`、`streaming`；frame 不绑定样品目录 | Python dataclass/protocol |
 | RGB UVC 相机 | `camera_service/config.py`, `camera_service/rgb_uvc.py` | `RgbCameraConfig`, `RgbUvcCamera` | OpenCV device_index、DirectShow capture、请求 width/height/fps/fourcc/exposure/gain/white balance | RGB `uint8` H×W×3 numpy 帧；probe 成功后释放句柄仍保留 `detected/available`；status 同时返回 `requested`、`actual`、`capabilities` 和 `transport=UVC/DirectShow`；支持 apply config | `cv2`, numpy |
 | DVP2 多光谱相机 | `camera_service/dvp2_binding.py`, `camera_service/dvp2_mono.py` | `Dvp2Binding`, `Dvp2MonoCamera`, `find_dvp2_sdk()`, `frame_to_array()` | `DVP2_SDK_DIR`、配置路径、`DVPCamera64.dll`、真实 `DVPCamera.h`/官方示例、GigE 设备枚举信息 | `dvpRefresh/dvpEnum` 真实枚举、按 serial/user_id 选择目标、打开、状态、ROI/曝光/增益/触发/帧转换接口；`capture_frame()` 保留 mono `uint8/uint16` raw dtype；`connected` 作为 detected 兼容别名；已发现但无法打开时提示 BasedCam3/其他程序占用；当前只验证 `Mono8`，不开放 PixelFormat 切换 | `ctypes`, numpy, pathlib |
@@ -106,7 +111,7 @@ app.js loadDevicePorts()/connectDevice()/runHardwareSelfTest()/emergencyStopDevi
   -> DeviceManager
   -> HardwareController
   -> SerialService
-  -> STM32 two-byte protocol
+  -> default Stm32ControllerAdapter for current AA55 firmware, with legacy two-byte compatibility available when explicitly disabled
 
 app.js runUnifiedDeviceCheck()
   -> POST /api/device/check
@@ -133,7 +138,7 @@ app.js runDeviceTest()/confirmCalibrationCheck()
   -> SessionState.trueCapturePrepared = false until real filter validation / sample-stage / calibration / full capture entry are complete
 ```
 
-串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。RGB probe 成功后会释放 `VideoCapture` 句柄，此时 `opened=false`、`streaming=false`，但 `detected=true`、`available=true` 会保留到下一次失败 probe 或配置设备索引变化。P1B-3 的 `run_rgb_capture()` 可在 RGB 安全准备链后通过 `CameraManager.capture_rgb_frame()` 采集并保存一张正式 RGB PNG，但未插 RGB 相机或设备被占用时仍必须失败。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK/枚举/probe 状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，只有 probe/open 成功才可 passed；不能由普通网卡 link 推断为相机已连接。若 DVP2 已枚举目标但无法打开，UI 应提示关闭 BasedCam3 或其他相机程序。P1B-5 的 `run_multispectral_sequence()` 和 P1B-6 的 `run_dark_reference_capture()`/`run_white_reference_capture()` 仍是 Coordinator 内部受保护方法，不改变 device preparation 对完整真实采集入口的判断。标定仍为 `manual_required`，因为 Dark/White 软件路径不等于物理遮光和标准白板已现场验收。样品台旋转电机和完整真实采集编排仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
+串口连接、STM32 PING、风扇开启、滤光轮寻零、升降门/输出状态查询、急停和故障清除已有真实 API。P1B-7.5A.1 后 `DeviceManager` 默认把同一个 `SerialService` 包成 current-firmware AA55 adapter：`CURRENT_STM32_FIRMWARE_PROFILE` 固化 `MOVE_ABS=0x01`、`MOVE_REL=0x02`、`STOP=0x03`、`SET_POS_PID=0x04`、`SET_VEL_PID=0x05`、`SET_PROFILE=0x06`、`SET_CONFIG=0x07`、`QUERY_STATUS=0x08`、`SET_ORIGIN=0x09`、`RESET=0x0F`、`FAN_SET=0x10`、`DOOR_SET=0x11`、`LED_SET=0x12`、`RSP_ACK=0x80`、`RSP_STATUS=0x81`、`RSP_INFO=0x82`。CRC16-CCITT-FALSE 覆盖 `CMD+PLEN+PAYLOAD`，ACK 必须按 echo cmd 匹配，QUERY_STATUS 只等待 STATUS 不等待 ACK，STATUS/INFO/ASCII ready noise 可交错并进入最新 cache。滤光轮 mapping 为 16 slots、1600 ppr、22.5°/slot、默认 10 rpm，主机 MOVE_REL/MOVE_ABS 发送 float32 LE degrees + rpm，不发送 pulses；PPR mismatch 只报告 `filterWheelPprMismatch` 并要求人工确认，不自动 SET_CONFIG。机械 MOVE_REL 无 ACK 时会先看 STATUS，只有 motor idle/done 且位置未变才允许有限 retry，若 STATUS 已 moving/stopping/done 或位置变化则禁止重复相对运动。FAN_SET 发送 duty 0/100；LED_SET 发送 bitmask 0x00..0x07；DOOR_SET 的 ACK 只代表 command accepted，不代表 endpoint reached；SET_ORIGIN 只表示人工对准后建立逻辑 0°，不是 automatic HOME sensor；STATUS position 是逻辑位置，不等于 CL57C physical encoder feedback。`DeviceManager.self_test()` 的 `checks.rgbCamera` 来自 `RgbUvcCamera` 的 OpenCV/DirectShow probe；当前电脑验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，状态会同时暴露请求值和驱动实际返回值。RGB probe 成功后会释放 `VideoCapture` 句柄，此时 `opened=false`、`streaming=false`，但 `detected=true`、`available=true` 会保留到下一次失败 probe 或配置设备索引变化。P1B-3 的 `run_rgb_capture()` 可在 RGB 安全准备链后通过 `CameraManager.capture_rgb_frame()` 采集并保存一张正式 RGB PNG，但未插 RGB 相机或设备被占用时仍必须失败。`checks.multispectralCamera` 来自 `Dvp2MonoCamera` 的 SDK/枚举/probe 状态；目标设备为 DO3THINK/度申 GigE/RJ45 黑白相机，未安装/未找到 `DVPCamera64.dll` 时为 `sdk_missing`，只有 probe/open 成功才可 passed；不能由普通网卡 link 推断为相机已连接。若 DVP2 已枚举目标但无法打开，UI 应提示关闭 BasedCam3 或其他相机程序。P1B-5 的 `run_multispectral_sequence()`、P1B-6 的 `run_dark_reference_capture()`/`run_white_reference_capture()` 和 P1B-7 的 `run_sample_multiview_capture()` 仍是 Coordinator 内部受保护方法，不改变 device preparation 对完整真实采集入口的判断。标定仍为 `manual_required`，因为 Dark/White 软件路径不等于物理遮光和标准白板已现场验收。真实样品台旋转电机和完整主采集入口仍未接入，因此 `/api/capture/start` 继续返回 409 `CameraIntegrationRequired`。`/api/new-sample` 和 `/api/complete-capture` 仍会通过 `require_device_preparation()` 阻止未完成当前离线设备准备时开始样品流程。
 
 设备发现层只建立候选和角色绑定，不改变 `trueCapturePrepared`。STM32 当前 discovery 只能设置 `metadata.protocolMatched=true/false`，并保留 `deviceType/deviceId/firmwareVersion/capabilities=None`，因为固件尚无身份命令。RGB 候选会尝试读取 Windows FriendlyName/PnP InstanceId/VID/PID/USB serial；只有 exact/verified 映射时才生成 stableId，若只是按顺序把 Windows 设备和 DirectShow index 对上，则只记录 `mappingConfidence=inferred`、`potentialStableId` 和 `lastDeviceIndex`。DVP2 候选以 SDK 枚举到的 serial/original serial/user id/friendly name 作为匹配来源。自动匹配规则优先 stableId，其次才用已验证的 last known location；找不到旧设备时保持 unbound，不自动使用列表第一项。
 
@@ -266,6 +271,30 @@ POST /api/capture/calibration/white
 
 这两个接口是受保护的 calibration 开发/现场验收入口，不是完整样品采集 workflow。调用方必须传入或已有 `outputDir`，并显式传递 `operatorConfirmed=true` 或未来由 UI confirmation callback 注入确认。失败、取消和超时会返回 coordinator snapshot；HTTP 不把 failed/cancelled 包装成成功。`/api/capture/start` 不变，仍返回 409。
 
+### Sample MultiView Capture API
+
+```text
+POST /api/capture/sample-multiview
+  -> CaptureCoordinator.run_sample_multiview_capture()
+  -> build/reuse rotation_plan.build_capture_rotation_plan()
+  -> hardware_precheck / calibration_check / door_close / fan_on
+  -> optional sample_stage_home
+  -> per View:
+       view_begin
+       sample_stage_move
+       sample_stage_position_verify
+       sample_stage_settle
+       rgb_light_prepare / capture_safety_check / RGB raw PNG save / lighting shutdown
+       multispectral_light_prepare / capture_safety_check
+       shared P1B-5 multispectral band sequence
+       view_complete_verify
+  -> optional return_home
+  -> lighting_shutdown
+  -> write metadata.json and views.json
+```
+
+这是受保护的软件编排/现场验收入口，不是完整用户主采集入口。`sampleStageMode=hardware` 只有注入真实 sample stage adapter 且能完成 HOME、move、stable、position readback 时才可通过；没有 adapter 时返回 `hardware_not_implemented`，不会自动 fallback simulation。`sampleStageMode=simulation` 仅用于 unittest 和离线软件编排验证。MultiView 使用同一个 `sample_id` 和同一个 sample 级 `calibrationId`，不为每个 View 重拍 Dark/White。每个 View 的 RGB 写入 `views/<viewId>/rgb/rgb_<viewId>.png`，多光谱写入 `views/<viewId>/multispectral/band_XX_<bandId>.png`；旧 `rgb/` 和 `multispectral/` 单层目录仍作为已有流程兼容路径。
+
 ### CaptureCoordinator 骨架
 
 P1B 新增 `CaptureCoordinator`，作为后续真实采集流程的唯一编排入口。当前它建立架构边界：`CaptureState` 覆盖 `idle/preparing/capturing/finalizing/completed/cancelling/cancelled/failed`，`CaptureStep` 记录步骤 `id/name/status/startedAt/finishedAt/durationMs/timeoutMs/error/result`，`CaptureRun` 记录 `captureId/sampleId/mode/state/currentStep/progress/error/cancelRequested/outputDir/steps/metadata`。步骤通过 `CaptureStepPlan` 注入动作，便于分阶段接入硬件准备、RGB、DVP2、滤光轮、样品旋转和文件保存。
@@ -281,6 +310,8 @@ P1B-5 中，`MultispectralBandPlan` 记录 `bandId`、滤光轮目标位置、�
 P1B-5 的每个 band PNG 仍复用 P1B-4 raw mono 保存边界，默认文件名为 `<multispectralDirName>/band_XX_<bandId>.png`，保存前后验证 `uint8/uint16` 单通道位深和尺寸，不使用预览 JPEG 或显示归一化。metadata `bands` 记录完整 band plan，`multispectralSequence` 记录 enabled/disabled/completed/pending/failed bands、filterWheel 状态、settlingMs、filter config 来源和 developmentConfig；每个 frame 记录 `bandId`、`bandIndex`、`wavelengthNm`、`bandwidthNm`、`bandAssignment=<bandId>`、`filterWheelSynchronized=true`、`captureType=sample` 和确认后的滤光轮位置。
 
 P1B-6 中，sample/dark/white 共用同一个 `_multispectral_band_sequence_steps()`，也就是同一套 filter wheel HOME、move、position verify、settling、band camera settings、raw DVP2 capture/save/verify 和 partial capture 处理。差异只在前置阶段：Dark 调用 `dark_lighting_shutdown` 与 `lighting_off_verify`，不调用 `multispectral_light_prepare`；White 先要求 `operator_confirmation:white`，再调用 `multispectral_light_prepare` 和 `capture_safety_check`。Dark 与 White 默认保存到 `calibration/dark/band_XX_<bandId>.png` 和 `calibration/white/band_XX_<bandId>.png`，metadata 明确 `captureType=dark|white`，记录 requested/actual exposure/gain、min/max/mean/std、Dark leakage 诊断、White saturation 与 uniformity 诊断。`CalibrationSet` 记录 `calibrationId`、camera identity、filter config、bands、dark/white frames、completed/missing bands、`calibrationComplete` 和 `sameBandSettingsMatched`；只有所有 enabled bands 同时具备 verified dark 和 white frame 时才 complete。`validate_calibration_compatibility()` 比较 camera stable identity、filter config/version、enabled band IDs、wavelength mapping、width/height、dtype、PixelFormat、exposure 和 gain，返回 `compatible`、`warning` 或 `incompatible`，但不计算 reflectance。
+
+P1B-7 中，`SampleViewPlan` 只描述样品台视角，`MultispectralBandPlan` 只描述滤光轮波段，两者不共享 position/angle/motorState。`run_sample_multiview_capture()` 先复用 `rotation_plan.py` 生成或接收 view 列表，再逐 View 执行 sample stage move/readback/settling、RGB capture 和 P1B-5 multispectral band sequence。每个 View 记录 `sampleRotation` 与 `filterWheel` 两个独立 metadata 节点，只有位置确认、RGB 保存和所有 enabled bands 保存都成功时 `viewComplete=true`。某个 View 失败或取消后不开始后续 View，保留已保存数据，记录 `completedViews`、`failedView`、`pendingViews`、`partialCapture` 和 `safe_stop()` 状态。return home 失败只记录 `homeStatus`，不删除前面已保存科学数据。
 
 失败、取消和超时都会进入 `safe_stop()`，它通过注入的 callback、硬件控制器或 `DeviceManager.controller.safe_stop()` 尽力关闭输出/停止运动。metadata 只记录真实步骤和已保存帧；P1B-4 单帧路径仍不伪造滤光轮位置、波长或曝光表。`DeviceManager.capture_status()` 可返回 coordinator snapshot；`DeviceManager.start_capture()` 仍抛出 `CameraIntegrationRequired`，因此 `/api/capture/start` 仍不开放真实采集。
 
@@ -305,6 +336,8 @@ app.js createNewSample()
 <save_root>/<YYYYMMDD_HHMMSS>_<sample_name>/
   <rgbDirName>/              # 默认 rgb，可在保存前设置
   <multispectralDirName>/    # 默认 multispectral，可在保存前设置
+  views/<viewId>/rgb/         # P1B-7 受保护 MultiView 正式 RGB 帧
+  views/<viewId>/multispectral/ # P1B-7 受保护 MultiView 多波段 raw 帧
   calibration/dark/
   calibration/white/
   metadata.json

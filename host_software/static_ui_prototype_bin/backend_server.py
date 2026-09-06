@@ -943,6 +943,54 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
+            if parsed.path == "/api/capture/sample-multiview":
+                payload = self.read_json()
+                try:
+                    session_info = session.snapshot()
+                    output_dir_raw = payload.get("outputDir") or payload.get("captureDir") or session_info.get("currentCaptureDir")
+                    if not output_dir_raw:
+                        self.json_response({"ok": False, "error": "请先提供多视角采集保存目录。"}, status=400)
+                        return
+                    output_dir = resolve_user_path(output_dir_raw, app_dir)
+                    sample_id = str(payload.get("sampleId") or session_info.get("sampleId") or "").strip()
+                    filter_config_path = payload.get("filterConfigPath")
+                    if filter_config_path:
+                        filter_config_path = resolve_user_path(filter_config_path, app_dir)
+                    coordinator = getattr(device_manager, "capture_coordinator", None)
+                    if coordinator is None:
+                        self.json_response({"ok": False, "error": "采集协调器不可用。"}, status=503)
+                        return
+                    sample_stage_settling = payload.get("sampleStageSettlingMs")
+                    if sample_stage_settling in (None, ""):
+                        sample_stage_settling = 300
+                    return_home = payload.get("returnHome", True)
+                    if isinstance(return_home, str):
+                        return_home = return_home.strip().lower() not in {"0", "false", "no", "off"}
+                    capture = coordinator.run_sample_multiview_capture(
+                        sample_id=sample_id,
+                        output_dir=output_dir,
+                        rgb_dir_name=str(payload.get("rgbDirName") or "rgb"),
+                        multispectral_dir_name=str(payload.get("multispectralDirName") or "multispectral"),
+                        rotation_plan=payload.get("rotationPlan") if isinstance(payload.get("rotationPlan"), dict) else None,
+                        sample_rotation=payload.get("sampleRotation") if isinstance(payload.get("sampleRotation"), dict) else None,
+                        band_plan=payload.get("bandPlan"),
+                        filter_config_path=filter_config_path,
+                        settling_ms=payload.get("settlingMs"),
+                        sample_stage_settling_ms=int(sample_stage_settling),
+                        sample_stage_mode=str(payload.get("sampleStageMode") or "hardware"),
+                        return_home=bool(return_home),
+                        calibration_id=payload.get("calibrationId"),
+                        require_calibration=bool(payload.get("requireCalibration", False)),
+                        rgb_led_mask=int(payload.get("rgbLedMask", 0x03)),
+                        tungsten_mask=int(payload.get("tungstenMask", 0x03)),
+                    )
+                    completed = (capture.get("state") or capture.get("status")) == "completed"
+                    self.json_response({"ok": completed, "capture": capture}, status=200 if completed else 409)
+                except CaptureCoordinatorError as exc:
+                    self.json_response({"ok": False, "error": str(exc), "details": exc.to_dict()}, status=409)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if parsed.path == "/api/capture/start":
                 payload = self.read_json()
                 try:
