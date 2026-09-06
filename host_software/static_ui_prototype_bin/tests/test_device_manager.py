@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from device_discovery import DeviceCandidate, DeviceDiscovery, DeviceRegistry, DeviceRole
-from device_manager import CameraIntegrationRequired, DeviceManager
+from device_manager import CameraIntegrationRequired, DeviceManager, UnsupportedCapabilityError
 from hardware_controller import DoorState, OutputStatus
 from serial_service import SerialDependencyError
 from stm32_protocol import Stm32ProtocolProfile
@@ -237,19 +237,22 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(result["checks"]["rgbCamera"]["status"], "not_connected")
         self.assertEqual(result["checks"]["multispectralCamera"]["status"], "sdk_missing")
         self.assertEqual(result["checks"]["calibration"]["status"], "manual_required")
-        self.assertEqual(manager.controller.fan_on_count, 1)
+        self.assertEqual(manager.controller.fan_on_count, 0)
         self.assertEqual(manager.controller.wheel_home_count, 0)
         self.assertEqual(manager.camera_manager.probe_requests[-1], False)
 
-    def test_self_test_moves_wheel_only_when_requested(self):
+    def test_self_test_does_not_move_wheel_when_motion_requested(self):
         manager, _ = self.make_manager()
         manager.connect("COM3")
 
         result = manager.self_test(include_motion=True)
 
-        self.assertEqual(result["checks"]["filterWheel"]["status"], "passed")
-        self.assertEqual(manager.controller.wheel_home_count, 1)
-        self.assertEqual(manager.camera_manager.probe_requests[-1], True)
+        self.assertFalse(result["includeMotion"])
+        self.assertTrue(result["motionRequestedIgnored"])
+        self.assertEqual(result["checks"]["filterWheel"]["status"], "manual_required")
+        self.assertEqual(manager.controller.fan_on_count, 0)
+        self.assertEqual(manager.controller.wheel_home_count, 0)
+        self.assertEqual(manager.camera_manager.probe_requests[-1], False)
 
     def test_independent_device_check_runs_cameras_when_stm32_is_not_connected(self):
         manager, _ = self.make_manager()
@@ -328,9 +331,9 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertTrue(stopped["emergencyStopped"])
         self.assertEqual(manager.controller.safe_stop_count, 1)
 
-        cleared = manager.fault_clear()
-        self.assertFalse(cleared["emergencyStopped"])
-        self.assertEqual(manager.controller.fault_clear_count, 1)
+        with self.assertRaises(UnsupportedCapabilityError):
+            manager.fault_clear()
+        self.assertEqual(manager.controller.fault_clear_count, 0)
 
     def test_disconnect_safely_stops_then_closes_serial(self):
         manager, serial = self.make_manager()

@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-06 P1B-7.5A.2 STM32 Web Hardware Control + Fresh Motion Verification
+
+- 修改内容：补齐 STM32 Web 硬件调试入口。设备准备/电机页移除旧的假日志按钮和“滤光轮寻零自检”，新增风扇 on/off、LED3 on/off、推杆伸出/缩回/停止、滤光轮顺/逆时针按 slot 相对移动、滤光轮 STOP、人工确认后“将当前位置设为滤光轮零点”。Fault Clear 在当前 firmware 下禁用并提示 unsupported。
+- 修改内容：新增后端设备 API：`POST /api/device/fan`、`/api/device/led`、`/api/device/actuator`、`/api/device/wheel/move-relative`、`/api/device/wheel/stop`、`/api/device/wheel/set-origin`。所有接口走 `DeviceManager -> Stm32ControllerAdapter -> SerialService`，不新建串口服务，不调用 `manual_stm32_test.py`。
+- 修改内容：强化 AA55 STATUS 新鲜度和滤光轮运动验收。`Stm32ControllerAdapter` 为 STATUS cache 增加 revision 与 `statusReceivedMonotonic`；`query_status(require_fresh=True)` 不再在 fresh 查询失败时返回旧缓存；滤光轮移动记录命令前状态，Web 手动移动默认 `maxRetries=0`，完成判定要求 post-command fresh STATUS、目标/位置变化、最终位置到达、motor state idle/done 且 errorCode=0。ACK OK 但 target/position 未变化会返回 `motion_not_started` 并发送 STOP，不能盲目重发相对运动。
+- 修改内容：推杆控制明确为 DOOR_SET accepted-only 语义，UI 标签使用“推杆伸出/推杆缩回/推杆停止”，后端用 token/generation 定时 STOP，避免旧 timer 停掉新动作。Emergency Stop 继续执行 filter wheel STOP、door STOP、LED off、fan on 的安全策略，并在 UI 文案中说明风扇保持开启。
+- 修改内容：通信 self-test 改为非破坏自检，只执行 PING 和 fresh STATUS，不开启风扇、不移动滤光轮；`SET_ORIGIN` 仅表示人工对准 1 号滤光片后建立逻辑零点，不表示自动寻零或 HOME sensor。
+- 修改文件：`host_software/static_ui_prototype_bin/stm32_controller.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/styles.css`、`host_software/static_ui_prototype_bin/tests/test_stm32_controller.py`、`host_software/static_ui_prototype_bin/tests/test_device_manager.py`、`host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`、`AGENTS.md`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 firmware，不接入 SampleStage，不修改相机、DVP2 preview、CaptureCoordinator raw saver、Dark/White、MultiView、Model Studio、训练算法或 `/api/capture/start`；`trueCapturePrepared` 继续为 false。本阶段为软件实现与自动测试通过，真实 STM32 现场验收仍未执行。
+
 ## 2026-09-06 Model Studio Dataset / Model Delete Completion
 
 - 修改内容：补齐 Dataset Archive 与 Permanent Delete 闭环。新增 `dataset_references()`、`archive_dataset()`、`delete_dataset_permanently()`，以及 `GET /api/model-studio/datasets/<dataset_id>/references`、`POST /api/model-studio/datasets/archive`、`POST /api/model-studio/datasets/delete`。Dataset Permanent Delete 需要 Dataset Name 确认；Published / Default / Production 模型引用会返回 `DATASET_HAS_PRODUCTION_MODEL_REFERENCES` 并阻止删除；无生产引用时可级联清理 samples、labels、dataset_versions、training_experiments、jobs、Candidate/Validated/Archived models 和受管 artifacts。

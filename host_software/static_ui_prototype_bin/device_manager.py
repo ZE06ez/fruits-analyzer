@@ -33,6 +33,14 @@ class CameraIntegrationRequired(DeviceManagerError):
     """完整真实采集协调器尚未开放。"""
 
 
+class DeviceBusyError(DeviceManagerError):
+    """设备正在执行互斥动作。"""
+
+
+class UnsupportedCapabilityError(DeviceManagerError):
+    """当前固件/硬件不支持该能力。"""
+
+
 class DeviceManager:
     """
     上位机设备管理层。
@@ -86,6 +94,11 @@ class DeviceManager:
 
         self._lock = threading.RLock()
         self._emergency_stopped = False
+        self._actuator_lock = threading.RLock()
+        self._actuator_timer: threading.Timer | None = None
+        self._actuator_token = 0
+        self._actuator_busy = False
+        self._last_actuator_action = ""
 
     def list_ports(self) -> list[dict[str, str]]:
         """返回适合直接转换成 JSON 的串口列表。"""
@@ -192,20 +205,32 @@ class DeviceManager:
             wheel = self.controller.get_wheel_status()
             error_code = self.controller.get_error_status()
             firmware_profile = self._stm32_profile_status()
+            adapter_snapshot = self.stm32_adapter.status_snapshot if self.stm32_adapter is not None else None
+            adapter_status = adapter_snapshot.status if adapter_snapshot is not None else None
 
             return {
                 "connected": True,
                 "port": self.serial.port_name,
                 "fanOn": outputs.fan_on,
+                "fanDuty": adapter_status.fan_duty if adapter_status is not None else (100 if outputs.fan_on else 0),
                 "door": self._DOOR_NAMES[door],
                 "wheelPosition": None if wheel == 0x7F else wheel,
                 "wheelHomed": wheel != 0x7F,
+                "wheelPositionDeg": adapter_status.position_deg if adapter_status is not None else None,
+                "wheelTargetDeg": adapter_status.target_deg if adapter_status is not None else None,
+                "wheelMotorState": adapter_status.motor_state if adapter_status is not None else "unknown",
                 "rgbLed1On": outputs.rgb_led_1_on,
                 "rgbLed2On": outputs.rgb_led_2_on,
                 "rgbLed3On": outputs.rgb_led_3_on,
+                "ledMask": adapter_status.led_mask if adapter_status is not None else outputs.raw,
+                "led3Duty": adapter_status.led3_duty if adapter_status is not None else (100 if outputs.rgb_led_3_on else 0),
                 "tungsten1On": outputs.tungsten_1_on,
                 "tungsten2On": outputs.tungsten_2_on,
                 "errorCode": error_code,
+                "statusRevision": adapter_snapshot.revision if adapter_snapshot is not None else None,
+                "statusReceivedMonotonic": adapter_snapshot.received_monotonic if adapter_snapshot is not None else None,
+                "actuatorBusy": self._actuator_busy,
+                "lastActuatorAction": self._last_actuator_action,
                 "stm32FirmwareProfile": firmware_profile,
                 "emergencyStopped": (
                     self._emergency_stopped or error_code == 0x08
@@ -217,22 +242,21 @@ class DeviceManager:
         """
         执行通信与基础硬件自检。
 
-        默认不让滤光轮运动；只有 include_motion=True 时才执行寻零。
+        当前固件 Web 自检只做非破坏通信检查和 fresh STATUS，不执行输出或运动。
         """
 
         with self._lock:
             controller = self._require_controller()
             controller.ping()
-            controller.fan_on()
-
-            if include_motion:
-                controller.wheel_home()
+            if self.stm32_adapter is not None and hasattr(self.serial, "write_bytes"):
+                self.stm32_adapter.query_status(require_fresh=True)
 
             return {
                 "passed": True,
-                "includeMotion": bool(include_motion),
+                "includeMotion": False,
+                "motionRequestedIgnored": bool(include_motion),
                 "status": self.status(),
-                "checks": self._self_test_checks(include_motion=include_motion),
+                "checks": self._self_test_checks(include_motion=False),
             }
 
     def independent_device_check(self) -> dict[str, Any]:
@@ -285,10 +309,122 @@ class DeviceManager:
         """清除 STM32 故障及本地急停状态。"""
 
         with self._lock:
-            controller = self._require_controller()
-            controller.fault_clear()
-            self._emergency_stopped = False
-            return self.status()
+            self._require_controller()
+            raise UnsupportedCapabilityError("当前 STM32 firmware 不支持远程 Fault Clear，请现场断电/复位后重新连接")
+
+    def read_hardware_status(self) -> dict[str, Any]:
+        return self.status()
+
+    def set_fan(self, enabled: bool) -> dict[str, Any]:
+        with self._lock:
+            adapter = self._require_adapter()
+            before = adapter.status_snapshot.revision
+            result = adapter.set_fan(bool(enabled))
+            status = adapter.query_status(require_fresh=True, after_revision=before)
+            expected_duty = 100 if enabled else 0
+            if int(status.fan_duty or 0) != expected_duty:
+                raise DeviceManagerError("state_verification_failed: 风扇状态回读与命令不一致")
+            return {
+                "commandAccepted": result.ok(),
+                "fanOn": bool(status.fan_on),
+                "fanDuty": status.fan_duty,
+                "status": self.status(),
+            }
+
+    def set_led3(self, enabled: bool) -> dict[str, Any]:
+        with self._lock:
+            adapter = self._require_adapter()
+            before = adapter.status_snapshot.revision
+            mask = 0x04 if enabled else 0x00
+            result = adapter.set_led_mask(mask)
+            status = adapter.query_status(require_fresh=True, after_revision=before)
+            if int(status.led_mask or 0) != mask:
+                raise DeviceManagerError("state_verification_failed: LED3 状态回读与命令不一致")
+            return {
+                "commandAccepted": result.ok(),
+                "ledMask": status.led_mask,
+                "led3Duty": status.led3_duty,
+                "status": self.status(),
+            }
+
+    def actuator_extend(self, duration_ms: int | None = None) -> dict[str, Any]:
+        return self._start_actuator_action("extend", duration_ms)
+
+    def actuator_retract(self, duration_ms: int | None = None) -> dict[str, Any]:
+        return self._start_actuator_action("retract", duration_ms)
+
+    def actuator_stop(self) -> dict[str, Any]:
+        with self._actuator_lock:
+            self._actuator_token += 1
+            timer = self._actuator_timer
+            self._actuator_timer = None
+            self._actuator_busy = False
+            self._last_actuator_action = "stop"
+            if timer is not None:
+                timer.cancel()
+        with self._lock:
+            adapter = self._require_adapter()
+            result = adapter.door_command(0x02)
+            return {
+                "commandAccepted": result.ok(),
+                "action": "stop",
+                "motionCompleted": False,
+                "endpointFeedbackVerified": False,
+                "status": self.status(),
+            }
+
+    def move_filter_wheel(self, direction: str, slots: int) -> dict[str, Any]:
+        direction = str(direction or "").strip()
+        if direction not in {"clockwise", "counterclockwise"}:
+            raise ValueError("direction must be clockwise or counterclockwise")
+        if isinstance(slots, bool) or not isinstance(slots, int) or not 1 <= slots <= 15:
+            raise ValueError("slots must be an integer from 1 to 15")
+        slot_delta = slots if direction == "counterclockwise" else -slots
+        with self._lock:
+            adapter = self._require_adapter()
+        result = adapter.move_filter_wheel_relative_slots(slot_delta, max_retries=0)
+        return {
+            "direction": direction,
+            "slots": slots,
+            "slotDelta": slot_delta,
+            "degrees": slot_delta * adapter.filter_wheel.degrees_per_slot,
+            "command": result.to_dict(),
+            "failureReason": result.failure_reason,
+            "motionCompleted": result.completed_from_status and not result.failure_reason,
+            "status": self.status(),
+        }
+
+    def stop_filter_wheel(self) -> dict[str, Any]:
+        with self._lock:
+            adapter = self._require_adapter()
+            result = adapter.stop_filter_wheel()
+            return {
+                "commandAccepted": result.ok(),
+                "motionCompleted": False,
+                "failureReason": result.failure_reason,
+                "status": self.status(),
+            }
+
+    def set_filter_wheel_origin(self, operator_confirmed_aligned: bool) -> dict[str, Any]:
+        if operator_confirmed_aligned is not True:
+            raise ValueError("operatorConfirmedAligned must be true")
+        with self._lock:
+            adapter = self._require_adapter()
+            before = adapter.status_snapshot.revision
+            result = adapter.set_origin()
+            status = None
+            try:
+                status = adapter.query_status(require_fresh=True, after_revision=before)
+            except Exception:
+                LOGGER.warning("SET_ORIGIN 后未收到 fresh STATUS", exc_info=True)
+            return {
+                "commandAccepted": result.ok(),
+                "originEstablished": True,
+                "automaticHoming": False,
+                "message": "逻辑零点已建立",
+                "statusAfter": status.to_dict() if status is not None else None,
+                "status": self.status(),
+            }
 
     def capture_status(self) -> dict[str, Any]:
         """返回当前采集状态的副本。"""
@@ -322,6 +458,66 @@ class DeviceManager:
 
         return self.controller
 
+    def _require_adapter(self) -> Stm32ControllerAdapter:
+        self._require_controller()
+        if self.stm32_adapter is None:
+            raise UnsupportedCapabilityError("当前连接未启用 STM32 AA55 current firmware adapter")
+        return self.stm32_adapter
+
+    def _start_actuator_action(self, action: str, duration_ms: int | None) -> dict[str, Any]:
+        duration = 1000 if duration_ms is None else int(duration_ms)
+        if not 100 <= duration <= 5000:
+            raise ValueError("durationMs must be 100..5000")
+        command = {"extend": 0x01, "retract": 0x00}[action]
+        with self._actuator_lock:
+            if self._actuator_busy:
+                raise DeviceBusyError("device_busy: 推杆动作尚未完成，请先停止")
+            self._actuator_busy = True
+            self._last_actuator_action = action
+            self._actuator_token += 1
+            token = self._actuator_token
+        try:
+            with self._lock:
+                adapter = self._require_adapter()
+                result = adapter.door_command(command)
+                status = self.status()
+        except Exception:
+            with self._actuator_lock:
+                self._actuator_busy = False
+            raise
+
+        timer = threading.Timer(duration / 1000.0, self._auto_stop_actuator, args=(token,))
+        timer.daemon = True
+        with self._actuator_lock:
+            if token == self._actuator_token:
+                self._actuator_timer = timer
+                timer.start()
+        return {
+            "commandAccepted": result.ok(),
+            "action": action,
+            "durationMs": duration,
+            "autoStopScheduled": True,
+            "motionCompleted": False,
+            "endpointFeedbackVerified": False,
+            "status": status,
+        }
+
+    def _auto_stop_actuator(self, token: int) -> None:
+        with self._actuator_lock:
+            if token != self._actuator_token or not self._actuator_busy:
+                return
+        try:
+            with self._lock:
+                if self.stm32_adapter is not None and self.serial.is_connected:
+                    self.stm32_adapter.door_command(0x02)
+        except Exception as exc:
+            LOGGER.warning("推杆定时 STOP 失败：%s", exc)
+        finally:
+            with self._actuator_lock:
+                if token == self._actuator_token:
+                    self._actuator_busy = False
+                    self._actuator_timer = None
+
     def _self_test_checks(self, include_motion: bool = False) -> dict[str, dict[str, Any]]:
         status = self.status()
         connected = bool(status.get("connected"))
@@ -351,14 +547,14 @@ class DeviceManager:
                 "message": f"门状态: {door}",
             },
             "fan": {
-                "status": "passed" if status.get("fanOn") else "warning" if connected else "not_connected",
+                "status": "manual_required" if connected else "not_connected",
                 "label": "风扇",
-                "message": "风扇已开启" if status.get("fanOn") else "风扇未开启",
+                "message": f"风扇 duty: {status.get('fanDuty')}" if connected else "风扇未开启",
             },
             "filterWheel": {
                 "status": wheel_state if connected else "not_connected",
                 "label": "滤光轮",
-                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "尚未确认 HOME",
+                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "需要人工设定逻辑零点或移动验证",
             },
             "rgbCamera": camera_checks["rgbCamera"],
             "multispectralCamera": camera_checks["multispectralCamera"],
@@ -434,14 +630,14 @@ class DeviceManager:
                 "message": f"门状态: {door}" if connected else "STM32 未连接，未读取门状态",
             },
             "fan": {
-                "status": "passed" if status.get("fanOn") else "warning" if connected else "not_connected",
+                "status": "manual_required" if connected else "not_connected",
                 "label": "风扇",
-                "message": "风扇已开启" if status.get("fanOn") else "风扇未开启",
+                "message": f"风扇 duty: {status.get('fanDuty')}" if connected else "风扇未开启",
             },
             "filterWheel": {
                 "status": "passed" if connected and wheel_homed else "manual_required" if connected else "not_connected",
                 "label": "滤光轮",
-                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "尚未确认 HOME",
+                "message": f"位置: {status.get('wheelPosition')}" if wheel_homed else "需要人工设定逻辑零点或移动验证",
             },
             "light": {
                 "status": "manual_required" if connected else "not_connected",
@@ -523,6 +719,10 @@ class DeviceManager:
             "tungstenSupported": adapter.tungsten_supported,
             "automaticHoming": adapter.automatic_homing_supported,
             "physicalEncoderVerified": adapter.physical_encoder_verified,
+            "doorEndpointFeedback": adapter.door_endpoint_feedback_supported,
+            "faultClearSupported": False,
+            "statusRevision": adapter.status_snapshot.revision,
+            "statusReceivedMonotonic": adapter.status_snapshot.received_monotonic,
         }
 
     def _new_serial_probe_service(self) -> SerialService:

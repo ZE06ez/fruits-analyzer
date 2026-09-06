@@ -49,6 +49,20 @@ class Stm32CommandRejected(Stm32AdapterError):
 
 
 @dataclass(frozen=True)
+class Stm32StatusSnapshot:
+    status: Stm32Status | None
+    revision: int
+    received_monotonic: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.to_dict() if self.status is not None else None,
+            "revision": self.revision,
+            "statusReceivedMonotonic": self.received_monotonic,
+        }
+
+
+@dataclass(frozen=True)
 class Stm32CommandResult:
     cmd: int
     ack_received: bool
@@ -56,9 +70,46 @@ class Stm32CommandResult:
     status_after: Stm32Status | None = None
     completed_from_status: bool = False
     attempts: int = 1
+    status_before: Stm32Status | None = None
+    status_revision_before: int | None = None
+    status_revision_after: int | None = None
+    status_received_monotonic: float | None = None
+    status_fresh: bool = False
+    expected_target_deg: float | None = None
+    start_position_deg: float | None = None
+    start_target_deg: float | None = None
+    failure_reason: str = ""
+    message: str = ""
 
     def ok(self) -> bool:
-        return self.result_code == 0 and (self.ack_received or self.completed_from_status)
+        return (
+            self.result_code == 0
+            and not self.failure_reason
+            and (self.ack_received or self.completed_from_status)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cmd": self.cmd,
+            "cmdHex": f"0x{self.cmd:02X}",
+            "ackReceived": self.ack_received,
+            "resultCode": self.result_code,
+            "ok": self.ok(),
+            "commandAccepted": self.result_code == 0 and self.ack_received,
+            "motionCompleted": self.completed_from_status and not self.failure_reason,
+            "statusBefore": self.status_before.to_dict() if self.status_before is not None else None,
+            "statusAfter": self.status_after.to_dict() if self.status_after is not None else None,
+            "statusRevisionBefore": self.status_revision_before,
+            "statusRevisionAfter": self.status_revision_after,
+            "statusReceivedMonotonic": self.status_received_monotonic,
+            "statusFresh": self.status_fresh,
+            "expectedTargetDeg": self.expected_target_deg,
+            "startPositionDeg": self.start_position_deg,
+            "startTargetDeg": self.start_target_deg,
+            "failureReason": self.failure_reason,
+            "message": self.message,
+            "attempts": self.attempts,
+        }
 
 
 @dataclass
@@ -126,9 +177,12 @@ class Stm32ControllerAdapter:
         self._command_lock = threading.RLock()
         self._status_lock = threading.RLock()
         self._status: Stm32Status | None = None
+        self._status_revision = 0
+        self._status_received_monotonic: float | None = None
         self._info_lock = threading.RLock()
         self._info: Stm32Info | None = None
         self._info_frames: list[Stm32Frame] = []
+        self._motion_cancel_event = threading.Event()
         self._last_safety_report = Stm32SafetyReport()
         self.current_firmware_profile_validated = False
         self.tungsten_supported = False
@@ -144,6 +198,15 @@ class Stm32ControllerAdapter:
     def status_cache(self) -> Stm32Status | None:
         with self._status_lock:
             return self._status
+
+    @property
+    def status_snapshot(self) -> Stm32StatusSnapshot:
+        with self._status_lock:
+            return Stm32StatusSnapshot(
+                status=self._status,
+                revision=self._status_revision,
+                received_monotonic=self._status_received_monotonic,
+            )
 
     @property
     def info_cache(self) -> Stm32Info | None:
@@ -168,7 +231,7 @@ class Stm32ControllerAdapter:
             if self.status_cache is not None and self.info_cache is not None:
                 break
 
-        status = self.query_status(timeout_s=max(0.05, min(0.5, timeout_s)))
+        status = self.query_status(timeout_s=max(0.05, min(0.5, timeout_s)), require_fresh=True)
         self.current_firmware_profile_validated = status is not None
         return {
             "currentFirmwareProfileValidated": self.current_firmware_profile_validated,
@@ -243,22 +306,30 @@ class Stm32ControllerAdapter:
             self.safe_stop(timeout_s=timeout_s or self.ack_timeout_s)
             return 0x00
         if cmd == self.LEGACY_FAULT_CLEAR:
-            return 0x00
+            return self.ERROR_CAPABILITY_UNAVAILABLE
         raise Stm32CapabilityUnavailable(f"legacy command 0x{cmd:02X} is not mapped")
 
-    def query_status(self, *, timeout_s: float | None = None) -> Stm32Status:
+    def query_status(
+        self,
+        *,
+        timeout_s: float | None = None,
+        require_fresh: bool = True,
+        after_revision: int | None = None,
+    ) -> Stm32Status:
+        before_revision = self.status_snapshot.revision if after_revision is None else int(after_revision)
         with self._command_lock:
             self._send_frame(self.profile.query_status_cmd, b"")
             deadline = time.monotonic() + float(timeout_s or self.ack_timeout_s)
             while time.monotonic() < deadline:
                 for frame in self._read_frames_once(deadline):
                     self._handle_async_frame(frame)
-                    if frame.kind == Stm32FrameKind.STATUS:
-                        status = self._decode_status_frame(frame)
-                        self._update_status(status)
-                        return status
+                    snapshot = self.status_snapshot
+                    if frame.kind == Stm32FrameKind.STATUS and snapshot.revision > before_revision:
+                        if snapshot.status is None:
+                            continue
+                        return snapshot.status
         cached = self.status_cache
-        if cached is not None:
+        if not require_fresh and cached is not None:
             return cached
         raise Stm32AckTimeout("no STATUS received")
 
@@ -304,7 +375,6 @@ class Stm32ControllerAdapter:
             self.profile.set_origin_cmd,
             b"",
             timeout_s=timeout_s,
-            mechanical=True,
         )
 
     def set_origin_semantics(self) -> dict[str, bool]:
@@ -320,11 +390,18 @@ class Stm32ControllerAdapter:
         if slot_delta == 0:
             raise ValueError("slot_delta must not be zero")
         payload = self.filter_wheel.relative_payload(slot_delta)
+        before = self.status_snapshot
+        expected_target = None
+        if before.status and before.status.position_deg is not None:
+            expected_target = before.status.position_deg + slot_delta * self.filter_wheel.degrees_per_slot
+        self._motion_cancel_event.clear()
         return self._send_motion_with_status_aware_retry(
             self.profile.move_rel_cmd,
             payload,
             timeout_s=timeout_s or self.motion_timeout_s,
             max_retries=max_retries,
+            before=before,
+            expected_target_deg=expected_target,
         )
 
     def move_filter_wheel_absolute_slot(
@@ -334,14 +411,15 @@ class Stm32ControllerAdapter:
         timeout_s: float | None = None,
     ) -> Stm32CommandResult:
         payload = self.filter_wheel.absolute_payload(slot)
+        self._motion_cancel_event.clear()
         return self._send_and_wait_ack(
             self.profile.move_abs_cmd,
             payload,
             timeout_s=timeout_s or self.motion_timeout_s,
-            mechanical=True,
         )
 
     def stop_filter_wheel(self, *, timeout_s: float | None = None) -> Stm32CommandResult:
+        self._motion_cancel_event.set()
         return self._send_and_wait_ack(self.profile.stop_cmd, b"", timeout_s=timeout_s)
 
     def safe_stop(self, *, timeout_s: float | None = None) -> dict[str, Any]:
@@ -375,68 +453,71 @@ class Stm32ControllerAdapter:
         *,
         timeout_s: float,
         max_retries: int,
+        before: Stm32StatusSnapshot,
+        expected_target_deg: float | None,
     ) -> Stm32CommandResult:
         attempts = 0
-        start_status = self.status_cache
+        start_status = before.status
         last_position = start_status.position_deg if start_status else None
 
-        with self._command_lock:
-            while True:
-                attempts += 1
-                try:
-                    result = self._send_and_wait_ack(
-                        cmd,
-                        payload,
+        while True:
+            attempts += 1
+            try:
+                result = self._send_and_wait_ack(
+                    cmd,
+                    payload,
+                    timeout_s=timeout_s,
+                    attempts=attempts,
+                )
+                final = self._wait_motion_complete(
+                    timeout_s=timeout_s,
+                    after_revision=before.revision,
+                    expected_target_deg=expected_target_deg,
+                    start_position_deg=last_position,
+                    start_target_deg=start_status.target_deg if start_status else None,
+                )
+                return self._merge_motion_result(result, final, before, expected_target_deg, attempts)
+            except Stm32AckTimeout:
+                current = self.status_snapshot
+                status = current.status if current.revision > before.revision else None
+                if status is not None and status.motor_state in {"moving", "stopping"}:
+                    final = self._wait_motion_complete(
                         timeout_s=timeout_s,
-                        mechanical=True,
-                        attempts=attempts,
+                        after_revision=before.revision,
+                        expected_target_deg=expected_target_deg,
+                        start_position_deg=last_position,
+                        start_target_deg=start_status.target_deg if start_status else None,
                     )
-                    final_status = self._wait_motion_complete(timeout_s=timeout_s)
-                    return Stm32CommandResult(
-                        cmd=result.cmd,
-                        ack_received=result.ack_received,
-                        result_code=result.result_code,
-                        status_after=final_status or result.status_after,
-                        completed_from_status=bool(
-                            final_status and self._is_motion_complete(final_status)
-                        ),
-                        attempts=result.attempts,
+                    return self._merge_motion_result(
+                        Stm32CommandResult(cmd=cmd, ack_received=False, completed_from_status=True, attempts=attempts),
+                        final,
+                        before,
+                        expected_target_deg,
+                        attempts,
                     )
-                except Stm32AckTimeout:
-                    status = self.status_cache
-                    if status is not None and status.motor_state in {"moving", "stopping"}:
-                        final_status = self._wait_motion_complete(timeout_s=timeout_s)
-                        return Stm32CommandResult(
-                            cmd=cmd,
-                            ack_received=False,
-                            completed_from_status=True,
-                            status_after=final_status,
-                            attempts=attempts,
-                        )
-                    if (
-                        status is not None
-                        and status.motor_state in {"idle", "done"}
-                        and status.position_deg is not None
-                        and (
-                            status.motor_state == "done"
-                            or (last_position is not None and status.position_deg != last_position)
-                        )
-                    ):
-                        return Stm32CommandResult(
-                            cmd=cmd,
-                            ack_received=False,
-                            completed_from_status=True,
-                            status_after=status,
-                            attempts=attempts,
-                        )
-                    unchanged = (
-                        status is not None
-                        and status.motor_state in {"idle", "done"}
-                        and (last_position is None or status.position_deg == last_position)
+                if status is not None and status.motor_state in {"idle", "done"}:
+                    final = self._verify_motion_status(
+                        current,
+                        after_revision=before.revision,
+                        expected_target_deg=expected_target_deg,
+                        start_position_deg=last_position,
                     )
-                    if unchanged and attempts <= max_retries:
-                        continue
-                    raise
+                    if not final.failure_reason:
+                        return self._merge_motion_result(
+                            Stm32CommandResult(cmd=cmd, ack_received=False, completed_from_status=True, attempts=attempts),
+                            final,
+                            before,
+                            expected_target_deg,
+                            attempts,
+                        )
+                unchanged = (
+                    current.status is not None
+                    and current.status.motor_state in {"idle", "done"}
+                    and (last_position is None or current.status.position_deg == last_position)
+                )
+                if unchanged and attempts <= max_retries:
+                    continue
+                raise
 
     def _send_and_wait_ack(
         self,
@@ -444,10 +525,8 @@ class Stm32ControllerAdapter:
         payload: bytes,
         *,
         timeout_s: float | None = None,
-        mechanical: bool = False,
         attempts: int = 1,
     ) -> Stm32CommandResult:
-        del mechanical
         with self._command_lock:
             self._send_frame(cmd, payload)
             deadline = time.monotonic() + float(timeout_s or self.ack_timeout_s)
@@ -471,18 +550,142 @@ class Stm32ControllerAdapter:
                     )
             raise Stm32AckTimeout(f"no ACK for command 0x{cmd:02X}")
 
-    def _wait_motion_complete(self, *, timeout_s: float) -> Stm32Status | None:
+    def _wait_motion_complete(
+        self,
+        *,
+        timeout_s: float,
+        after_revision: int,
+        expected_target_deg: float | None,
+        start_position_deg: float | None,
+        start_target_deg: float | None,
+    ) -> Stm32CommandResult:
+        del start_target_deg
         deadline = time.monotonic() + timeout_s
-        last = self.status_cache
+        latest = self.status_snapshot
+        if latest.revision <= after_revision:
+            latest = Stm32StatusSnapshot(status=None, revision=after_revision)
         while time.monotonic() < deadline:
+            if self._motion_cancel_event.is_set():
+                return self._motion_failure("stopped_by_operator", latest, after_revision, expected_target_deg, start_position_deg)
             frames = self._read_frames_once(deadline)
             for frame in frames:
                 self._handle_async_frame(frame)
                 if frame.kind == Stm32FrameKind.STATUS:
-                    last = self.status_cache
-                    if last and self._is_motion_complete(last):
-                        return last
-        return last
+                    snapshot = self.status_snapshot
+                    if snapshot.revision <= after_revision:
+                        continue
+                    latest = snapshot
+                    status = snapshot.status
+                    if status is None:
+                        continue
+                    if status.error_code not in (None, 0):
+                        self._best_effort_filter_wheel_stop()
+                        return self._motion_failure("device_fault", latest, after_revision, expected_target_deg, start_position_deg)
+                    if self._is_motion_complete(status):
+                        return self._verify_motion_status(
+                            latest,
+                            after_revision=after_revision,
+                            expected_target_deg=expected_target_deg,
+                            start_position_deg=start_position_deg,
+                        )
+        if latest.status is None or latest.revision <= after_revision:
+            self._best_effort_filter_wheel_stop()
+            return self._motion_failure("status_timeout", latest, after_revision, expected_target_deg, start_position_deg)
+        self._best_effort_filter_wheel_stop()
+        return self._motion_failure("motion_timeout", latest, after_revision, expected_target_deg, start_position_deg)
+
+    def _verify_motion_status(
+        self,
+        snapshot: Stm32StatusSnapshot,
+        *,
+        after_revision: int,
+        expected_target_deg: float | None,
+        start_position_deg: float | None,
+    ) -> Stm32CommandResult:
+        status = snapshot.status
+        assert status is not None
+        if start_position_deg is not None and status.position_deg is not None:
+            unchanged_position = self.is_position_within_tolerance(status.position_deg, start_position_deg)
+            target_unchanged = (
+                status.target_deg is None
+                or self.is_position_within_tolerance(status.target_deg, start_position_deg)
+            )
+            if unchanged_position and target_unchanged and expected_target_deg is not None:
+                self._best_effort_filter_wheel_stop()
+                return self._motion_failure("motion_not_started", snapshot, after_revision, expected_target_deg, start_position_deg)
+        if expected_target_deg is not None:
+            if status.target_deg is not None and not self.is_position_within_tolerance(status.target_deg, expected_target_deg):
+                self._best_effort_filter_wheel_stop()
+                return self._motion_failure("target_mismatch", snapshot, after_revision, expected_target_deg, start_position_deg)
+            if status.position_deg is None or not self.is_position_within_tolerance(status.position_deg, expected_target_deg):
+                self._best_effort_filter_wheel_stop()
+                return self._motion_failure("position_not_reached", snapshot, after_revision, expected_target_deg, start_position_deg)
+        return Stm32CommandResult(
+            cmd=self.profile.move_rel_cmd,
+            ack_received=True,
+            status_after=status,
+            completed_from_status=True,
+            status_revision_after=snapshot.revision,
+            status_received_monotonic=snapshot.received_monotonic,
+            status_fresh=snapshot.revision > after_revision,
+            expected_target_deg=expected_target_deg,
+            start_position_deg=start_position_deg,
+        )
+
+    def _motion_failure(
+        self,
+        reason: str,
+        snapshot: Stm32StatusSnapshot,
+        after_revision: int,
+        expected_target_deg: float | None,
+        start_position_deg: float | None,
+    ) -> Stm32CommandResult:
+        return Stm32CommandResult(
+            cmd=self.profile.move_rel_cmd,
+            ack_received=True,
+            status_after=snapshot.status,
+            completed_from_status=False,
+            status_revision_after=snapshot.revision,
+            status_received_monotonic=snapshot.received_monotonic,
+            status_fresh=snapshot.revision > after_revision,
+            expected_target_deg=expected_target_deg,
+            start_position_deg=start_position_deg,
+            failure_reason=reason,
+            message=reason,
+        )
+
+    def _merge_motion_result(
+        self,
+        ack_result: Stm32CommandResult,
+        motion_result: Stm32CommandResult,
+        before: Stm32StatusSnapshot,
+        expected_target_deg: float | None,
+        attempts: int,
+    ) -> Stm32CommandResult:
+        return Stm32CommandResult(
+            cmd=ack_result.cmd,
+            ack_received=ack_result.ack_received,
+            result_code=ack_result.result_code,
+            status_after=motion_result.status_after,
+            completed_from_status=motion_result.completed_from_status,
+            attempts=attempts,
+            status_before=before.status,
+            status_revision_before=before.revision,
+            status_revision_after=motion_result.status_revision_after,
+            status_received_monotonic=motion_result.status_received_monotonic,
+            status_fresh=motion_result.status_fresh,
+            expected_target_deg=expected_target_deg,
+            start_position_deg=before.status.position_deg if before.status else None,
+            start_target_deg=before.status.target_deg if before.status else None,
+            failure_reason=motion_result.failure_reason,
+            message=motion_result.message,
+        )
+
+    def _best_effort_filter_wheel_stop(self) -> None:
+        try:
+            self._send_and_wait_ack(self.profile.stop_cmd, b"", timeout_s=self.ack_timeout_s)
+        except Exception:
+            pass
 
     def is_position_within_tolerance(self, actual_deg: float, target_deg: float) -> bool:
         tolerance = float(self.filter_wheel.position_tolerance_deg)
@@ -530,6 +733,8 @@ class Stm32ControllerAdapter:
     def _update_status(self, status: Stm32Status) -> None:
         with self._status_lock:
             self._status = status
+            self._status_revision += 1
+            self._status_received_monotonic = time.monotonic()
 
     def _update_info(self, info: Stm32Info) -> None:
         with self._info_lock:

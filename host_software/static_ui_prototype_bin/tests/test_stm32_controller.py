@@ -102,7 +102,7 @@ class Stm32ControllerAdapterTests(unittest.TestCase):
                 codec.encode(PROFILE.status_cmd, status_payload(state=0, position_cdeg=0)),
                 codec.encode(PROFILE.ack_cmd, bytes((PROFILE.stop_cmd, 0x00))),
                 codec.encode(PROFILE.ack_cmd, bytes((PROFILE.move_rel_cmd, 0x00))),
-                codec.encode(PROFILE.status_cmd, status_payload(state=2, position_cdeg=2250)),
+                codec.encode(PROFILE.status_cmd, status_payload(state=2, position_cdeg=2250, target_cdeg=2250)),
             ]
         )
         adapter = self.make_adapter(fake)
@@ -123,7 +123,7 @@ class Stm32ControllerAdapterTests(unittest.TestCase):
                     if serial.write_count >= 2
                     else None
                 ),
-                codec.encode(PROFILE.status_cmd, status_payload(state=2, position_cdeg=2250)),
+                codec.encode(PROFILE.status_cmd, status_payload(state=2, position_cdeg=2250, target_cdeg=2250)),
             ]
         )
         adapter = self.make_adapter(fake)
@@ -133,6 +133,25 @@ class Stm32ControllerAdapterTests(unittest.TestCase):
 
         self.assertEqual(result.attempts, 2)
         self.assertEqual(len(fake.writes), 2)
+
+    def test_ack_ok_but_position_unchanged_fails_and_sends_stop(self):
+        codec = Aa55Codec(PROFILE)
+        fake = FakeRawSerial(
+            [
+                codec.encode(PROFILE.status_cmd, status_payload(state=0, position_cdeg=0, target_cdeg=0)),
+                codec.encode(PROFILE.ack_cmd, bytes((PROFILE.move_rel_cmd, 0x00))),
+                codec.encode(PROFILE.status_cmd, status_payload(state=2, position_cdeg=0, target_cdeg=0)),
+                codec.encode(PROFILE.ack_cmd, bytes((PROFILE.stop_cmd, 0x00))),
+            ]
+        )
+        adapter = self.make_adapter(fake)
+        adapter.listen_once(timeout_s=0.01)
+
+        result = adapter.move_filter_wheel_relative_slots(1, max_retries=0)
+
+        self.assertFalse(result.ok())
+        self.assertEqual(result.failure_reason, "motion_not_started")
+        self.assertEqual(codec.decode(fake.writes[-1]).cmd, PROFILE.stop_cmd)
 
     def test_no_duplicate_relative_move_when_status_says_motion_started(self):
         codec = Aa55Codec(PROFILE)

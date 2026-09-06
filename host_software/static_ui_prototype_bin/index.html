@@ -192,19 +192,37 @@
               </div>
             </section>
             <div class="control-grid">
-              <button class="test-button" data-test="motor">运行电机自检</button>
-              <button class="test-button secondary" data-log="旋转平台正转命令已加入待调试队列">平台正转</button>
-              <button class="test-button secondary" data-log="旋转平台反转命令已加入待调试队列">平台反转</button>
-              <button class="test-button secondary" data-log="升降台复位命令已加入待调试队列">升降复位</button>
+              <button class="test-button" data-test="motor">读取运动状态</button>
+              <button class="test-button secondary" id="wheelCounterclockwise" type="button">滤光轮逆时针</button>
+              <button class="test-button secondary" id="wheelClockwise" type="button">滤光轮顺时针</button>
+              <button class="test-button secondary danger" id="wheelStop" type="button">滤光轮停止</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>滤光轮孔位数
+                <input id="wheelSlotsInput" type="number" min="1" max="15" step="1" value="1">
+              </label>
+              <button class="test-button secondary" id="wheelSetOrigin" type="button">将当前位置设为滤光轮零点</button>
             </div>
             <div class="control-grid hardware-actions">
               <button class="test-button secondary" id="hardwareSelfTest" type="button">硬件通信自检</button>
-              <button class="test-button secondary" id="hardwareMotionSelfTest" type="button">滤光轮寻零自检</button>
+              <button class="test-button secondary" id="fanOnButton" type="button">风扇开启</button>
+              <button class="test-button secondary" id="fanOffButton" type="button">风扇关闭</button>
+              <button class="test-button secondary" id="led3OnButton" type="button">LED3 开启</button>
+              <button class="test-button secondary" id="led3OffButton" type="button">LED3 关闭</button>
+              <button class="test-button secondary" id="actuatorExtend" type="button">推杆伸出</button>
+              <button class="test-button secondary" id="actuatorRetract" type="button">推杆缩回</button>
+              <button class="test-button secondary danger" id="actuatorStop" type="button">推杆停止</button>
+            </div>
+            <div class="form-grid compact-form">
+              <label>推杆持续时间 ms
+                <input id="actuatorDurationMs" type="number" min="100" max="5000" step="100" value="1000">
+              </label>
             </div>
             <div class="status-strip">
               <span id="sampleRotationState">样品台: 未接入控制</span>
               <span id="doorLiftState">升降门: 未连接</span>
               <span id="filterWheelState">滤光片轮: 待连接</span>
+              <span id="hardwareActionState">硬件动作: 待连接</span>
             </div>
           </article>
 
