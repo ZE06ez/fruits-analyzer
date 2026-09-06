@@ -9,6 +9,8 @@ from capture_coordinator import CaptureCoordinator
 from device_discovery import DeviceDiscovery, DeviceRegistry
 from hardware_controller import DoorState, HardwareController
 from serial_service import SerialDependencyError, SerialService
+from stm32_controller import Stm32ControllerAdapter
+from stm32_protocol import FilterWheelMapping, Stm32ProtocolProfile
 
 
 LOGGER = logging.getLogger(__name__)
@@ -48,11 +50,17 @@ class DeviceManager:
         controller_factory: Callable[[Any], HardwareController] = HardwareController,
         camera_manager: CameraManager | None = None,
         capture_coordinator: CaptureCoordinator | None = None,
+        sample_stage_controller: Any | None = None,
         discovery: DeviceDiscovery | None = None,
         registry: DeviceRegistry | None = None,
+        stm32_protocol_profile: Stm32ProtocolProfile | None = None,
+        filter_wheel_mapping: FilterWheelMapping | None = None,
     ) -> None:
         self.serial = serial_service or SerialService()
         self.controller_factory = controller_factory
+        self.stm32_protocol_profile = stm32_protocol_profile
+        self.filter_wheel_mapping = filter_wheel_mapping or FilterWheelMapping()
+        self.stm32_adapter: Stm32ControllerAdapter | None = None
         self.camera_manager = camera_manager or CameraManager()
         self.registry = registry
         self.discovery = discovery or DeviceDiscovery(
@@ -61,9 +69,11 @@ class DeviceManager:
             camera_manager=self.camera_manager,
         )
         self.controller: HardwareController | None = None
+        self.sample_stage_controller = sample_stage_controller
         self.capture_coordinator = capture_coordinator or CaptureCoordinator(
             camera_manager=self.camera_manager,
             device_manager=self,
+            sample_stage_controller=self.sample_stage_controller,
         )
         if self.registry is not None:
             for binding in self.registry.bindings().values():
@@ -121,7 +131,8 @@ class DeviceManager:
                 self.disconnect()
 
             self.serial.connect(port)
-            controller = self.controller_factory(self.serial)
+            controller_transport = self._controller_transport()
+            controller = self.controller_factory(controller_transport)
 
             try:
                 controller.ping()
@@ -150,7 +161,19 @@ class DeviceManager:
 
             self.serial.disconnect()
             self.controller = None
+            self.stm32_adapter = None
             self._emergency_stopped = False
+
+    def _controller_transport(self) -> Any:
+        if self.stm32_protocol_profile is None:
+            self.stm32_adapter = None
+            return self.serial
+        self.stm32_adapter = Stm32ControllerAdapter(
+            self.serial,
+            profile=self.stm32_protocol_profile,
+            filter_wheel=self.filter_wheel_mapping,
+        )
+        return self.stm32_adapter
 
     def status(self) -> dict[str, Any]:
         """读取并返回网页需要的完整设备状态。"""

@@ -26,6 +26,10 @@ class CommandFailedError(HardwareControllerError):
         super().__init__(f"命令 0x{cmd:02X} 执行失败，错误码 0x{result_code:02X}")
 
 
+class CapabilityUnavailableError(HardwareControllerError):
+    pass
+
+
 class DoorState(IntEnum):
     UNKNOWN = 0x00
     OPEN = 0x01
@@ -112,6 +116,8 @@ class HardwareController:
     def tungsten_set(self, mask: int) -> None:
         self._validate_mask(mask)
         if mask:
+            if getattr(self.serial, "tungsten_supported", True) is False:
+                raise CapabilityUnavailableError("当前 STM32 firmware 尚未实现钨灯控制")
             self._ensure_operational()
             self._require_closed_door()
             outputs = self.get_output_status()

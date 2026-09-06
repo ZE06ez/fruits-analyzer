@@ -8,6 +8,7 @@ from device_discovery import DeviceCandidate, DeviceDiscovery, DeviceRegistry, D
 from device_manager import CameraIntegrationRequired, DeviceManager
 from hardware_controller import DoorState, OutputStatus
 from serial_service import SerialDependencyError
+from stm32_protocol import Stm32ProtocolProfile
 
 
 class FakePort:
@@ -193,6 +194,32 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertFalse(status["cameras"]["rgb"]["connected"])
         self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
         self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
+
+    def test_current_firmware_profile_wraps_same_serial_owner_in_adapter(self):
+        serial = FakeSerialService()
+        profile = Stm32ProtocolProfile(
+            ack_cmd=0x80,
+            status_cmd=0x81,
+            info_cmd=0x82,
+            query_status_cmd=0x20,
+            move_abs_cmd=0x21,
+            move_rel_cmd=0x22,
+            stop_cmd=0x23,
+            set_profile_cmd=0x24,
+            set_origin_cmd=0x25,
+        )
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=FakeHardwareController,
+            camera_manager=FakeCameraManager(),
+            stm32_protocol_profile=profile,
+        )
+
+        manager.connect("COM3")
+
+        self.assertIsNotNone(manager.stm32_adapter)
+        self.assertIs(manager.stm32_adapter.transport, serial)
+        self.assertIs(manager.controller.serial, manager.stm32_adapter)
 
     def test_self_test_does_not_move_wheel_by_default(self):
         manager, _ = self.make_manager()

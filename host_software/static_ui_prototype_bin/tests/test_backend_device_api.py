@@ -244,6 +244,19 @@ class FakeCalibrationCoordinator:
             },
         }
 
+    def run_sample_multiview_capture(self, **kwargs):
+        self.calls.append(("sample_multiview", kwargs))
+        return {
+            "state": "completed",
+            "mode": "sample_multiview",
+            "metadata": {
+                "captureType": "sample",
+                "calibrationId": kwargs.get("calibration_id"),
+                "multiViewCaptureComplete": True,
+                "views": [{"viewId": "view_000", "sample_id": kwargs.get("sample_id"), "viewComplete": True}],
+            },
+        }
+
     def request_cancel(self):
         return {"state": "cancelled", "status": "cancelled", "progress": 0}
 
@@ -591,6 +604,33 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertEqual(self.device.capture_coordinator.calls[0][1]["operator_confirmed"], True)
         self.assertEqual(self.device.capture_coordinator.calls[1][0], "white")
         self.assertEqual(self.device.capture_coordinator.calls[1][1]["tungsten_mask"], 1)
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.post_json("/api/capture/start", {"sampleId": "S001"})
+        self.assertEqual(context.exception.code, 409)
+
+    def test_sample_multiview_capture_api_is_protected_dev_entry_and_start_remains_guarded(self):
+        with tempfile.TemporaryDirectory(prefix="fta_multiview_api_") as tmp:
+            capture = self.post_json("/api/capture/sample-multiview", {
+                "sampleId": "S001",
+                "outputDir": tmp,
+                "calibrationId": "cal-api",
+                "sampleStageMode": "simulation",
+                "sampleStageSettlingMs": 0,
+                "settlingMs": 0,
+                "returnHome": True,
+                "sampleRotation": {"enabled": False},
+                "bandPlan": [{"bandId": "A520", "wheelPosition": 2, "wavelengthNm": 520}],
+            })["capture"]
+
+        self.assertEqual(capture["mode"], "sample_multiview")
+        self.assertTrue(capture["metadata"]["multiViewCaptureComplete"])
+        self.assertEqual(self.device.capture_coordinator.calls[-1][0], "sample_multiview")
+        kwargs = self.device.capture_coordinator.calls[-1][1]
+        self.assertEqual(kwargs["sample_id"], "S001")
+        self.assertEqual(kwargs["calibration_id"], "cal-api")
+        self.assertEqual(kwargs["sample_stage_mode"], "simulation")
+        self.assertTrue(kwargs["return_home"])
 
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.post_json("/api/capture/start", {"sampleId": "S001"})

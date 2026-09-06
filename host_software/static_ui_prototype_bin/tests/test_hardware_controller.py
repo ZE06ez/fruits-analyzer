@@ -1,6 +1,7 @@
 import unittest
 
 from hardware_controller import (
+    CapabilityUnavailableError,
     CommandFailedError,
     DoorState,
     HardwareController,
@@ -47,6 +48,16 @@ class HardwareControllerTests(unittest.TestCase):
             controller.tungsten_set(0x01)
 
         self.assertNotIn((0x13, 0x01, 0.5), serial.calls)
+
+    def test_tungsten_current_firmware_capability_unavailable_is_explicit(self):
+        serial = FakeSerialService()
+        serial.tungsten_supported = False
+        controller = HardwareController(serial)
+
+        with self.assertRaises(CapabilityUnavailableError):
+            controller.tungsten_set(0x01)
+
+        self.assertEqual(serial.calls, [])
 
     def test_tungsten_rejects_rgb_led_conflict(self):
         serial = FakeSerialService()

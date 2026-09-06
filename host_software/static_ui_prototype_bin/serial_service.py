@@ -345,6 +345,55 @@ class SerialService:
 
             return result
 
+    def write_bytes(self, data: bytes | bytearray | memoryview) -> int:
+        """Write raw bytes for higher-level protocol adapters."""
+
+        packet = bytes(data)
+        if not packet:
+            return 0
+
+        with self._lock:
+            serial_port = self._require_connection()
+            try:
+                written = serial_port.write(packet)
+                flush = getattr(serial_port, "flush", None)
+                if callable(flush):
+                    flush()
+                return int(written)
+            except Exception as exc:
+                raise SerialConnectionError(f"串口写入失败：{exc}") from exc
+
+    def read_bytes(self, size: int, timeout_s: float | None = None) -> bytes:
+        """Read up to size raw bytes without interpreting protocol frames."""
+
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise TypeError("size 必须是整数")
+        if size <= 0:
+            raise ValueError("size 必须大于 0")
+
+        actual_timeout = self._default_timeout_s if timeout_s is None else float(timeout_s)
+        if actual_timeout <= 0:
+            raise ValueError("timeout_s 必须大于 0")
+
+        with self._lock:
+            serial_port = self._require_connection()
+            original_timeout = getattr(serial_port, "timeout", None)
+            try:
+                if hasattr(serial_port, "timeout"):
+                    serial_port.timeout = actual_timeout
+                return bytes(serial_port.read(size))
+            except Exception as exc:
+                raise SerialConnectionError(f"串口读取失败：{exc}") from exc
+            finally:
+                if hasattr(serial_port, "timeout"):
+                    serial_port.timeout = original_timeout
+
+    def clear_buffers(self) -> None:
+        """Clear serial input/output buffers without changing connection state."""
+
+        with self._lock:
+            self._clear_buffers(self._require_connection())
+
     def _read_exactly(
         self,
         serial_port: Any,

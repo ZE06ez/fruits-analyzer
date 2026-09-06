@@ -9,6 +9,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from rotation_plan import build_capture_rotation_plan
+from sample_stage import SampleStageNotImplemented, SampleStagePosition, SimulatedSampleStage, UnimplementedSampleStage
+
 
 class CaptureState(str, Enum):
     IDLE = "idle"
@@ -222,6 +225,58 @@ class CalibrationSet:
         }
 
 
+@dataclass(frozen=True)
+class SampleViewPlan:
+    view_id: str
+    capture_order: int
+    logical_angle_deg: float
+    mechanical_angle_deg: float
+    direction: str = "CW"
+    closure_view: bool = False
+    status: str = "pending"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "viewId": self.view_id,
+            "view_id": self.view_id,
+            "captureOrder": int(self.capture_order),
+            "capture_order": int(self.capture_order),
+            "logicalAngleDeg": float(self.logical_angle_deg),
+            "logical_angle_deg": float(self.logical_angle_deg),
+            "mechanicalAngleDeg": float(self.mechanical_angle_deg),
+            "mechanical_angle_deg": float(self.mechanical_angle_deg),
+            "direction": self.direction,
+            "closureView": bool(self.closure_view),
+            "closure_view": bool(self.closure_view),
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class SampleMultiViewPlan:
+    views: list[SampleViewPlan]
+    rotation_plan: dict[str, Any]
+    sample_stage_mode: str = "hardware"
+    sample_stage_settling_ms: int = 300
+    return_home: bool = True
+    calibration_id: str | None = None
+
+    def normal_views(self) -> list[SampleViewPlan]:
+        return [view for view in self.views if not view.closure_view]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sampleStageMode": self.sample_stage_mode,
+            "sampleStageSettlingMs": int(self.sample_stage_settling_ms),
+            "returnHome": bool(self.return_home),
+            "calibrationId": self.calibration_id,
+            "viewCount": len(self.normal_views()),
+            "totalCaptureViews": len(self.views),
+            "rotationPlan": dict(self.rotation_plan),
+            "views": [view.to_dict() for view in self.views],
+        }
+
+
 @dataclass
 class CaptureRun:
     capture_id: str
@@ -288,6 +343,12 @@ class CaptureCoordinator:
         "filter_wheel_settle": 5_000,
         "band_camera_settings": 5_000,
         "multispectral_sequence": 180_000,
+        "sample_stage_home": 30_000,
+        "sample_stage_move": 30_000,
+        "sample_stage_position_verify": 10_000,
+        "sample_stage_settle": 10_000,
+        "view_complete_verify": 5_000,
+        "return_home": 30_000,
     }
 
     def __init__(
@@ -296,6 +357,7 @@ class CaptureCoordinator:
         camera_manager: Any | None = None,
         device_manager: Any | None = None,
         hardware_controller: Any | None = None,
+        sample_stage_controller: Any | None = None,
         safe_stop_callback: Callable[[], None] | None = None,
         clock: Callable[[], float] = time.time,
         sleep_fn: Callable[[float], None] = time.sleep,
@@ -304,11 +366,15 @@ class CaptureCoordinator:
         self.camera_manager = camera_manager
         self.device_manager = device_manager
         self.hardware_controller = hardware_controller
+        self.sample_stage_controller = sample_stage_controller
         self.safe_stop_callback = safe_stop_callback
         self.clock = clock
         self.sleep_fn = sleep_fn
         self.capture_id_factory = capture_id_factory or (lambda: time.strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8])
         self._run = CaptureRun(capture_id="")
+        self._active_view: SampleViewPlan | None = None
+        self._active_multiview_plan: SampleMultiViewPlan | None = None
+        self._active_multispectral_view_id: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return self._run.to_dict()
@@ -593,6 +659,234 @@ class CaptureCoordinator:
             previous=result,
         )
 
+    def run_sample_multiview_capture(
+        self,
+        *,
+        sample_id: str = "",
+        output_dir: str | Path,
+        rgb_dir_name: str = "rgb",
+        multispectral_dir_name: str = "multispectral",
+        rotation_plan: dict[str, Any] | None = None,
+        sample_rotation: dict[str, Any] | None = None,
+        band_plan: MultispectralCapturePlan | list[MultispectralBandPlan] | list[dict[str, Any]] | None = None,
+        filter_config_path: str | Path | None = None,
+        settling_ms: int | None = None,
+        sample_stage_settling_ms: int = 300,
+        sample_stage_mode: str = "hardware",
+        return_home: bool = True,
+        calibration_id: str | None = None,
+        require_calibration: bool = False,
+        rgb_led_mask: int = 0x03,
+        tungsten_mask: int = 0x03,
+    ) -> dict[str, Any]:
+        """Capture one sample as multiple views, each with RGB plus a multispectral sequence."""
+
+        rgb_dir_name = self._validate_direct_dir_name(rgb_dir_name, field="rgb_dir_name")
+        multispectral_dir_name = self._validate_direct_dir_name(multispectral_dir_name, field="multispectral_dir_name")
+        band_sequence_plan = self._build_multispectral_capture_plan(
+            band_plan=band_plan,
+            filter_config_path=filter_config_path,
+            settling_ms=settling_ms,
+        )
+        if not band_sequence_plan.enabled_bands():
+            raise ValueError("sample multiview capture requires at least one enabled multispectral band")
+        multiview_plan = self._build_sample_multiview_plan(
+            rotation_plan=rotation_plan,
+            sample_rotation=sample_rotation,
+            sample_stage_mode=sample_stage_mode,
+            sample_stage_settling_ms=sample_stage_settling_ms,
+            return_home=return_home,
+            calibration_id=calibration_id,
+        )
+        if not multiview_plan.views:
+            raise ValueError("sample multiview capture requires at least one view")
+
+        steps: list[CaptureStepPlan] = [
+            CaptureStepPlan(
+                "hardware_precheck",
+                "硬件安全预检查",
+                CaptureState.PREPARING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["hardware_precheck"],
+                action=self._hardware_precheck,
+            ),
+            CaptureStepPlan(
+                "calibration_check",
+                "检查 CalibrationSet 引用",
+                CaptureState.PREPARING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["capture_safety_check"],
+                action=lambda: self._check_multiview_calibration(
+                    calibration_id=calibration_id,
+                    require_calibration=require_calibration,
+                ),
+            ),
+            CaptureStepPlan(
+                "door_close",
+                "关闭升降门",
+                CaptureState.PREPARING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["door_close"],
+                action=self._door_close,
+            ),
+            CaptureStepPlan(
+                "fan_on",
+                "开启风扇",
+                CaptureState.PREPARING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["fan_on"],
+                action=self._fan_on,
+            ),
+        ]
+        if self._multiview_requires_sample_stage(multiview_plan):
+            steps.append(CaptureStepPlan(
+                "sample_stage_home",
+                "样品台 HOME",
+                CaptureState.PREPARING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["sample_stage_home"],
+                action=lambda: self._sample_stage_home(multiview_plan),
+            ))
+
+        for view_index, view in enumerate(multiview_plan.views):
+            view_dir = f"views/{view.view_id}"
+            rgb_view_dir = f"{view_dir}/rgb"
+            ms_view_dir = f"{view_dir}/multispectral"
+            steps.extend([
+                CaptureStepPlan(
+                    f"view_begin:{view.view_id}",
+                    f"开始视角 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["capture_safety_check"],
+                    action=lambda view=view, view_index=view_index: self._begin_sample_view(view, view_index),
+                ),
+                CaptureStepPlan(
+                    f"sample_stage_move:{view.view_id}",
+                    f"移动样品台到 {view.logical_angle_deg:g}°",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["sample_stage_move"],
+                    action=lambda view=view, plan=multiview_plan: self._move_sample_stage_to_view(view, plan),
+                ),
+                CaptureStepPlan(
+                    f"sample_stage_position_verify:{view.view_id}",
+                    f"确认样品台位置 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["sample_stage_position_verify"],
+                    action=lambda view=view, plan=multiview_plan: self._verify_sample_stage_position(view, plan),
+                ),
+                CaptureStepPlan(
+                    f"sample_stage_settle:{view.view_id}",
+                    f"样品台稳定 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["sample_stage_settle"],
+                    action=lambda view=view, plan=multiview_plan: self._settle_sample_stage(view, plan),
+                ),
+                CaptureStepPlan(
+                    f"rgb_light_prepare:{view.view_id}",
+                    f"准备 RGB 光源 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["rgb_light_prepare"],
+                    action=lambda mask=rgb_led_mask: self._prepare_rgb_lighting(mask),
+                ),
+                CaptureStepPlan(
+                    f"capture_safety_check:rgb:{view.view_id}",
+                    f"确认 RGB 采集安全 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["capture_safety_check"],
+                    action=lambda: self._capture_safety_check("rgb"),
+                ),
+                CaptureStepPlan(
+                    f"rgb_capture:{view.view_id}",
+                    f"采集并保存 RGB {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["rgb_capture"],
+                    action=lambda view=view, view_index=view_index, rgb_view_dir=rgb_view_dir: self._capture_rgb_frame(
+                        rgb_dir_name=rgb_view_dir,
+                        view_index=view_index,
+                        view_id=view.view_id,
+                        filename=f"rgb_{view.view_id}.png",
+                    ),
+                ),
+                CaptureStepPlan(
+                    f"lighting_shutdown:rgb:{view.view_id}",
+                    f"关闭 RGB 光源 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["lighting_shutdown"],
+                    action=self._shutdown_lighting,
+                ),
+                CaptureStepPlan(
+                    f"multispectral_light_prepare:{view.view_id}",
+                    f"准备多光谱光源 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["multispectral_light_prepare"],
+                    action=lambda mask=tungsten_mask: self._prepare_multispectral_lighting(mask),
+                ),
+                CaptureStepPlan(
+                    f"capture_safety_check:multispectral:{view.view_id}",
+                    f"确认多光谱采集安全 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["capture_safety_check"],
+                    action=lambda: self._capture_safety_check("multispectral"),
+                ),
+            ])
+            steps.extend(self._multispectral_band_sequence_steps(
+                capture_type=CaptureReferenceType.SAMPLE,
+                plan=band_sequence_plan,
+                target_dir_name=ms_view_dir,
+                calibration_id=calibration_id,
+                view_id=view.view_id,
+                view_index=view_index,
+            ))
+            steps.extend([
+                CaptureStepPlan(
+                    f"lighting_shutdown:multispectral:{view.view_id}",
+                    f"关闭多光谱光源 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["lighting_shutdown"],
+                    action=self._shutdown_lighting,
+                ),
+                CaptureStepPlan(
+                    f"view_complete_verify:{view.view_id}",
+                    f"确认视角完整性 {view.view_id}",
+                    CaptureState.CAPTURING,
+                    self.DEFAULT_STEP_TIMEOUTS_MS["view_complete_verify"],
+                    action=lambda view=view, plan=band_sequence_plan: self._verify_sample_view_complete(view, plan),
+                ),
+            ])
+
+        if return_home and self._multiview_requires_sample_stage(multiview_plan):
+            steps.append(CaptureStepPlan(
+                "return_home",
+                "样品台返回 HOME",
+                CaptureState.FINALIZING,
+                self.DEFAULT_STEP_TIMEOUTS_MS["return_home"],
+                action=lambda: self._return_sample_stage_home(multiview_plan),
+            ))
+        steps.append(CaptureStepPlan(
+            "lighting_shutdown",
+            "关闭采集光源",
+            CaptureState.FINALIZING,
+            self.DEFAULT_STEP_TIMEOUTS_MS["lighting_shutdown"],
+            action=self._shutdown_lighting,
+        ))
+        steps.append(CaptureStepPlan(
+            "multiview_finalize",
+            "整理多视角采集 metadata",
+            CaptureState.FINALIZING,
+            self.DEFAULT_STEP_TIMEOUTS_MS["finalize"],
+            action=self._finalize_sample_multiview_capture,
+        ))
+
+        self._active_multiview_plan = multiview_plan
+        try:
+            self._run_steps(
+                sample_id=sample_id,
+                output_dir=output_dir,
+                steps=steps,
+                mode="sample_multiview",
+            )
+            self._write_sample_multiview_files()
+            return self.snapshot()
+        finally:
+            self._active_view = None
+            self._active_multiview_plan = None
+            self._active_multispectral_view_id = None
+
     def default_dry_run_steps(self) -> list[CaptureStepPlan]:
         return [
             CaptureStepPlan("prepare", "准备采集上下文", CaptureState.PREPARING, self.DEFAULT_STEP_TIMEOUTS_MS["prepare"]),
@@ -784,59 +1078,69 @@ class CaptureCoordinator:
         plan: MultispectralCapturePlan,
         target_dir_name: str,
         calibration_id: str | None = None,
+        view_id: str | None = None,
+        view_index: int | None = None,
     ) -> list[CaptureStepPlan]:
         enabled = plan.enabled_bands()
         sequence_steps: list[CaptureStepPlan] = [
             CaptureStepPlan(
-                "filter_wheel_home",
-                "滤光轮 HOME",
+                "filter_wheel_home" if view_id is None else f"filter_wheel_home:{view_id}",
+                "滤光轮 HOME" if view_id is None else f"滤光轮 HOME {view_id}",
                 CaptureState.CAPTURING,
                 self.DEFAULT_STEP_TIMEOUTS_MS["filter_wheel_home"],
-                action=lambda: self._filter_wheel_home(plan, capture_type=capture_type, calibration_id=calibration_id),
+                action=lambda: self._filter_wheel_home(
+                    plan,
+                    capture_type=capture_type,
+                    calibration_id=calibration_id,
+                    view_id=view_id,
+                    view_index=view_index,
+                ),
             )
         ]
         for band_index, band in enumerate(enabled):
             sequence_steps.extend([
                 CaptureStepPlan(
-                    f"filter_wheel_move:{band.band_id}",
+                    f"filter_wheel_move:{band.band_id}" if view_id is None else f"filter_wheel_move:{view_id}:{band.band_id}",
                     f"滤光轮移动到 {band.band_id}",
                     CaptureState.CAPTURING,
                     self.DEFAULT_STEP_TIMEOUTS_MS["filter_wheel_move"],
                     action=lambda band=band: self._filter_wheel_move_to_band(band),
                 ),
                 CaptureStepPlan(
-                    f"filter_wheel_position_verify:{band.band_id}",
+                    f"filter_wheel_position_verify:{band.band_id}" if view_id is None else f"filter_wheel_position_verify:{view_id}:{band.band_id}",
                     f"确认滤光轮位置 {band.band_id}",
                     CaptureState.CAPTURING,
                     self.DEFAULT_STEP_TIMEOUTS_MS["filter_wheel_position_verify"],
                     action=lambda band=band: self._verify_filter_wheel_position(band),
                 ),
                 CaptureStepPlan(
-                    f"filter_wheel_settle:{band.band_id}",
+                    f"filter_wheel_settle:{band.band_id}" if view_id is None else f"filter_wheel_settle:{view_id}:{band.band_id}",
                     f"滤光轮稳定 {band.band_id}",
                     CaptureState.CAPTURING,
                     self.DEFAULT_STEP_TIMEOUTS_MS["filter_wheel_settle"],
                     action=lambda band=band, plan=plan: self._settle_filter_wheel(band, plan),
                 ),
                 CaptureStepPlan(
-                    f"band_camera_settings:{band.band_id}",
+                    f"band_camera_settings:{band.band_id}" if view_id is None else f"band_camera_settings:{view_id}:{band.band_id}",
                     f"设置多光谱相机参数 {band.band_id}",
                     CaptureState.CAPTURING,
                     self.DEFAULT_STEP_TIMEOUTS_MS["band_camera_settings"],
                     action=lambda band=band: self._apply_band_camera_settings(band),
                 ),
                 CaptureStepPlan(
-                    f"multispectral_capture:{band.band_id}",
+                    f"multispectral_capture:{band.band_id}" if view_id is None else f"multispectral_capture:{view_id}:{band.band_id}",
                     f"采集并保存多光谱波段 {band.band_id}",
                     CaptureState.CAPTURING,
                     self.DEFAULT_STEP_TIMEOUTS_MS["multispectral_capture"],
-                    action=lambda band=band, band_index=band_index, plan=plan: self._capture_multispectral_band_frame(
+                    action=lambda band=band, band_index=band_index, plan=plan, view_id=view_id, view_index=view_index: self._capture_multispectral_band_frame(
                         multispectral_dir_name=target_dir_name,
                         band=band,
                         band_index=band_index,
                         plan=plan,
                         capture_type=capture_type,
                         calibration_id=calibration_id,
+                        view_id=view_id or "view_000",
+                        view_index=0 if view_index is None else int(view_index),
                     ),
                 ),
             ])
@@ -861,6 +1165,21 @@ class CaptureCoordinator:
             "bands": list(existing.get("bands") or []),
             "views": list(existing.get("views") or []),
             "frames": list(existing.get("frames") or []),
+            "rotationPlan": existing.get("rotationPlan"),
+            "sampleRotation": existing.get("sampleRotation"),
+            "filterWheel": existing.get("filterWheel"),
+            "multiViewPlan": existing.get("multiViewPlan"),
+            "multispectralSequences": list(existing.get("multispectralSequences") or []),
+            "completedViews": list(existing.get("completedViews") or []),
+            "failedView": existing.get("failedView"),
+            "pendingViews": list(existing.get("pendingViews") or []),
+            "multiViewCaptureComplete": existing.get("multiViewCaptureComplete"),
+            "partialCapture": existing.get("partialCapture"),
+            "cancelled": existing.get("cancelled"),
+            "returnedHome": existing.get("returnedHome"),
+            "homeStatus": existing.get("homeStatus"),
+            "sampleIdGroupingRequired": existing.get("sampleIdGroupingRequired"),
+            "sampleIdGroupingRule": existing.get("sampleIdGroupingRule"),
             "multispectralSequence": existing.get("multispectralSequence"),
             "multispectralSequenceComplete": bool(existing.get("multispectralSequenceComplete")),
             "captureType": existing.get("captureType"),
@@ -919,6 +1238,8 @@ class CaptureCoordinator:
             CaptureStep(id=plan.id, name=plan.name, timeout_ms=plan.timeout_ms)
             for plan in plans
         ]
+        if self._active_multiview_plan is not None:
+            self._initialize_multiview_metadata(self._active_multiview_plan)
 
         try:
             for index, plan in enumerate(plans):
@@ -936,6 +1257,7 @@ class CaptureCoordinator:
             self._run.state = CaptureState.CANCELLING
             self._run.error = exc.to_dict()
             self._record_sequence_cancelled()
+            self._record_multiview_cancelled()
             self.safe_stop()
             self._cancel_pending_steps(exc.step)
             self._run.state = CaptureState.CANCELLED
@@ -946,6 +1268,7 @@ class CaptureCoordinator:
             self._fail_current_step(exc)
             self._run.error = exc.to_dict()
             self._record_sequence_failure_from_error(exc)
+            self._record_multiview_failure_from_error(exc)
             self.safe_stop()
             self._run.state = CaptureState.FAILED
             self._run.current_step = None
@@ -961,6 +1284,7 @@ class CaptureCoordinator:
             self._fail_current_step(wrapped)
             self._run.error = wrapped.to_dict()
             self._record_sequence_failure_from_error(wrapped)
+            self._record_multiview_failure_from_error(wrapped)
             self.safe_stop()
             self._run.state = CaptureState.FAILED
             self._run.current_step = None
@@ -1226,11 +1550,10 @@ class CaptureCoordinator:
             capture_meta=capture_meta,
         )
         self._run.metadata.setdefault("frames", []).append(frame_metadata)
-        self._run.metadata.setdefault("views", []).append({
-            "view_id": view_id,
-            "view_index": view_index,
-            "rgb_files": [frame_metadata["relativePath"]],
-        })
+        view = self._upsert_view_metadata(view_id=view_id, view_index=view_index)
+        view.setdefault("rgb_files", []).append(frame_metadata["relativePath"])
+        view["rgb"] = dict(frame_metadata)
+        view["rgbComplete"] = True
         return {
             "saved": True,
             "path": frame_metadata["relativePath"],
@@ -1287,12 +1610,14 @@ class CaptureCoordinator:
         frame_metadata["focus"] = self._evaluate_focus_metadata(frame)
         self._run.metadata.setdefault("frames", []).append(frame_metadata)
         self._run.metadata["captureType"] = "sample"
-        self._run.metadata.setdefault("views", []).append({
-            "view_id": view_id,
-            "view_index": frame_index,
-            "multispectral_files": [frame_metadata["relativePath"]],
+        view = self._upsert_view_metadata(view_id=view_id, view_index=frame_index)
+        view.setdefault("multispectral_files", []).append(frame_metadata["relativePath"])
+        view["multispectral"] = {
+            "bands": [dict(frame_metadata)],
             "filterWheelSynchronized": False,
-        })
+        }
+        view["filterWheelSynchronized"] = False
+        view["multispectralComplete"] = True
         return {
             "saved": True,
             "path": frame_metadata["relativePath"],
@@ -1314,6 +1639,8 @@ class CaptureCoordinator:
         plan: MultispectralCapturePlan,
         capture_type: CaptureReferenceType = CaptureReferenceType.SAMPLE,
         calibration_id: str | None = None,
+        view_id: str = "view_000",
+        view_index: int = 0,
     ) -> dict[str, Any]:
         step = f"multispectral_capture:{band.band_id}"
         if self.camera_manager is None or not hasattr(self.camera_manager, "capture_multispectral_frame"):
@@ -1351,14 +1678,14 @@ class CaptureCoordinator:
             saved_path=saved,
             output_dir=output_dir,
             multispectral_dir_name=multispectral_dir_name,
-            frame_index=band_index,
-            view_id="view_000",
+            frame_index=view_index,
+            view_id=view_id,
             frame=frame,
             array_info=array_info,
             capture_meta=capture_meta,
         )
         frame_metadata.update({
-            "id": f"view_000_{band.band_id}",
+            "id": f"{view_id}_{band.band_id}",
             "bandId": band.band_id,
             "bandIndex": band_index,
             "wavelengthNm": band.wavelength_nm,
@@ -1400,6 +1727,11 @@ class CaptureCoordinator:
                 wavelength_nm=band.wavelength_nm,
             )
         self._run.metadata.setdefault("frames", []).append(frame_metadata)
+        if capture_type == CaptureReferenceType.SAMPLE:
+            view = self._upsert_view_metadata(view_id=view_id, view_index=view_index)
+            view.setdefault("multispectral_files", []).append(frame_metadata["relativePath"])
+            view.setdefault("multispectral", {}).setdefault("bands", []).append(dict(frame_metadata))
+            view["multispectralComplete"] = False
         self._mark_sequence_band_completed(band, frame_metadata)
         self._sync_sequence_completion()
         return {
@@ -1421,10 +1753,16 @@ class CaptureCoordinator:
         *,
         capture_type: CaptureReferenceType = CaptureReferenceType.SAMPLE,
         calibration_id: str | None = None,
+        view_id: str | None = None,
+        view_index: int | None = None,
     ) -> dict[str, Any]:
         step = "filter_wheel_home"
+        self._active_multispectral_view_id = view_id
         state = self._ensure_sequence_metadata(plan)
         state["captureType"] = capture_type.value
+        if view_id:
+            state["viewId"] = view_id
+            state["viewIndex"] = 0 if view_index is None else int(view_index)
         self._run.metadata["captureType"] = capture_type.value
         if calibration_id:
             state["calibrationId"] = calibration_id
@@ -1514,6 +1852,456 @@ class CaptureCoordinator:
             "settingResults": dict(result.get("settingResults") or {}),
         })
         return {"bandId": band.band_id, "requestedSettings": payload, "settingResults": result.get("settingResults") or {}}
+
+    def _build_sample_multiview_plan(
+        self,
+        *,
+        rotation_plan: dict[str, Any] | None,
+        sample_rotation: dict[str, Any] | None,
+        sample_stage_mode: str,
+        sample_stage_settling_ms: int,
+        return_home: bool,
+        calibration_id: str | None,
+    ) -> SampleMultiViewPlan:
+        raw_plan = rotation_plan if isinstance(rotation_plan, dict) else None
+        if raw_plan is None:
+            raw_plan = build_capture_rotation_plan(sample_rotation or {})
+        views: list[SampleViewPlan] = []
+        for index, item in enumerate(raw_plan.get("views") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            view_id = str(item.get("viewId") or item.get("view_id") or f"view_{index - 1:03d}")
+            logical = item.get("logicalAngleDeg", item.get("logical_angle_deg", 0.0))
+            mechanical = item.get("mechanicalAngleDeg", item.get("mechanical_angle_deg", logical))
+            views.append(SampleViewPlan(
+                view_id=view_id,
+                capture_order=int(item.get("captureOrder", item.get("capture_order", index))),
+                logical_angle_deg=float(logical),
+                mechanical_angle_deg=float(mechanical),
+                direction=str(item.get("direction") or raw_plan.get("direction") or "CW").upper(),
+                closure_view=bool(item.get("closureView", item.get("closure_view", False))),
+            ))
+        if not views:
+            raw_plan = build_capture_rotation_plan({"enabled": False})
+            views = [
+                SampleViewPlan(
+                    view_id="view_000",
+                    capture_order=1,
+                    logical_angle_deg=0.0,
+                    mechanical_angle_deg=0.0,
+                    direction=str(raw_plan.get("direction") or "CW"),
+                    closure_view=False,
+                )
+            ]
+        return SampleMultiViewPlan(
+            views=views,
+            rotation_plan=dict(raw_plan),
+            sample_stage_mode=str(sample_stage_mode or "hardware").strip().lower(),
+            sample_stage_settling_ms=max(int(sample_stage_settling_ms), 0),
+            return_home=bool(return_home),
+            calibration_id=calibration_id,
+        )
+
+    def _initialize_multiview_metadata(self, plan: SampleMultiViewPlan) -> None:
+        views = []
+        for view in plan.views:
+            item = view.to_dict()
+            item.update({
+                "sampleId": self._run.sample_id,
+                "sample_id": self._run.sample_id,
+                "rgb": None,
+                "multispectral": {"bands": []},
+                "rgbComplete": False,
+                "multispectralComplete": False,
+                "viewComplete": False,
+                "missingBands": [],
+                "sampleRotation": {
+                    "viewId": view.view_id,
+                    "logicalAngleDeg": view.logical_angle_deg,
+                    "mechanicalAngleDeg": view.mechanical_angle_deg,
+                    "direction": view.direction,
+                    "verified": False,
+                    "settlingMs": plan.sample_stage_settling_ms,
+                    "positionVerification": "pending",
+                    "controlDomain": "sample_rotation",
+                    "stageMode": plan.sample_stage_mode,
+                },
+                "filterWheel": {
+                    "controlDomain": "filter_wheel_rotation",
+                    "independentFromSampleRotation": True,
+                },
+            })
+            views.append(item)
+        self._run.metadata.update({
+            "captureType": "sample",
+            "sampleId": self._run.sample_id,
+            "sample_id": self._run.sample_id,
+            "calibrationId": plan.calibration_id,
+            "rotationPlan": dict(plan.rotation_plan),
+            "sampleRotation": dict(plan.rotation_plan),
+            "filterWheel": {
+                "controlDomain": "filter_wheel_rotation",
+                "independentFromSampleRotation": True,
+            },
+            "multiViewPlan": plan.to_dict(),
+            "views": views,
+            "completedViews": [],
+            "failedView": None,
+            "pendingViews": [view.view_id for view in plan.views],
+            "multiViewCaptureComplete": False,
+            "partialCapture": False,
+            "cancelled": False,
+            "returnedHome": False,
+            "homeStatus": "not_requested" if not plan.return_home else "pending",
+            "sampleIdGroupingRequired": True,
+            "sampleIdGroupingRule": "all views of one fruit keep the same sample_id for train/validation grouping",
+        })
+
+    def _multiview_requires_sample_stage(self, plan: SampleMultiViewPlan) -> bool:
+        enabled = bool(plan.rotation_plan.get("enabled"))
+        return enabled and len(plan.views) > 1
+
+    def _sample_stage(self, plan: SampleMultiViewPlan, step: str) -> Any:
+        stage = self.sample_stage_controller or getattr(self.device_manager, "sample_stage_controller", None) or getattr(self.device_manager, "sample_stage", None)
+        if stage is None:
+            if plan.sample_stage_mode == "simulation":
+                stage = SimulatedSampleStage()
+                self.sample_stage_controller = stage
+            else:
+                stage = UnimplementedSampleStage()
+        if plan.sample_stage_mode == "hardware" and not bool(getattr(stage, "implemented", False)):
+            raise CaptureCoordinatorError("样品台真实硬件适配器尚未实现", step=step, code="hardware_not_implemented")
+        return stage
+
+    def _check_multiview_calibration(self, *, calibration_id: str | None, require_calibration: bool) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "calibrationId": calibration_id,
+            "required": bool(require_calibration),
+            "status": "not_provided" if not calibration_id else "pending",
+        }
+        if not calibration_id:
+            if require_calibration:
+                raise CaptureCoordinatorError("MultiView 采集需要 calibrationId", step="calibration_check", code="calibration_missing")
+            result["status"] = "not_required"
+            return result
+        if not self._run.output_dir:
+            raise CaptureCoordinatorError("CalibrationSet 检查缺少输出目录", step="calibration_check", code="calibration_output_dir_missing")
+        calibration = self._read_calibration_set_file(Path(self._run.output_dir), calibration_id)
+        if not calibration:
+            if require_calibration:
+                raise CaptureCoordinatorError("找不到指定 CalibrationSet", step="calibration_check", code="calibration_missing")
+            result["status"] = "not_found"
+            return result
+        result["status"] = "complete" if calibration.get("calibrationComplete") else "incomplete"
+        result["calibrationComplete"] = bool(calibration.get("calibrationComplete"))
+        result["calibrationSet"] = calibration
+        if require_calibration and not calibration.get("calibrationComplete"):
+            raise CaptureCoordinatorError("CalibrationSet 尚未完整", step="calibration_check", code="calibration_incomplete")
+        self._run.metadata["calibrationSet"] = calibration
+        return result
+
+    def _sample_stage_home(self, plan: SampleMultiViewPlan) -> dict[str, Any]:
+        step = "sample_stage_home"
+        stage = self._sample_stage(plan, step)
+        try:
+            result = stage.home_sample_stage()
+        except SampleStageNotImplemented as exc:
+            raise CaptureCoordinatorError("样品台真实硬件适配器尚未实现", step=step, code="hardware_not_implemented", cause=exc) from exc
+        except Exception as exc:
+            raise CaptureCoordinatorError("样品台 HOME 失败", step=step, code="sample_stage_home_failed", cause=exc) from exc
+        metadata = self._run.metadata.setdefault("sampleStage", {})
+        metadata.update({"homed": True, "mode": plan.sample_stage_mode, "homeResult": dict(result or {})})
+        return dict(result or {})
+
+    def _begin_sample_view(self, view: SampleViewPlan, view_index: int) -> dict[str, Any]:
+        self._active_view = view
+        self._active_multispectral_view_id = None
+        if self._run.metadata.get("multispectralSequence"):
+            self._archive_current_multispectral_sequence()
+            self._run.metadata.pop("multispectralSequence", None)
+            self._run.metadata["multispectralSequenceComplete"] = False
+        item = self._upsert_view_metadata(view_id=view.view_id, view_index=view_index)
+        item["status"] = "running"
+        item["captureOrder"] = view.capture_order
+        item["capture_order"] = view.capture_order
+        item["logicalAngleDeg"] = view.logical_angle_deg
+        item["logical_angle_deg"] = view.logical_angle_deg
+        item["mechanicalAngleDeg"] = view.mechanical_angle_deg
+        item["mechanical_angle_deg"] = view.mechanical_angle_deg
+        item["direction"] = view.direction
+        item["closureView"] = view.closure_view
+        item["closure_view"] = view.closure_view
+        return {"viewId": view.view_id, "captureOrder": view.capture_order}
+
+    def _move_sample_stage_to_view(self, view: SampleViewPlan, plan: SampleMultiViewPlan) -> dict[str, Any]:
+        step = f"sample_stage_move:{view.view_id}"
+        item = self._upsert_view_metadata(view_id=view.view_id, view_index=view.capture_order - 1)
+        target = float(view.mechanical_angle_deg)
+        if not self._multiview_requires_sample_stage(plan):
+            result = {
+                "targetAngleDeg": target,
+                "direction": view.direction,
+                "status": "single_view_no_motion_required",
+                "commandSent": False,
+            }
+            item["sampleRotation"].update(result)
+            return result
+        stage = self._sample_stage(plan, step)
+        try:
+            result = stage.move_sample_stage_to_angle(target, direction=view.direction)
+        except SampleStageNotImplemented as exc:
+            raise CaptureCoordinatorError("样品台真实硬件适配器尚未实现", step=step, code="hardware_not_implemented", cause=exc) from exc
+        except Exception as exc:
+            raise CaptureCoordinatorError("样品台移动失败", step=step, code="sample_stage_move_failed", cause=exc) from exc
+        item["sampleRotation"].update({
+            "targetAngleDeg": target,
+            "direction": view.direction,
+            "moveResult": dict(result or {}),
+            "commandSent": plan.sample_stage_mode == "hardware",
+        })
+        return dict(result or {})
+
+    def _verify_sample_stage_position(self, view: SampleViewPlan, plan: SampleMultiViewPlan) -> dict[str, Any]:
+        step = f"sample_stage_position_verify:{view.view_id}"
+        item = self._upsert_view_metadata(view_id=view.view_id, view_index=view.capture_order - 1)
+        if not self._multiview_requires_sample_stage(plan):
+            result = {
+                "verified": True,
+                "status": "single_view_no_motion_required",
+                "logicalAngleDeg": view.logical_angle_deg,
+                "mechanicalAngleDeg": view.mechanical_angle_deg,
+            }
+            item["sampleRotation"].update({**result, "positionVerification": "verified"})
+            return result
+        stage = self._sample_stage(plan, step)
+        if hasattr(stage, "wait_sample_stage_stable"):
+            try:
+                stable_result = stage.wait_sample_stage_stable()
+            except Exception as exc:
+                raise CaptureCoordinatorError("样品台稳定确认失败", step=step, code="sample_stage_stable_failed", cause=exc) from exc
+        else:
+            stable_result = {"stable": False, "status": "unavailable"}
+        if not hasattr(stage, "get_sample_stage_position"):
+            raise CaptureCoordinatorError("样品台位置回读不可用", step=step, code="sample_stage_position_unavailable")
+        raw_position = stage.get_sample_stage_position()
+        if isinstance(raw_position, SampleStagePosition):
+            position = raw_position.to_dict()
+        elif isinstance(raw_position, dict):
+            position = dict(raw_position)
+        else:
+            position = {"angleDeg": raw_position, "verified": raw_position is not None, "status": "verified" if raw_position is not None else "unavailable"}
+        verified = bool(position.get("verified"))
+        angle = _optional_number(position.get("angleDeg", position.get("angle_deg")))
+        if not verified:
+            raise CaptureCoordinatorError("样品台位置未确认，拒绝采集该 View", step=step, code="sample_stage_position_unverified")
+        item["sampleRotation"].update({
+            "verified": True,
+            "actualAngleDeg": angle,
+            "positionVerification": "verified",
+            "position": position,
+            "stableResult": dict(stable_result or {}),
+        })
+        return {
+            "viewId": view.view_id,
+            "verified": True,
+            "actualAngleDeg": angle,
+            "targetAngleDeg": view.mechanical_angle_deg,
+            "stableResult": dict(stable_result or {}),
+        }
+
+    def _settle_sample_stage(self, view: SampleViewPlan, plan: SampleMultiViewPlan) -> dict[str, Any]:
+        step = f"sample_stage_settle:{view.view_id}"
+        delay_s = max(int(plan.sample_stage_settling_ms), 0) / 1000.0
+        self._check_cancel(step)
+        self.sleep_fn(delay_s)
+        item = self._upsert_view_metadata(view_id=view.view_id, view_index=view.capture_order - 1)
+        item["sampleRotation"]["settlingMs"] = int(plan.sample_stage_settling_ms)
+        item["sampleRotation"]["settled"] = True
+        return {"viewId": view.view_id, "settlingMs": int(plan.sample_stage_settling_ms)}
+
+    def _verify_sample_view_complete(self, view: SampleViewPlan, plan: MultispectralCapturePlan) -> dict[str, Any]:
+        item = self._upsert_view_metadata(view_id=view.view_id, view_index=view.capture_order - 1)
+        sequence = self._run.metadata.get("multispectralSequence") or {}
+        enabled_band_ids = [band.band_id for band in plan.enabled_bands()]
+        completed_bands = list(sequence.get("completedBands") or [])
+        missing = [band_id for band_id in enabled_band_ids if band_id not in completed_bands]
+        rgb_complete = bool(item.get("rgbComplete"))
+        multispectral_complete = not missing and bool(enabled_band_ids) and not sequence.get("failedBand")
+        rotation_verified = bool((item.get("sampleRotation") or {}).get("verified"))
+        item["multispectralComplete"] = multispectral_complete
+        item["missingBands"] = missing
+        item["viewComplete"] = bool(rotation_verified and rgb_complete and multispectral_complete)
+        item["status"] = "completed" if item["viewComplete"] else "failed"
+        item["multispectral"] = {
+            **dict(item.get("multispectral") or {}),
+            "sequence": dict(sequence),
+            "enabledBandIds": enabled_band_ids,
+            "completedBands": completed_bands,
+            "missingBands": missing,
+        }
+        item["filterWheel"] = {
+            "controlDomain": "filter_wheel_rotation",
+            "independentFromSampleRotation": True,
+            "sequence": dict(sequence.get("filterWheel") or {}),
+        }
+        self._archive_current_multispectral_sequence()
+        self._sync_multiview_completion()
+        if not item["viewComplete"]:
+            raise CaptureCoordinatorError("视角采集不完整", step=f"view_complete_verify:{view.view_id}", code="view_incomplete")
+        return {
+            "viewId": view.view_id,
+            "viewComplete": True,
+            "rgbComplete": rgb_complete,
+            "multispectralComplete": multispectral_complete,
+            "missingBands": missing,
+        }
+
+    def _return_sample_stage_home(self, plan: SampleMultiViewPlan) -> dict[str, Any]:
+        step = "return_home"
+        try:
+            result = self._sample_stage_home(plan)
+        except CaptureCoordinatorError as exc:
+            self._run.metadata["returnedHome"] = False
+            self._run.metadata["homeStatus"] = exc.code
+            self._run.metadata["returnHomeError"] = exc.to_dict()
+            return {"returnedHome": False, "homeStatus": exc.code, "error": exc.to_dict()}
+        self._run.metadata["returnedHome"] = True
+        self._run.metadata["homeStatus"] = "HOME_OK"
+        return {"returnedHome": True, "homeStatus": "HOME_OK", "result": result}
+
+    def _finalize_sample_multiview_capture(self) -> dict[str, Any]:
+        self._archive_current_multispectral_sequence()
+        self._sync_multiview_completion()
+        if self._active_multiview_plan and not self._active_multiview_plan.return_home:
+            self._run.metadata["returnedHome"] = False
+            self._run.metadata["homeStatus"] = "not_requested"
+        return {
+            "multiViewCaptureComplete": bool(self._run.metadata.get("multiViewCaptureComplete")),
+            "completedViews": list(self._run.metadata.get("completedViews") or []),
+            "failedView": self._run.metadata.get("failedView"),
+            "pendingViews": list(self._run.metadata.get("pendingViews") or []),
+        }
+
+    def _write_sample_multiview_files(self) -> None:
+        if self._run.mode != "sample_multiview" or not self._run.output_dir:
+            return
+        output_dir = Path(self._run.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metadata = dict(self._run.metadata)
+        metadata["state"] = self._run.state.value
+        metadata["captureId"] = self._run.capture_id
+        metadata["capture_id"] = self._run.capture_id
+        metadata["sampleId"] = self._run.sample_id
+        metadata["sample_id"] = self._run.sample_id
+        metadata["updatedAt"] = self.clock()
+        metadata["updated_at"] = metadata["updatedAt"]
+        temp_metadata = output_dir / f".metadata.{self._run.capture_id}.tmp"
+        temp_views = output_dir / f".views.{self._run.capture_id}.tmp"
+        temp_metadata.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_views.write_text(json.dumps(metadata.get("views") or [], ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_metadata.replace(output_dir / "metadata.json")
+        temp_views.replace(output_dir / "views.json")
+        self._run.metadata = metadata
+
+    def _upsert_view_metadata(self, *, view_id: str, view_index: int) -> dict[str, Any]:
+        views = self._run.metadata.setdefault("views", [])
+        for item in views:
+            if item.get("viewId") == view_id or item.get("view_id") == view_id:
+                return item
+        item = {
+            "viewId": view_id,
+            "view_id": view_id,
+            "viewIndex": int(view_index),
+            "view_index": int(view_index),
+            "sampleId": self._run.sample_id,
+            "sample_id": self._run.sample_id,
+            "rgb_files": [],
+            "multispectral_files": [],
+            "rgbComplete": False,
+            "multispectralComplete": False,
+            "viewComplete": False,
+            "missingBands": [],
+            "sampleRotation": {
+                "viewId": view_id,
+                "verified": False,
+                "controlDomain": "sample_rotation",
+            },
+            "filterWheel": {
+                "controlDomain": "filter_wheel_rotation",
+                "independentFromSampleRotation": True,
+            },
+        }
+        views.append(item)
+        return item
+
+    def _archive_current_multispectral_sequence(self) -> None:
+        sequence = self._run.metadata.get("multispectralSequence")
+        if not sequence:
+            return
+        archived = self._run.metadata.setdefault("multispectralSequences", [])
+        view_id = sequence.get("viewId")
+        if view_id and any(item.get("viewId") == view_id for item in archived):
+            for index, item in enumerate(archived):
+                if item.get("viewId") == view_id:
+                    archived[index] = dict(sequence)
+                    break
+        elif sequence not in archived:
+            archived.append(dict(sequence))
+
+    def _sync_multiview_completion(self) -> None:
+        views = self._run.metadata.get("views") or []
+        completed = [str(view.get("viewId") or view.get("view_id")) for view in views if view.get("viewComplete")]
+        failed = self._run.metadata.get("failedView")
+        for view in views:
+            if view.get("status") == "failed":
+                failed = view.get("viewId") or view.get("view_id")
+                break
+        pending = [
+            str(view.get("viewId") or view.get("view_id"))
+            for view in views
+            if not view.get("viewComplete") and (view.get("viewId") or view.get("view_id")) != failed
+        ]
+        self._run.metadata["completedViews"] = completed
+        self._run.metadata["failedView"] = failed
+        self._run.metadata["pendingViews"] = pending
+        complete = bool(views) and len(completed) == len(views) and not failed
+        self._run.metadata["multiViewCaptureComplete"] = complete
+        self._run.metadata["partialCapture"] = bool(completed) and not complete
+
+    def _record_multiview_cancelled(self) -> None:
+        if "multiViewCaptureComplete" not in self._run.metadata:
+            return
+        view = self._active_view
+        if view is not None:
+            item = self._upsert_view_metadata(view_id=view.view_id, view_index=view.capture_order - 1)
+            if not item.get("viewComplete"):
+                item["status"] = "cancelled"
+        self._run.metadata["cancelled"] = True
+        self._archive_current_multispectral_sequence()
+        self._sync_multiview_completion()
+
+    def _record_multiview_failure_from_error(self, exc: CaptureCoordinatorError) -> None:
+        if "multiViewCaptureComplete" not in self._run.metadata:
+            return
+        view_id = self._extract_view_id_from_step(exc.step)
+        if not view_id and self._active_view is not None:
+            view_id = self._active_view.view_id
+        if view_id:
+            item = self._upsert_view_metadata(view_id=view_id, view_index=0)
+            item["status"] = "failed"
+            item["viewComplete"] = False
+            item["error"] = exc.to_dict()
+            self._run.metadata["failedView"] = view_id
+        self._archive_current_multispectral_sequence()
+        self._sync_multiview_completion()
+
+    @staticmethod
+    def _extract_view_id_from_step(step: str | None) -> str:
+        text = str(step or "")
+        for part in text.split(":"):
+            if part.startswith("view_"):
+                return part
+        return ""
 
     @staticmethod
     def _validate_rgb_frame(frame: Any, *, step: str) -> dict[str, Any]:
@@ -2175,13 +2963,17 @@ class CaptureCoordinator:
 
     def _ensure_sequence_metadata(self, plan: MultispectralCapturePlan) -> dict[str, Any]:
         sequence = self._run.metadata.get("multispectralSequence")
-        if sequence is not None:
+        active_view_id = self._active_multispectral_view_id
+        if sequence is not None and (not active_view_id or sequence.get("viewId") == active_view_id):
             return sequence
+        if sequence is not None:
+            self._archive_current_multispectral_sequence()
         enabled = plan.enabled_bands()
         disabled = [band for band in plan.bands if not band.enabled]
         sequence = {
             "status": "running",
             "captureType": "sample",
+            "viewId": active_view_id,
             "filterConfigSource": plan.filter_config_source,
             "filterConfigVersion": plan.filter_config_version,
             "developmentConfig": bool(plan.development_config),
@@ -2290,7 +3082,7 @@ class CaptureCoordinator:
         self._run.metadata["multispectralSequenceComplete"] = False
         step = exc.step or ""
         if ":" in step and not sequence.get("failedBand"):
-            sequence["failedBand"] = step.split(":", 1)[1]
+            sequence["failedBand"] = step.rsplit(":", 1)[1]
 
     def _read_wheel_position(self, step: str) -> int | None:
         value = self._controller(step).get_wheel_status()
