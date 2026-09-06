@@ -295,6 +295,168 @@ class ModelStudioServiceTests(unittest.TestCase):
             self.service.get_model(first)
         self.assertFalse(Path(old["model_dir"]).exists())
 
+    def test_empty_dataset_can_be_archived_and_permanently_deleted_without_touching_source(self):
+        external_source = self.samples_root
+        dataset = self.service.create_dataset({
+            "datasetName": "Scratch_Delete_Empty",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "storagePath": str(external_source),
+        })
+        local_path = Path(dataset["local_path"])
+        archived = self.service.archive_dataset(dataset["dataset_id"])
+        self.assertEqual(archived["archived"], 1)
+        self.assertNotIn(dataset["dataset_id"], {item["dataset_id"] for item in self.service.list_datasets(archived="0")})
+        self.assertIn(dataset["dataset_id"], {item["dataset_id"] for item in self.service.list_datasets(archived="all")})
+
+        deleted = self.service.delete_dataset_permanently(dataset["dataset_id"], confirm=dataset["dataset_name"])
+        self.assertTrue(deleted["deleted"])
+        self.assertFalse(local_path.exists())
+        self.assertTrue(external_source.exists())
+        with self.assertRaises(ModelStudioError):
+            self.service.get_dataset(dataset["dataset_id"])
+
+    def test_dataset_permanent_delete_cascades_non_production_records_and_managed_paths(self):
+        dataset = self.service.create_dataset({
+            "datasetName": "Scratch_Delete_Cascade",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root),
+        })
+        self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+        self.service.save_sample_label(dataset["dataset_id"], "sample_000", {"ssc": "10.1"})
+        version = self.service.create_dataset_version(dataset["dataset_id"], "Trash V1")
+        experiment = self.service.create_experiment({
+            "datasetId": dataset["dataset_id"],
+            "datasetVersionId": version["dataset_version_id"],
+            "target": "ssc",
+            "models": ["PLSR"],
+            "preprocessing": ["RAW"],
+        })
+        artifact_file = self.service.artifact_dir / "features" / dataset["dataset_id"] / "features.csv"
+        artifact_file.parent.mkdir(parents=True, exist_ok=True)
+        artifact_file.write_text("sample_id,ssc\nsample_000,10.1\n", encoding="utf-8")
+        with self.service.connect() as conn:
+            conn.execute("UPDATE training_experiments SET feature_csv=? WHERE experiment_id=?", (str(artifact_file), experiment["experiment_id"]))
+            conn.execute(
+                """
+                INSERT INTO jobs(job_id,experiment_id,status,step,created_at,dataset_version_id)
+                VALUES('job_cascade',?,'Completed','Done','2026-01-01',?)
+                """,
+                (experiment["experiment_id"], version["dataset_version_id"]),
+            )
+        candidate_id = self._insert_fake_model(
+            "cascade_candidate",
+            status="Candidate",
+            dataset_id=dataset["dataset_id"],
+            dataset_version_id=version["dataset_version_id"],
+            experiment_id=experiment["experiment_id"],
+            job_id="job_cascade",
+        )
+        archived_id = self._insert_fake_model(
+            "cascade_archived",
+            status="Archived",
+            dataset_id=dataset["dataset_id"],
+            dataset_version_id=version["dataset_version_id"],
+            experiment_id=experiment["experiment_id"],
+            job_id="job_cascade",
+        )
+        candidate_dir = Path(self.service.get_model(candidate_id)["model_dir"])
+        archived_dir = Path(self.service.get_model(archived_id)["model_dir"])
+        local_path = Path(self.service.get_dataset(dataset["dataset_id"])["local_path"])
+
+        refs = self.service.dataset_references(dataset["dataset_id"])
+        self.assertTrue(refs["canDeletePermanently"])
+        self.assertEqual(refs["summary"]["models"], 2)
+        result = self.service.delete_dataset_permanently(dataset["dataset_id"], confirm=dataset["dataset_name"])
+        self.assertTrue(result["deleted"])
+        self.assertFalse(local_path.exists())
+        self.assertFalse(candidate_dir.exists())
+        self.assertFalse(archived_dir.exists())
+        self.assertFalse(artifact_file.exists())
+        with self.service.connect() as conn:
+            for table in ("datasets", "samples", "labels", "dataset_versions", "training_experiments", "jobs", "models"):
+                column = "dataset_id" if table not in {"jobs", "models"} else None
+                if table == "jobs":
+                    count = conn.execute("SELECT COUNT(*) FROM jobs WHERE job_id='job_cascade'").fetchone()[0]
+                elif table == "models":
+                    count = conn.execute("SELECT COUNT(*) FROM models WHERE model_id IN ('cascade_candidate','cascade_archived')").fetchone()[0]
+                else:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (dataset["dataset_id"],)).fetchone()[0]
+                self.assertEqual(count, 0, table)
+
+    def test_dataset_permanent_delete_blocks_published_and_default_model_references(self):
+        for status in ("Published", "Default"):
+            dataset = self.service.create_dataset({
+                "datasetName": f"Scratch_Delete_Block_{status}",
+                "fruitType": "blueberry",
+                "variety": "Duke",
+            })
+            version = self.service.create_dataset_version(dataset["dataset_id"], "Referenced")
+            model_id = self._insert_fake_model(
+                f"block_{status.lower()}",
+                status=status,
+                dataset_id=dataset["dataset_id"],
+                dataset_version_id=version["dataset_version_id"],
+            )
+            refs = self.service.dataset_references(dataset["dataset_id"])
+            self.assertFalse(refs["canDeletePermanently"])
+            self.assertEqual(refs["blockCode"], "DATASET_HAS_PRODUCTION_MODEL_REFERENCES")
+            with self.assertRaisesRegex(ModelStudioError, "DATASET_HAS_PRODUCTION_MODEL_REFERENCES"):
+                self.service.delete_dataset_permanently(dataset["dataset_id"], confirm=dataset["dataset_name"])
+            self.assertEqual(self.service.get_dataset(dataset["dataset_id"])["dataset_id"], dataset["dataset_id"])
+            self.assertEqual(self.service.get_model(model_id)["model_id"], model_id)
+
+    def test_model_permanent_delete_status_rules_and_station_catalog_refresh(self):
+        candidate_id = self._insert_fake_model("delete_candidate", status="Candidate")
+        candidate_dir = Path(self.service.get_model(candidate_id)["model_dir"])
+        self.service.delete_model_permanently(candidate_id, confirm=candidate_id)
+        with self.assertRaises(ModelStudioError):
+            self.service.get_model(candidate_id)
+        self.assertFalse(candidate_dir.exists())
+
+        published_id = self._insert_fake_model("delete_published", status="Published")
+        published = self.service.get_model(published_id)
+        published_dir = Path(published["model_dir"])
+        published_copy = self.service.production_dir / "published" / published_id
+        self.assertIn(published_id, [item["model_id"] for item in self.service.model_catalog(fruit_type="blueberry", variety="Duke")["compatible"]["ssc"]])
+        self.service.delete_model_permanently(published_id, confirm=published_id)
+        self.assertFalse(published_dir.exists())
+        self.assertFalse(published_copy.exists())
+        self.assertNotIn(published_id, [item["model_id"] for item in self.service.model_catalog(fruit_type="blueberry", variety="Duke")["compatible"]["ssc"]])
+        self.assertNotIn(published_id, [item["model_id"] for item in self.service.list_models()])
+
+        default_id = self._insert_fake_model("delete_default", status="Default")
+        with self.assertRaisesRegex(ModelStudioError, "default model cannot be permanently deleted"):
+            self.service.delete_model_permanently(default_id, confirm=default_id)
+
+    def test_archive_model_keeps_files_and_hides_from_station_catalog(self):
+        published_id = self._insert_fake_model("archive_keeps_files", status="Published")
+        published_dir = Path(self.service.get_model(published_id)["model_dir"])
+        self.service.archive_model(published_id)
+        self.assertTrue(published_dir.exists())
+        self.assertEqual(self.service.get_model(published_id)["status"], "Archived")
+        self.assertNotIn(published_id, [item["model_id"] for item in self.service.model_catalog(fruit_type="blueberry", variety="Duke")["compatible"]["ssc"]])
+
+    def test_managed_path_guards_reject_unmanaged_model_and_dataset_paths(self):
+        model_id = self._insert_fake_model("unmanaged_path", status="Candidate")
+        external_model_dir = self.samples_root / "external_model_dir"
+        external_model_dir.mkdir()
+        (external_model_dir / "model.joblib").write_bytes(b"fake")
+        (external_model_dir / "metadata.json").write_text("{}", encoding="utf-8")
+        with self.service.connect() as conn:
+            conn.execute("UPDATE models SET model_dir=? WHERE model_id=?", (str(external_model_dir), model_id))
+        with self.assertRaisesRegex(ModelStudioError, "unmanaged model path"):
+            self.service.delete_model_permanently(model_id, confirm=model_id)
+        self.assertTrue(external_model_dir.exists())
+
+        dataset = self.service.create_dataset({"datasetName": "Bad Dataset Path", "fruitType": "blueberry"})
+        with self.service.connect() as conn:
+            conn.execute("UPDATE datasets SET local_path=?, storage_path=? WHERE dataset_id=?", (str(self.samples_root), str(self.samples_root), dataset["dataset_id"]))
+        with self.assertRaisesRegex(ModelStudioError, "unmanaged dataset path"):
+            self.service.delete_dataset_permanently(dataset["dataset_id"], confirm=dataset["dataset_name"])
+        self.assertTrue(self.samples_root.exists())
+
     def test_training_start_from_current_config_creates_target_specific_experiment(self):
         dataset = self.service.create_dataset({
             "datasetName": "Blueberry_Targets",
@@ -426,7 +588,17 @@ class ModelStudioServiceTests(unittest.TestCase):
             time.sleep(0.15)
         self.fail(f"training job did not finish: {job_id}")
 
-    def _insert_fake_model(self, model_id: str, *, status: str = "Published", target: str = "ssc") -> str:
+    def _insert_fake_model(
+        self,
+        model_id: str,
+        *,
+        status: str = "Published",
+        target: str = "ssc",
+        dataset_id: str = "",
+        dataset_version_id: str = "",
+        experiment_id: str = "",
+        job_id: str = "",
+    ) -> str:
         model_dir = self.service.model_dir / "candidates" / "fake" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         (model_dir / "model.joblib").write_bytes(b"fake")
@@ -440,11 +612,13 @@ class ModelStudioServiceTests(unittest.TestCase):
         with self.service.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,model_dir,metadata_json,created_at,published_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO models(model_id,experiment_id,dataset_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,dataset_version_id,dataset_version_label,job_id,model_dir,metadata_json,created_at,published_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     model_id,
+                    experiment_id,
+                    dataset_id,
                     model_id,
                     model_id,
                     target,
@@ -455,6 +629,9 @@ class ModelStudioServiceTests(unittest.TestCase):
                     "v1",
                     status,
                     0,
+                    dataset_version_id,
+                    dataset_version_id,
+                    job_id,
                     str(model_dir),
                     "{}",
                     "2026-01-01 00:00:00",

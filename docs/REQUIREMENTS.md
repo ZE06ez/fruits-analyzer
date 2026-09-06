@@ -86,7 +86,7 @@
 | Production/Default 模型必须人工发布 | 已实现 | `publish_model()` / `set_default_model()` |
 | 系统不能自动替换正式模型 | 已实现 | 候选与发布目录隔离 |
 | Model lifecycle 应区分 Candidate / Validated / Published / Archived / Default | 已实现 | `Default` 继续兼容为 Published 模型的自动选择角色；Archived 保留记录和文件但不进入主工作台模型目录 |
-| Model Permanent Delete 必须同步清理 DB 和文件且保护 Default | 已实现 | `/api/model-studio/models/delete` 需要 model_id 确认；Default 禁止直接删除；非 Default 删除会移除 SQLite 记录和受管 candidate/published artifacts |
+| Model Permanent Delete 必须同步清理 DB 和文件且保护 Default | 已实现 | `/api/model-studio/models/delete` 需要 model_id 确认；Default 和仍对应 legacy default bundle 的模型禁止直接删除；非 Default 删除会移除 SQLite 记录和受管 candidate/published artifacts；Model Card 的“更多”菜单提供状态化入口 |
 | Retrain 不得覆盖旧模型 | 已实现 | `retrain_from_model()` 带出 `parent_model_id` 创建新 Experiment/Run/Model，旧模型保留，由人工决定 Publish / Set Default |
 | 支持不同水果/品种使用不同模型 | 已实现 | 模型目录和 SQLite 按 fruit_type/variety 过滤 |
 | 支持 generic 品种模型兜底 | 已实现 | `model_catalog()` 和 `_select_registry_model()` |
@@ -108,7 +108,7 @@
 | 模型发布审批标准 | 可手动发布，但缺少必须满足的 R2/RMSE/RPD 阈值 |
 | 报告格式 | 当前为 TXT，是否需要 PDF/Excel/数据库记录待确认 |
 | 历史记录结构 | 历史文档有建议表，当前检测工作站未实现 |
-| Dataset 删除/归档策略 | Sample 删除已有基础实现；Dataset 级删除、归档和批量清理规则仍待确认 |
+| Dataset 删除/归档策略 | 已实现 | Archive 保留 Dataset/Samples/Versions/Experiments/Models/Lineage 并默认隐藏；Permanent Delete 需要 Dataset Name 确认，Published/Default/Production 模型引用会阻止删除，Candidate/Validated/Archived 实验模型可随 Dataset 级联清理；仅删除 Model Studio 受管目录，不删除外部 source_path |
 | 硬件通信协议最终格式 | 当前主路径保留 zdyzzddy 两字节协议 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 兼容；P1B-7.5A.1 后默认生产 adapter 已使用当前 AA55 firmware profile，旧 short-frame 只作为兼容边界保留。真实硬件 smoke 后再把现场验证状态写入文档 |
 | DVP2 网页预览现场复核 | 用户已确认完全退出 BasedCam3 后 manual test 可打开和取帧；本轮 Codex 复测时当前运行环境 DVP2 枚举返回 0。需要在设备在线时从主程序相机设置页复核重新检测、打开预览、曝光/增益应用、停止/重启预览 |
 | STM32 设备身份命令 | 当前固件协议只有 PING 等两字节命令；PING 只能证明兼容协议，不能区分 MAIN_CONTROLLER 或 ROTATION_CONTROLLER。下一版建议增加 GET_DEVICE_TYPE / GET_DEVICE_INFO，返回 deviceType、deviceId、firmwareVersion 和 capabilities |

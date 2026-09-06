@@ -177,6 +177,10 @@
             <dt>Latest Version</dt><dd id="summaryLatestVersion">--</dd>
             <dt>Status</dt><dd id="summaryDatasetStatus">--</dd>
           </dl>
+          <div class="dataset-actions">
+            <button id="archiveDataset" class="ghost-button" type="button">归档</button>
+            <button id="deleteDatasetPermanently" class="danger-button" type="button">永久删除</button>
+          </div>
           <div class="quality-stack" id="datasetQualitySummary">
             <div class="quality-row pending"><span>Dataset</span><b>Pending</b></div>
             <div class="quality-row pending"><span>Samples</span><b>0</b></div>
@@ -195,7 +199,7 @@
           <select id="datasetDirtyFilter"><option value="">Dirty / Clean</option><option value="1">Dirty</option><option value="0">Clean</option></select>
           <select id="datasetArchivedFilter"><option value="0">Active</option><option value="all">All</option><option value="1">Archived</option></select>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>Dataset</th><th>果种</th><th>品种</th><th>样品</th><th>标签</th><th>版本</th><th>状态</th><th>路径</th></tr></thead><tbody id="datasetRows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Dataset</th><th>果种</th><th>品种</th><th>样品</th><th>标签</th><th>版本</th><th>状态</th><th>路径</th><th>操作</th></tr></thead><tbody id="datasetRows"></tbody></table></div>
       </div>
     </section>
 

@@ -137,6 +137,8 @@ UI
 13. 人工验证/发布：可标记 Validated，可手动 Publish。
 14. 设为默认：发布时选择 `setDefault` 或后续点击“设为默认”；只有此时模型才复制到 `trained_models/<target>/` 作为主程序 fallback。
 15. 主程序使用 Production/Default：`quality_prediction._select_registry_model()` 先查 Model Studio SQLite 中 Published/Default/Production 模型并校验果种/品种；没有指定/默认模型时才回落到 `trained_models/<target>`。
+16. Dataset 维护：Dataset List 和 Dataset Summary 均提供 Archive 与 Permanent Delete。Archive 只隐藏 active list，不删除样品、版本、实验、模型或 lineage；Permanent Delete 先读取 `/api/model-studio/datasets/<dataset_id>/references`，若有 Published/Default/Production 模型引用则阻止，否则可在 Dataset Name 确认后级联清理无生产价值的 Candidate/Validated/Archived 实验数据和受管文件。
+17. Model 维护：Model Card 提供“查看 / 重训 / 更多”。更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示 Validate、Publish、Set Default、Archive、Export、Delete Permanently 等合理操作；Default 和仍对应 legacy default bundle 的模型不能直接永久删除。
 
 ## 6. 模型系统
 
@@ -202,7 +204,7 @@ UI
 | 多光谱特征提取 | DONE | 暗/白校正、ROI 均值、波长校验 |
 | RAW/SNV/MSC | DONE | `preprocessing.py` |
 | PLSR/SVR/RF 训练 | DONE | `training/train.py` 与测试 |
-| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、引用保护 Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、Archive/Delete、Retrain lineage；实际项目数据库暂无真实训练数据 |
+| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、Sample 引用保护 Permanent Delete、Dataset Archive、带生产模型依赖保护的 Dataset Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、状态化 Archive/Delete、Retrain lineage；实际项目数据库暂无真实训练数据 |
 | Production 模型人工发布 | DONE | `publish_model()`/`set_default_model()`；复制到 `trained_models/<target>` |
 | 主程序按果种/品种选模型 | DONE | `/api/quality-models`、`resolve_model_id()`、`_select_registry_model()` |
 | SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；当前无生产模型时返回缺失 |
@@ -251,7 +253,7 @@ UI
 - `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 明确抛出 `NotImplementedError`。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
-- Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级删除/归档策略仍需确认。
+- Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete 已实现，仍需真实用户数据场景下做人工 UI 验收。
 - `model_studio/database/model_studio.sqlite` 当前为空/待初始化，没有真实数据集和模型记录。
 - 主程序检测结果没有正式历史记录数据库，仅 UI 状态和文本报告。
 - 报告导出是前端 TXT，不是正式 PDF/数据库记录。

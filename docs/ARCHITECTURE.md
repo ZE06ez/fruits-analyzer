@@ -542,7 +542,7 @@ host_software/static_ui_prototype_bin/model_studio_data/
 - `training_experiments`
 - `jobs`
 - `models`：Candidate / Validated / Published / Default / Archived 生命周期，记录 Dataset Version、Experiment、Run、parent model、metrics、tags、notes 和受管模型文件路径。
-- `operation_logs`
+- `operation_logs`：记录 `dataset.archive`、`dataset.delete`、`model.archive`、`model.delete` 等可追踪操作；Permanent Delete 后仍保留 resource id/name 文本。
 
 训练文件流：
 
@@ -571,6 +571,17 @@ Sample include/exclude/delete
   -> optional delete managed local copy under Dataset samples/
   -> never delete samples.source_path
 
+Dataset archive/delete
+  -> archive_dataset()
+  -> keep Dataset/Samples/Versions/Experiments/Jobs/Models/Lineage/files
+  -> hide archived datasets by default list filter
+  -> dataset_references()
+  -> block permanent delete when Published/Default/Production models reference dataset
+  -> delete_dataset_permanently()
+  -> cascade delete non-production experiment records and Candidate/Validated/Archived models
+  -> delete only managed model_studio_data/model_studio/artifacts/model_studio/models/trained_models/published paths
+  -> never delete external import_source_path/source_path
+
 Dataset local storage
   -> import_labels()
   -> create_dataset_version()
@@ -596,7 +607,7 @@ Dataset local storage
 - Candidate 不会自动进入主程序。
 - Published 可被主检测工作站手动选择，但 Default 才会作为对应 fruit_type/variety/target 的自动默认。
 - Archived 保留数据库记录、模型文件和 lineage，但不进入 `/api/quality-models`，因此不参与主检测工作站自动或手动选择。
-- Permanent Delete 必须先确认模型不是 Default，再同步删除 SQLite models 记录、受管 candidate/published artifacts；已作为 legacy `trained_models/<target>` 的 Default 不能直接删除。
+- Permanent Delete 必须先确认模型不是 Default，再同步删除 SQLite models 记录、受管 candidate/published artifacts；已作为 legacy `trained_models/<target>` 的 Default 不能直接删除。Published 非 Default 删除后不再进入 `/api/quality-models`。
 - `trained_models/<target>/` 是 legacy/default fallback，不代表所有已发布模型。
 
 Model Studio 一级 UI 结构：
