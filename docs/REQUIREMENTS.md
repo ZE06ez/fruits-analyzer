@@ -1,6 +1,6 @@
 # Requirements
 
-更新时间：2026-09-06
+更新时间：2026-09-07
 
 本文档集中记录当前已经确认或待确认的需求。状态含义：
 
@@ -19,6 +19,7 @@
 | 使用封闭暗箱和稳定光源 | 部分实现 | 升降门、RGB LED 两路、钨灯两路、风扇已有 STM32 控制命令；P1B-2 已在 CaptureCoordinator 中接入安全准备链，可按 RGB/多光谱模式准备互斥光源并确认 interlock；P1B-3/P1B-4/P1B-5/P1B-6 的受保护 RGB/DVP2 单帧、多波段 sample 和 Dark/White reference 保存会复用对应安全准备和关灯收尾；Dark reference 会先关采集光源并通过 output status 验证关闭；亮度闭环和完整真实采图同步未实现 |
 | 支持暗场和白板校正 | 部分实现/SOFTWARE IMPLEMENTED | 算法有反射率校正；P1B-6 已在 CaptureCoordinator 中新增 `run_dark_reference_capture()` 和 `run_white_reference_capture()`，复用 `MultispectralCapturePlan`/`MultispectralBandPlan`、滤光轮同步、每 band exposure/gain 设置和 raw `uint8/uint16` PNG saver，写入 `CalibrationSet`、`calibrationId`、`captureType`、完整性和诊断 metadata；物理遮光/标准白板放置和真实校准质量仍需现场验收 |
 | 样品采集必须先完成设备准备流程 | 已实现/部分真实 | 前端和后端要求先完成设备检查；当前离线验证门槛为控制器/电机/光源控制，P1B-2 coordinator 可执行真实 STM32 安全准备链；即使 P1B-7 内部 RGB/DVP2/Calibration/MultiView 软件路径可用，`trueCapturePrepared` 在真实滤光轮验收、样品旋转同步、物理校正验收和完整 `/api/capture/start` 闭环完成前仍保持 false，真实完整采集不可用 |
+| 真实采集放行必须经过正式 hardware acceptance gate | 已确认/文档已建立 | P1B 正式验收规范位于 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`，要求逐项记录测试日期、测试人员、application commit、硬件身份、步骤、实测值、证据、PASS/FAIL/BLOCKED 和 release decision。没有真实硬件证据的项目默认 `NOT TESTED`；unit test、fake adapter 或 simulation 不能把 STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台或完整真实采集标记为 PASS |
 | 主界面应显示统一全局系统状态 | 已实现 | 顶栏新增“当前状态”，由 `deriveSystemStatus()` 基于设备、样品、离线验证、形态任务和预测状态派生 |
 | 设备准备页应提供普通用户的一键设备检查 | 已实现/部分真实 | “开始设备检查”调用 `/api/device/check`，按 STM32、RGB、DVP2 独立硬件域检查；STM32 未连接或缺 pyserial 不阻断 RGB/DVP2；RGB 状态来自 OpenCV/DirectShow adapter probe，多光谱来自 DVP2 SDK probe，标定显示需要确认 |
 | 软件应支持统一设备发现、选择和绑定 | 部分实现 | P1B-3.6 新增基础层；P1B-3.7 完善 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind` 的角色/kind 校验、Windows RGB 身份元数据和相机设置页绑定入口。绑定保存 stableId 和 last known location，但不等于 connected/verified/ready |
@@ -115,6 +116,7 @@
 | Dataset 删除/归档策略 | 已实现 | Archive 保留 Dataset/Samples/Versions/Experiments/Models/Lineage 并默认隐藏；Permanent Delete 需要 Dataset Name 确认，Published/Default/Production 模型引用会阻止删除，Candidate/Validated/Archived 实验模型可随 Dataset 级联清理；仅删除 Model Studio 受管目录，不删除外部 source_path |
 | 硬件通信协议最终格式 | 当前主路径保留 zdyzzddy 两字节协议 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 兼容；P1B-7.5A.1 后默认生产 adapter 已使用当前 AA55 firmware profile，旧 short-frame 只作为兼容边界保留。真实硬件 smoke 后再把现场验证状态写入文档 |
 | DVP2 网页预览现场复核 | 用户已确认完全退出 BasedCam3 后 manual test 可打开和取帧；本轮 Codex 复测时当前运行环境 DVP2 枚举返回 0。需要在设备在线时从主程序相机设置页复核重新检测、打开预览、曝光/增益应用、停止/重启预览 |
+| P1B hardware acceptance 实测记录 | 已建立规范，待执行 | `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md` 已列出 RGB、DVP2、STM32、Fan、LED3、Door/Actuator、Filter Wheel、Dark/White、Multi-band、Sample Stage、Multi-view、Scientific Data、Metadata、Safety 和 True Capture gate 的执行步骤与 PASS/FAIL 标准；下一步需要现场填写证据 |
 | STM32 设备身份命令 | 当前固件协议只有 PING 等两字节命令；PING 只能证明兼容协议，不能区分 MAIN_CONTROLLER 或 ROTATION_CONTROLLER。下一版建议增加 GET_DEVICE_TYPE / GET_DEVICE_INFO，返回 deviceType、deviceId、firmwareVersion 和 capabilities |
 | 是否保留网页局域网访问 | 当前启动本地 127.0.0.1；远程访问和权限待定 |
 

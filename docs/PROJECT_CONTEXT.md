@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-06
+更新时间：2026-09-07
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -91,6 +91,7 @@ UI
 - `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、特征提取、预处理、模型 IO。
 - `host_software/static_ui_prototype_bin/training/`：特征 CSV 构建、PLSR/SVR/RF 训练、评估。
 - `host_software/static_ui_prototype_bin/model_studio/service.py`：SQLite 数据集、样品、标签、训练实验、候选模型、发布模型管理。
+- `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`：P1B 真实硬件与采集系统正式验收规范，逐项覆盖 RGB、DVP2、STM32、风扇、LED3、推杆、滤光轮、Dark/White、多波段、样品台、多视角、数据完整性、metadata、安全和 true capture gate；未现场验证项默认 `NOT TESTED`，真实样品台和完整 true capture 当前为 `BLOCKED`。
 
 ## 4. 用户完整工作流（当前代码）
 
@@ -224,6 +225,7 @@ UI
 - 主程序继续以 Python 上位机为核心。
 - 当前前端是静态 HTML/CSS/JS，后端是 Python 本地 HTTPServer；历史文档中的 Vue/FastAPI/Electron 是早期建议，不是当前实现。
 - RGB 相机第一阶段走 OpenCV `cv2.CAP_DSHOW`/Windows DirectShow/UVC，CameraService 返回 RGB `uint8` numpy 帧，不直接决定样品目录或文件名。当前电脑实机验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，但该 index 是配置层默认值，不是跨电脑稳定身份。
+- P1B 已进入 hardware acceptance 阶段；真实采集放行必须以 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md` 中关键域全部 PASS 为前提。没有现场证据时，STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台和完整真实采集都不能标记 PASS。
 - DVP2 多光谱相机是 DO3THINK/度申 GigE/RJ45 工业黑白相机；当前绑定只能使用已从真实 `DVPCamera.h` 和官方示例确认的 C API，禁止凭经验新增未核对函数名，禁止用 OpenCV VideoCapture 替代，禁止返回模拟帧。
 - 当前设备准备分为两层：`devicePrepared` 表示离线验证流程可用，`trueCapturePrepared` 表示未来真实采集就绪；即使 RGB/DVP2 预览、参数下发和 Coordinator 内部单帧/多波段 sequence/Dark/White calibration 保存成功，仍强制 `trueCapturePrepared=false`，直到光源/滤光轮/样品台同步、物理校正验收和完整 `/api/capture/start` 闭环完成。
 - 设备发现和设备绑定不等于设备就绪：`discovered/selected/bound/connected/verified/ready` 必须区分。`COM5`、`COM7`、`device_index=1`、`device_index=2` 只能作为 current location 或 last known location cache；不能作为跨电脑永久身份。STM32 当前只能通过 PING 证明兼容两字节协议，不能证明具体角色；下一版固件建议增加 `GET_DEVICE_TYPE` / `GET_DEVICE_INFO`，但当前代码不得伪造这些回复。
@@ -247,6 +249,7 @@ UI
 代码和文档中确认的主要缺口：
 
 - 真实采集闭环未接入：STM32 串口、滤光轮、推杆/门控、急停、风扇和 LED3 已有控制层、P1B-7.5A.1 current-firmware profile 绑定和 P1B-7.5A.2 Web 调试入口/fresh STATUS 运动验证；RGB adapter 已完成当前电脑实机验证，并接入相机设置页预览/参数应用和 Coordinator 受保护单帧正式 PNG 保存；DVP2 adapter 已完成真实 SDK 打开/取帧边界、用户实机 manual test 通过，已接入相机设置页低延迟预览/曝光/增益回读、Coordinator 受保护 raw mono 单帧 PNG 保存、滤光轮同步多波段 sample sequence、Dark/White calibration sequence 和 Sample MultiView orchestration 软件路径；但完整 `/api/capture/start` 仍未放行；真实 STM32 Web 控制现场 smoke、暗白物理校正验收、样品台真实旋转、温度和扩展报警仍未接入。
+- P1B hardware acceptance checklist 已建立，但尚未填写现场测试证据；这份文档是放行门槛，不是 PASS 证据本身。
 - 样品旋转平台已有角度计划、UI、metadata、离线模拟文件和 P1B-7 `SampleStage` 软件抽象，仍缺少真实 STM32 样品台协议、位置回读、稳定确认和报警/超时 contract 的硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；一键设备检查已读取 CameraManager 状态。RGB 与 DVP2 相机设置页预览已接入；真实采图保存、样品台正反转和光源波段同步仍未完成。

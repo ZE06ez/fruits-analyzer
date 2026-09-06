@@ -1,6 +1,6 @@
 # Project Status
 
-更新时间：2026-09-06
+更新时间：2026-09-07
 
 ## 项目目标
 
@@ -14,6 +14,7 @@
 - `host_software/static_ui_prototype_bin/quality_algorithm/`：多光谱校正、ROI、特征、预处理和模型 IO。
 - `host_software/static_ui_prototype_bin/training/`：PLSR/SVR/RF 训练与评估。
 - `docs/`：长期项目上下文、需求、架构、变更记录。
+- `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`：P1B 真实硬件与采集系统正式现场验收规范，用于逐项记录测试人员、日期、硬件身份、实测值、证据、PASS/FAIL/BLOCKED 和 true capture 放行决定。
 - `camera/`：厂商资料目录，不作为 Python 包，不应改名或移动。
 
 ## 当前硬件接入状态
@@ -52,7 +53,7 @@ Model Studio 已支持 Dataset、本地托管样品、后续 Add Samples、`labe
 
 ## 当前开发重点
 
-下一阶段重点应在 P1B-7.5A.2 已提供 Web 硬件调试入口的基础上，做真实 STM32 现场验收：fresh STATUS 查询、fan duty on/off、LED3 mask 0x04/0x00、推杆伸出/缩回/停止的 command accepted 与后端定时 STOP、滤光轮 +22.5°/-22.5° 低速运动的 fresh STATUS 验证、人工 SET_ORIGIN 和 safe_stop 策略。样品旋转台仍是独立控制板，不属于当前 STM32 滤光轮电机；P1B-7.5B 之后再单独接入。需要继续保持 `devicePrepared` 与 `trueCapturePrepared` 的语义区分，不能因为受保护内部方法可用就放行完整真实采集。
+下一阶段重点应在 P1B-7.5A.2 已提供 Web 硬件调试入口的基础上，按 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md` 做真实硬件现场验收：fresh STATUS 查询、fan duty on/off、LED3 mask 0x04/0x00、推杆伸出/缩回/停止的 command accepted 与后端定时 STOP、滤光轮 +22.5°/-22.5° 低速运动的 fresh STATUS 验证、人工 SET_ORIGIN、RGB/DVP2 预览延迟、Dark/White、多波段、metadata、PNG integrity 和 safe_stop 策略。样品旋转台仍是独立控制板，不属于当前 STM32 滤光轮电机；P1B-7.5B 之后再单独接入。需要继续保持 `devicePrepared` 与 `trueCapturePrepared` 的语义区分，不能因为受保护内部方法可用就放行完整真实采集。
 
 Model Studio 侧当前已整理为 Dashboard / Datasets / Training / Models / Settings 信息架构。科研数据维护原则为 Working Dataset 可编辑、Dataset Version 冻结不可变；新增样品、标签修改和 Exclude 会让 Working Dataset 标记 dirty，训练必须使用 Dataset Version。旧版本、实验和模型 lineage 引用过的样品不能物理删除，只能从后续版本中 Exclude。Dataset Archive 保留全部历史；Dataset Permanent Delete 仅用于清理无生产引用的实验垃圾数据，删除前会列出 samples / versions / experiments / jobs / models，并保护 Published / Default 模型引用。
 
@@ -61,6 +62,7 @@ Model Studio 侧当前已整理为 Dashboard / Datasets / Training / Models / Se
 - 完整正式真实采集保存未实现，当前完成采集仍是离线验证数据；RGB 和 DVP2 已分别具备 Coordinator 内部受保护单帧保存路径，DVP2 多波段 sample sequence、Dark/White calibration sequence 和 Sample MultiView orchestration 已软件实现但硬件验收待完成。
 - DVP2 低延迟网页预览需要在设备在线且 BasedCam3 完全退出后做现场端到端复核；Codex 本轮只能完成本机 2048x1200 Mono8 编码微基准和 fake adapter 生命周期测试，当前环境 DVP2 枚举返回 0。
 - 多光谱 PixelFormat 当前只验证 `Mono8`，不开放切换。
+- P1B 真实硬件与采集系统验收规范已建立在 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`；当前只是验收表建立，不代表任何未现场测试硬件已经 PASS。
 - 滤光轮、光源、相机曝光、样品旋转已有软件编排边界；真实样品台协议、滤光轮/光源现场同步验收尚未完成。
 - P1B-7.5A.2 已在软件中完成 Web 硬件调试入口和 fresh STATUS 运动验证；仍未做真实 STM32 硬件 smoke，因此 `currentFirmwareProfileValidated` 只有在串口 handshake 读到合法 STATUS 后才会为 true，fan/LED3/推杆/滤光轮控制仍需现场验证。
 - RGB 与多光谱几何配准、尺寸标定未完成。

@@ -2,6 +2,14 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-07 P1B Hardware Acceptance Specification
+
+- 修改内容：新增 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`，作为 P1B 真实硬件与采集系统正式验收规范。文档覆盖 RGB、DVP2、STM32、Fan、LED3、Door/Actuator、Filter Wheel、Dark Reference、White Reference、Dark/White Compatibility、Multi-band Capture、Sample Stage、Multi-view Capture、Scientific Data Integrity、Metadata Integrity、Safety 和 True Capture Gate 等 17 个 acceptance domains。
+- 修改内容：验收规范固定状态枚举 `NOT TESTED / IN PROGRESS / PASS / FAIL / BLOCKED / N/A`，并要求记录测试日期、测试人员、application commit、硬件身份、步骤、实测值、截图/日志/PNG/metadata/console output 证据、失败原因和 follow-up。未现场测试的硬件默认 `NOT TESTED`；真实样品台和完整 true capture 当前保持 `BLOCKED`。
+- 修改内容：同步 `PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md` 和 `docs/REQUIREMENTS.md`，明确 P1B 已进入 hardware acceptance 阶段，真实采集放行必须经过正式 acceptance gate；unit test、fake adapter 或 simulation 不能把 STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台或完整真实采集标记为 PASS。
+- 修改文件：`docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：只新增和同步验收文档，不修改业务代码、不放行 `/api/capture/start`、不设置 `trueCapturePrepared=true`、不把任何未现场验证硬件标记为 PASS。
+
 ## 2026-09-06 P1B-7.5A.2 STM32 Web Hardware Control + Fresh Motion Verification
 
 - 修改内容：补齐 STM32 Web 硬件调试入口。设备准备/电机页移除旧的假日志按钮和“滤光轮寻零自检”，新增风扇 on/off、LED3 on/off、推杆伸出/缩回/停止、滤光轮顺/逆时针按 slot 相对移动、滤光轮 STOP、人工确认后“将当前位置设为滤光轮零点”。Fault Clear 在当前 firmware 下禁用并提示 unsupported。
