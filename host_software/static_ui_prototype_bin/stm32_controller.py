@@ -11,11 +11,12 @@ from stm32_protocol import (
     FilterWheelMapping,
     Stm32Frame,
     Stm32FrameKind,
-    Stm32ProtocolError,
+    Stm32Info,
     Stm32ProtocolProfile,
     Stm32Status,
     ack_echo_cmd,
     ack_result_code,
+    decode_info_payload,
     decode_status_payload,
 )
 
@@ -125,8 +126,11 @@ class Stm32ControllerAdapter:
         self._command_lock = threading.RLock()
         self._status_lock = threading.RLock()
         self._status: Stm32Status | None = None
+        self._info_lock = threading.RLock()
+        self._info: Stm32Info | None = None
         self._info_frames: list[Stm32Frame] = []
         self._last_safety_report = Stm32SafetyReport()
+        self.current_firmware_profile_validated = False
         self.tungsten_supported = False
         self.door_endpoint_feedback_supported = False
         self.physical_encoder_verified = False
@@ -142,12 +146,60 @@ class Stm32ControllerAdapter:
             return self._status
 
     @property
+    def info_cache(self) -> Stm32Info | None:
+        with self._info_lock:
+            return self._info
+
+    @property
     def last_safety_report(self) -> dict[str, Any]:
         return self._last_safety_report.to_dict()
 
     def ping(self, timeout_s: float = 0.5) -> bool:
-        result = self.query_status(timeout_s=timeout_s)
-        return result is not None
+        try:
+            return self.handshake(timeout_s=timeout_s).get("currentFirmwareProfileValidated") is True
+        except Stm32AdapterError:
+            return False
+
+    def handshake(self, *, timeout_s: float = 0.8) -> dict[str, Any]:
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            for frame in self._read_frames_once(deadline):
+                self._handle_async_frame(frame)
+            if self.status_cache is not None and self.info_cache is not None:
+                break
+
+        status = self.query_status(timeout_s=max(0.05, min(0.5, timeout_s)))
+        self.current_firmware_profile_validated = status is not None
+        return {
+            "currentFirmwareProfileValidated": self.current_firmware_profile_validated,
+            "status": status.to_dict(),
+            "info": self.info_cache.to_dict() if self.info_cache is not None else None,
+            "diagnostics": self.validate_profile_consistency(),
+        }
+
+    def validate_profile_consistency(self) -> dict[str, Any]:
+        info = self.info_cache
+        if info is None:
+            return {
+                "filterWheelPprMatched": None,
+                "filterWheelPprMismatch": False,
+                "expectedPpr": self.filter_wheel.pulses_per_rev,
+                "reportedPpr": None,
+                "action": "no_auto_rewrite",
+            }
+        reported = float(info.ppr)
+        expected = float(self.filter_wheel.pulses_per_rev)
+        matched = abs(reported - expected) < 0.01
+        return {
+            "filterWheelPprMatched": matched,
+            "filterWheelPprMismatch": not matched,
+            "expectedPpr": self.filter_wheel.pulses_per_rev,
+            "reportedPpr": reported,
+            "firmwareVersion": info.firmware_version,
+            "maxRpm": info.max_rpm,
+            "acc": info.acc,
+            "action": "manual_confirmation_required" if not matched else "none",
+        }
 
     def send_command(self, cmd: int, param: int, timeout_s: float | None = None) -> int:
         """Compatibility shim for the existing HardwareController command ids."""
@@ -218,7 +270,7 @@ class Stm32ControllerAdapter:
             return Stm32CommandResult(cmd=0x10, ack_received=True)
         return self._send_and_wait_ack(
             self.profile.fan_set_cmd,
-            bytes((0x01 if enabled else 0x00,)),
+            bytes((100 if enabled else 0x00,)),
             timeout_s=timeout_s,
         )
 
@@ -254,6 +306,9 @@ class Stm32ControllerAdapter:
             timeout_s=timeout_s,
             mechanical=True,
         )
+
+    def set_origin_semantics(self) -> dict[str, bool]:
+        return {"originEstablished": True, "automaticHoming": False}
 
     def move_filter_wheel_relative_slots(
         self,
@@ -336,11 +391,20 @@ class Stm32ControllerAdapter:
                         mechanical=True,
                         attempts=attempts,
                     )
-                    self._wait_motion_complete(timeout_s=timeout_s)
-                    return result
+                    final_status = self._wait_motion_complete(timeout_s=timeout_s)
+                    return Stm32CommandResult(
+                        cmd=result.cmd,
+                        ack_received=result.ack_received,
+                        result_code=result.result_code,
+                        status_after=final_status or result.status_after,
+                        completed_from_status=bool(
+                            final_status and self._is_motion_complete(final_status)
+                        ),
+                        attempts=result.attempts,
+                    )
                 except Stm32AckTimeout:
                     status = self.status_cache
-                    if status is not None and status.motor_state == "moving":
+                    if status is not None and status.motor_state in {"moving", "stopping"}:
                         final_status = self._wait_motion_complete(timeout_s=timeout_s)
                         return Stm32CommandResult(
                             cmd=cmd,
@@ -416,9 +480,13 @@ class Stm32ControllerAdapter:
                 self._handle_async_frame(frame)
                 if frame.kind == Stm32FrameKind.STATUS:
                     last = self.status_cache
-                    if last and last.motor_state in {"idle", "done", "error"}:
+                    if last and self._is_motion_complete(last):
                         return last
         return last
+
+    def is_position_within_tolerance(self, actual_deg: float, target_deg: float) -> bool:
+        tolerance = float(self.filter_wheel.position_tolerance_deg)
+        return abs(((actual_deg - target_deg + 180.0) % 360.0) - 180.0) <= tolerance
 
     def _send_frame(self, cmd: int, payload: bytes) -> None:
         frame = self.codec.encode(cmd, payload)
@@ -443,6 +511,13 @@ class Stm32ControllerAdapter:
         if frame.kind == Stm32FrameKind.STATUS:
             self._update_status(self._decode_status_frame(frame))
         elif frame.kind == Stm32FrameKind.INFO:
+            info = decode_info_payload(
+                frame.payload,
+                layout=self.profile.info_layout,
+                raw_frame=frame.raw,
+            )
+            if info is not None:
+                self._update_info(info)
             self._info_frames.append(frame)
 
     def _decode_status_frame(self, frame: Stm32Frame) -> Stm32Status:
@@ -456,6 +531,14 @@ class Stm32ControllerAdapter:
         with self._status_lock:
             self._status = status
 
+    def _update_info(self, info: Stm32Info) -> None:
+        with self._info_lock:
+            self._info = info
+
+    @staticmethod
+    def _is_motion_complete(status: Stm32Status) -> bool:
+        return status.motor_state in {"idle", "done"}
+
     @staticmethod
     def _legacy_output_status(status: Stm32Status) -> int:
         raw = 0
@@ -466,4 +549,6 @@ class Stm32ControllerAdapter:
             raw |= 1 << 1
         if led_mask & 0x02:
             raw |= 1 << 2
+        if led_mask & 0x04:
+            raw |= 1 << 5
         return raw

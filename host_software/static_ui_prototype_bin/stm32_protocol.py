@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import struct
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -47,7 +48,11 @@ class Stm32Status:
     velocity_rpm: float | None = None
     target_deg: float | None = None
     fan_on: bool | None = None
+    fan_duty: int | None = None
     led_mask: int | None = None
+    led1_duty: int | None = None
+    led2_duty: int | None = None
+    led3_duty: int | None = None
     error_code: int | None = None
     raw_payload: bytes = b""
     raw_frame: bytes = b""
@@ -69,13 +74,31 @@ class Stm32Status:
 
 
 @dataclass(frozen=True)
+class Stm32Info:
+    firmware_version: int
+    ppr: float
+    max_rpm: float
+    acc: float
+    raw_payload: bytes = b""
+    raw_frame: bytes = b""
+    updated_monotonic: float = field(default_factory=time.monotonic)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["rawPayloadHex"] = self.raw_payload.hex(" ").upper()
+        data["rawFrameHex"] = self.raw_frame.hex(" ").upper()
+        data.pop("raw_payload", None)
+        data.pop("raw_frame", None)
+        return data
+
+
+@dataclass(frozen=True)
 class Stm32ProtocolProfile:
     """
     Numeric command ids and payload layout for one STM32 firmware revision.
 
-    The current worktree does not contain the STM32 source files requested by
-    P1B-7.5A, so production code must inject a profile derived from that source
-    instead of relying on guessed command numbers.
+    ``CURRENT_STM32_FIRMWARE_PROFILE`` binds the currently confirmed AA55
+    firmware contract. Keep this abstraction for future firmware revisions.
     """
 
     ack_cmd: int
@@ -87,11 +110,16 @@ class Stm32ProtocolProfile:
     stop_cmd: int
     set_profile_cmd: int
     set_origin_cmd: int
+    set_pos_pid_cmd: int | None = None
+    set_vel_pid_cmd: int | None = None
+    set_config_cmd: int | None = None
+    reset_cmd: int | None = None
     fan_set_cmd: int | None = None
     led_set_cmd: int | None = None
     door_cmd: int | None = None
     status_layout: str = "opaque"
-    crc_includes_header: bool = True
+    info_layout: str = "opaque"
+    crc_includes_header: bool = False
 
     def frame_kind(self, cmd: int) -> Stm32FrameKind:
         if cmd == self.ack_cmd:
@@ -107,7 +135,9 @@ class Stm32ProtocolProfile:
 class FilterWheelMapping:
     slots_per_rev: int = 16
     pulses_per_rev: int = 1600
-    move_payload_units: str = "pulses_i32_le"
+    move_payload_units: str = "degrees_rpm_float32_le"
+    default_motion_rpm: float = 10.0
+    position_tolerance_deg: float = 0.5
 
     @property
     def degrees_per_slot(self) -> float:
@@ -118,6 +148,8 @@ class FilterWheelMapping:
         return int(round(self.pulses_per_rev / self.slots_per_rev))
 
     def relative_payload(self, slot_delta: int) -> bytes:
+        if self.move_payload_units == "degrees_rpm_float32_le":
+            return struct.pack("<ff", float(slot_delta) * self.degrees_per_slot, self.default_motion_rpm)
         if self.move_payload_units == "slots_i16_le":
             return int(slot_delta).to_bytes(2, "little", signed=True)
         if self.move_payload_units == "degrees_centi_i32_le":
@@ -130,6 +162,8 @@ class FilterWheelMapping:
     def absolute_payload(self, slot: int) -> bytes:
         if not 0 <= int(slot) < self.slots_per_rev:
             raise ValueError("filter-wheel slot out of range")
+        if self.move_payload_units == "degrees_rpm_float32_le":
+            return struct.pack("<ff", float(slot) * self.degrees_per_slot, self.default_motion_rpm)
         if self.move_payload_units == "slots_i16_le":
             return int(slot).to_bytes(2, "little", signed=True)
         if self.move_payload_units == "degrees_centi_i32_le":
@@ -241,7 +275,10 @@ def decode_status_payload(payload: bytes, *, layout: str, raw_frame: bytes = b""
     Decode STATUS payloads when a firmware-specific layout is known.
 
     ``opaque`` deliberately avoids guessing current STM32 payload fields.
-    ``basic_v1`` is a compact test/adapter layout:
+    ``current_v1`` is the current STM32 firmware layout:
+    state u8, err u8, position/velocity/target float32 LE, fan duty u8,
+    LED1/2/3 duty u8.
+    ``basic_v1`` is a compact legacy unit-test layout:
     state,u32/i32 centideg position,i16 centirpm velocity,i32 centideg target,
     fan byte, led mask byte, error byte.
     """
@@ -249,6 +286,42 @@ def decode_status_payload(payload: bytes, *, layout: str, raw_frame: bytes = b""
     raw = bytes(payload)
     if layout == "opaque":
         return Stm32Status(raw_payload=raw, raw_frame=bytes(raw_frame))
+    if layout == "current_v1":
+        if len(raw) != 18:
+            raise Stm32ProtocolError("current_v1 STATUS payload must be exactly 18 bytes")
+        state_map = {
+            0: "idle",
+            1: "moving",
+            2: "stopping",
+            3: "done",
+        }
+        position_deg = struct.unpack_from("<f", raw, 2)[0]
+        velocity_rpm = struct.unpack_from("<f", raw, 6)[0]
+        target_deg = struct.unpack_from("<f", raw, 10)[0]
+        fan_duty = raw[14]
+        led1_duty = raw[15]
+        led2_duty = raw[16]
+        led3_duty = raw[17]
+        led_mask = (
+            (0x01 if led1_duty else 0)
+            | (0x02 if led2_duty else 0)
+            | (0x04 if led3_duty else 0)
+        )
+        return Stm32Status(
+            motor_state=state_map.get(raw[0], f"unknown_{raw[0]:02X}"),
+            position_deg=position_deg,
+            velocity_rpm=velocity_rpm,
+            target_deg=target_deg,
+            fan_on=fan_duty > 0,
+            fan_duty=fan_duty,
+            led_mask=led_mask,
+            led1_duty=led1_duty,
+            led2_duty=led2_duty,
+            led3_duty=led3_duty,
+            error_code=raw[1],
+            raw_payload=raw,
+            raw_frame=bytes(raw_frame),
+        )
     if layout != "basic_v1":
         raise Stm32ProtocolError(f"unsupported STATUS layout: {layout}")
     if len(raw) < 14:
@@ -290,6 +363,56 @@ def ack_result_code(frame: Stm32Frame) -> int:
     if frame.kind != Stm32FrameKind.ACK or len(frame.payload) < 2:
         return 0x00
     return frame.payload[1]
+
+
+def decode_info_payload(payload: bytes, *, layout: str, raw_frame: bytes = b"") -> Stm32Info | None:
+    raw = bytes(payload)
+    if layout == "opaque":
+        return None
+    if layout != "current_v1":
+        raise Stm32ProtocolError(f"unsupported INFO layout: {layout}")
+    if len(raw) != 13:
+        raise Stm32ProtocolError("current_v1 INFO payload must be exactly 13 bytes")
+    return Stm32Info(
+        firmware_version=raw[0],
+        ppr=struct.unpack_from("<f", raw, 1)[0],
+        max_rpm=struct.unpack_from("<f", raw, 5)[0],
+        acc=struct.unpack_from("<f", raw, 9)[0],
+        raw_payload=raw,
+        raw_frame=bytes(raw_frame),
+    )
+
+
+CURRENT_STM32_FIRMWARE_PROFILE = Stm32ProtocolProfile(
+    move_abs_cmd=0x01,
+    move_rel_cmd=0x02,
+    stop_cmd=0x03,
+    set_pos_pid_cmd=0x04,
+    set_vel_pid_cmd=0x05,
+    set_profile_cmd=0x06,
+    set_config_cmd=0x07,
+    query_status_cmd=0x08,
+    set_origin_cmd=0x09,
+    reset_cmd=0x0F,
+    fan_set_cmd=0x10,
+    door_cmd=0x11,
+    led_set_cmd=0x12,
+    ack_cmd=0x80,
+    status_cmd=0x81,
+    info_cmd=0x82,
+    status_layout="current_v1",
+    info_layout="current_v1",
+    crc_includes_header=False,
+)
+
+
+CURRENT_FILTER_WHEEL_MAPPING = FilterWheelMapping(
+    slots_per_rev=16,
+    pulses_per_rev=1600,
+    move_payload_units="degrees_rpm_float32_le",
+    default_motion_rpm=10.0,
+    position_tolerance_deg=0.5,
+)
 
 
 def _validate_byte(name: str, value: int) -> None:

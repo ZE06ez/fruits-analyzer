@@ -190,6 +190,10 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(status["wheelPosition"], 2)
         self.assertTrue(status["wheelHomed"])
         self.assertTrue(status["fanOn"])
+        self.assertFalse(status["rgbLed3On"])
+        self.assertTrue(status["stm32FirmwareProfile"]["enabled"])
+        self.assertFalse(status["stm32FirmwareProfile"]["currentFirmwareProfileValidated"])
+        self.assertFalse(status["stm32FirmwareProfile"]["tungstenSupported"])
         self.assertIn("cameras", status)
         self.assertFalse(status["cameras"]["rgb"]["connected"])
         self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
@@ -220,6 +224,7 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertIsNotNone(manager.stm32_adapter)
         self.assertIs(manager.stm32_adapter.transport, serial)
         self.assertIs(manager.controller.serial, manager.stm32_adapter)
+        self.assertTrue(manager.status()["stm32FirmwareProfile"]["enabled"])
 
     def test_self_test_does_not_move_wheel_by_default(self):
         manager, _ = self.make_manager()

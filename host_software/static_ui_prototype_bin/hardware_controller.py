@@ -46,10 +46,11 @@ class OutputStatus:
     rgb_led_2_on: bool
     tungsten_1_on: bool
     tungsten_2_on: bool
+    rgb_led_3_on: bool = False
 
     @property
     def any_rgb_led_on(self) -> bool:
-        return self.rgb_led_1_on or self.rgb_led_2_on
+        return self.rgb_led_1_on or self.rgb_led_2_on or self.rgb_led_3_on
 
     @property
     def any_tungsten_on(self) -> bool:
@@ -105,7 +106,7 @@ class HardwareController:
         self._send_control(self.DOOR_SET, 0x02, 0.5)
 
     def rgb_led_set(self, mask: int) -> None:
-        self._validate_mask(mask)
+        self._validate_mask(mask, max_mask=0x07, label="RGB LED mask")
         if mask:
             self._ensure_operational()
             self._require_closed_door()
@@ -114,7 +115,7 @@ class HardwareController:
         self._send_control(self.RGB_LED_SET, mask, 0.5)
 
     def tungsten_set(self, mask: int) -> None:
-        self._validate_mask(mask)
+        self._validate_mask(mask, max_mask=0x03, label="tungsten mask")
         if mask:
             if getattr(self.serial, "tungsten_supported", True) is False:
                 raise CapabilityUnavailableError("当前 STM32 firmware 尚未实现钨灯控制")
@@ -157,6 +158,7 @@ class HardwareController:
             fan_on=bool(raw & (1 << 0)),
             rgb_led_1_on=bool(raw & (1 << 1)),
             rgb_led_2_on=bool(raw & (1 << 2)),
+            rgb_led_3_on=bool(raw & (1 << 5)),
             tungsten_1_on=bool(raw & (1 << 3)),
             tungsten_2_on=bool(raw & (1 << 4)),
         )
@@ -255,8 +257,8 @@ class HardwareController:
             pass
 
     @staticmethod
-    def _validate_mask(mask: int) -> None:
+    def _validate_mask(mask: int, *, max_mask: int, label: str) -> None:
         if isinstance(mask, bool) or not isinstance(mask, int):
-            raise TypeError("mask 必须是整数")
-        if mask not in (0x00, 0x01, 0x02, 0x03):
-            raise ValueError("mask 只能是 0x00、0x01、0x02 或 0x03")
+            raise TypeError(f"{label} 必须是整数")
+        if not 0x00 <= mask <= max_mask:
+            raise ValueError(f"{label} 必须在 0x00..0x{max_mask:02X} 范围内")

@@ -77,6 +77,29 @@ class HardwareControllerTests(unittest.TestCase):
         with self.assertRaises(InterlockError):
             controller.rgb_led_set(0x03)
 
+    def test_rgb_led_accepts_current_firmware_three_channel_mask(self):
+        serial = FakeSerialService()
+        serial.set_response(0x33, 0x00, 0x00)
+        serial.set_response(0x31, 0x00, DoorState.CLOSED)
+        serial.set_response(0x30, 0x00, 0b00000001)  # fan on, tungsten off
+        controller = HardwareController(serial)
+
+        controller.rgb_led_set(0x07)
+
+        self.assertIn((0x12, 0x07, 0.5), serial.calls)
+
+    def test_output_status_exposes_rgb_led3_without_marking_tungsten(self):
+        serial = FakeSerialService()
+        serial.set_response(0x30, 0x00, 0b00100001)  # fan + RGB LED3
+        controller = HardwareController(serial)
+
+        outputs = controller.get_output_status()
+
+        self.assertTrue(outputs.fan_on)
+        self.assertTrue(outputs.rgb_led_3_on)
+        self.assertTrue(outputs.any_rgb_led_on)
+        self.assertFalse(outputs.any_tungsten_on)
+
     def test_wheel_relative_encodes_negative_int8(self):
         serial = FakeSerialService()
         serial.set_response(0x33, 0x00, 0x00)

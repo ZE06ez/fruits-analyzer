@@ -24,9 +24,9 @@
 | 软件应支持统一设备发现、选择和绑定 | 部分实现 | P1B-3.6 新增基础层；P1B-3.7 完善 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind` 的角色/kind 校验、Windows RGB 身份元数据和相机设置页绑定入口。绑定保存 stableId 和 last known location，但不等于 connected/verified/ready |
 | 软件不得把 COM 口或 camera index 当作永久身份 | 已实现/架构约束 | 串口 stableId 仅在 pyserial 提供 VID/PID/serial_number 时生成；COM 只保存为 `lastPort`。RGB 会尝试读取 Windows FriendlyName/PnP/VID/PID/USB serial，但 DirectShow index 或仅按顺序推断的映射只保存为 `lastDeviceIndex`/`mappingConfidence=inferred`，不生成 stableId。DVP2 优先按 serial/user id 匹配 |
 | 设备发现阶段不得触发机械动作 | 已实现/测试覆盖 | 串口 discovery 对候选 COM 只执行 open/PING/close；已连接的正式 `SerialService` 端口标记 `inUse=true`，不二次打开；不调用风扇、门、光源、滤光轮或电机动作命令 |
-| STM32 current firmware 协议必须隔离在上位机 adapter 内 | 部分实现/SOFTWARE IMPLEMENTED | P1B-7.5A 新增 `stm32_protocol.py` 和 `stm32_controller.py`：支持 AA55 frame、CRC16-CCITT-FALSE、partial/multiple/noise/CRC error stream parser、STATUS cache、ACK echo cmd correlation、command serialization、status-aware MOVE_REL retry、filter-wheel slot/mechanical mapping 和 safe_stop 动作报告。当前本地/远端引用缺少指定 STM32 源码且 fetch GitHub 失败，因此生产 command profile 必须后续从当前固件源码导出注入，禁止猜测 CMD 数值 |
-| STM32 当前电机只代表滤光片轮，不得接入 SampleStage | 已实现/架构约束 | P1B-7.5A adapter 只提供 filter-wheel mapping；`SampleStage` 仍保持 P1B-7 的 `UnimplementedSampleStage` / `SimulatedSampleStage` 边界，真实水果旋转台等待独立控制板接入 |
-| 当前 firmware 不支持的硬件能力不得伪造成成功 | 已实现/架构约束 | 非零 tungsten 控制在 current-firmware adapter 下会明确为 capability unavailable；门动作 ACK 只代表 command accepted，不代表 endpoint reached；SET_ORIGIN 只表示人工对准后建立逻辑 0°，不表示 automatic HOME sensor；STATUS position 只作为 logical position，不标记 CL57C physical encoder verified |
+| STM32 current firmware 协议必须隔离在上位机 adapter 内 | 已实现/SOFTWARE IMPLEMENTED，待实机验收 | P1B-7.5A.1 已在 `stm32_protocol.py` 绑定 `CURRENT_STM32_FIRMWARE_PROFILE`：AA55 frame、CRC16-CCITT-FALSE 覆盖 `CMD+PLEN+PAYLOAD`、ACK echo/result、STATUS 18 bytes、INFO 13 bytes，以及当前命令号 `MOVE_ABS=0x01`、`MOVE_REL=0x02`、`STOP=0x03`、`SET_POS_PID=0x04`、`SET_VEL_PID=0x05`、`SET_PROFILE=0x06`、`SET_CONFIG=0x07`、`QUERY_STATUS=0x08`、`SET_ORIGIN=0x09`、`RESET=0x0F`、`FAN_SET=0x10`、`DOOR_SET=0x11`、`LED_SET=0x12`。`stm32_controller.py` 负责 STATUS/INFO cache、handshake、ACK echo correlation、command serialization、status-aware MOVE_REL retry、PPR consistency diagnostic 和 safe_stop 动作报告 |
+| STM32 当前电机只代表滤光片轮，不得接入 SampleStage | 已实现/架构约束 | P1B-7.5A.1 adapter 只提供 filter-wheel mapping；默认 16 slots、1600 ppr、22.5°/slot，pulses 仅诊断，主机 MOVE payload 为 float32 LE degrees + rpm；`SampleStage` 仍保持 P1B-7 的 `UnimplementedSampleStage` / `SimulatedSampleStage` 边界，真实水果旋转台等待独立控制板接入 |
+| 当前 firmware 不支持的硬件能力不得伪造成成功 | 已实现/架构约束 | 非零 tungsten 控制在 current-firmware adapter 下会明确为 capability unavailable；FAN_SET payload 为 duty 0/100；LED_SET payload 为 bitmask 0x00..0x07 且 LED3 可表达；DOOR_SET payload 为 0 raise/retract、1 close/extend、2 stop，ACK 只代表 command accepted，不代表 endpoint reached；SET_ORIGIN 只表示人工对准后建立逻辑 0°，不表示 automatic HOME sensor；STATUS position 只作为 logical position，不标记 CL57C physical encoder verified；PPR mismatch 只报告并要求人工确认，不自动 SET_CONFIG |
 | 相机服务层应与样品保存目录解耦 | 已实现 | `camera_service` adapter 返回 numpy 帧和状态，不决定 Sample Folder、文件名或 `rgbDirName/multispectralDirName` |
 | RGB 相机帧色彩格式必须明确 | 已实现 | `RgbUvcCamera.capture_frame()` 把 OpenCV BGR 转为 RGB，返回 RGB `uint8` H×W×3 |
 | RGB 相机状态必须区分检测、可用、打开、预览 | 已实现 | `CameraStatus` 暴露 `detected/available/opened/streaming`；probe 成功后释放句柄或停止预览不清空 `detected/available`；重新检测只使用当前配置的 device index，可兼容同 index 的两种 DirectShow 打开形式，不自动 fallback 到内置摄像头 |
@@ -99,7 +99,7 @@
 | 报告格式 | 当前为 TXT，是否需要 PDF/Excel/数据库记录待确认 |
 | 历史记录结构 | 历史文档有建议表，当前检测工作站未实现 |
 | Dataset 删除/归档策略 | Sample 删除已有基础实现；Dataset 级删除、归档和批量清理规则仍待确认 |
-| 硬件通信协议最终格式 | 当前主路径保留 zdyzzddy 两字节协议 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 兼容；P1B-7.5A 已新增 AA55 current-firmware adapter 边界，但生产 command profile 仍需读取当前 STM32 源码后注入 |
+| 硬件通信协议最终格式 | 当前主路径保留 zdyzzddy 两字节协议 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 兼容；P1B-7.5A.1 后默认生产 adapter 已使用当前 AA55 firmware profile，旧 short-frame 只作为兼容边界保留。真实硬件 smoke 后再把现场验证状态写入文档 |
 | DVP2 网页预览现场复核 | 用户已确认完全退出 BasedCam3 后 manual test 可打开和取帧；本轮 Codex 复测时当前运行环境 DVP2 枚举返回 0。需要在设备在线时从主程序相机设置页复核重新检测、打开预览、曝光/增益应用、停止/重启预览 |
 | STM32 设备身份命令 | 当前固件协议只有 PING 等两字节命令；PING 只能证明兼容协议，不能区分 MAIN_CONTROLLER 或 ROTATION_CONTROLLER。下一版建议增加 GET_DEVICE_TYPE / GET_DEVICE_INFO，返回 deviceType、deviceId、firmwareVersion 和 capabilities |
 | 是否保留网页局域网访问 | 当前启动本地 127.0.0.1；远程访问和权限待定 |

@@ -10,7 +10,12 @@ from device_discovery import DeviceDiscovery, DeviceRegistry
 from hardware_controller import DoorState, HardwareController
 from serial_service import SerialDependencyError, SerialService
 from stm32_controller import Stm32ControllerAdapter
-from stm32_protocol import FilterWheelMapping, Stm32ProtocolProfile
+from stm32_protocol import (
+    CURRENT_FILTER_WHEEL_MAPPING,
+    CURRENT_STM32_FIRMWARE_PROFILE,
+    FilterWheelMapping,
+    Stm32ProtocolProfile,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -53,8 +58,8 @@ class DeviceManager:
         sample_stage_controller: Any | None = None,
         discovery: DeviceDiscovery | None = None,
         registry: DeviceRegistry | None = None,
-        stm32_protocol_profile: Stm32ProtocolProfile | None = None,
-        filter_wheel_mapping: FilterWheelMapping | None = None,
+        stm32_protocol_profile: Stm32ProtocolProfile | None = CURRENT_STM32_FIRMWARE_PROFILE,
+        filter_wheel_mapping: FilterWheelMapping | None = CURRENT_FILTER_WHEEL_MAPPING,
     ) -> None:
         self.serial = serial_service or SerialService()
         self.controller_factory = controller_factory
@@ -186,6 +191,7 @@ class DeviceManager:
             door = self.controller.get_door_status()
             wheel = self.controller.get_wheel_status()
             error_code = self.controller.get_error_status()
+            firmware_profile = self._stm32_profile_status()
 
             return {
                 "connected": True,
@@ -196,9 +202,11 @@ class DeviceManager:
                 "wheelHomed": wheel != 0x7F,
                 "rgbLed1On": outputs.rgb_led_1_on,
                 "rgbLed2On": outputs.rgb_led_2_on,
+                "rgbLed3On": outputs.rgb_led_3_on,
                 "tungsten1On": outputs.tungsten_1_on,
                 "tungsten2On": outputs.tungsten_2_on,
                 "errorCode": error_code,
+                "stm32FirmwareProfile": firmware_profile,
                 "emergencyStopped": (
                     self._emergency_stopped or error_code == 0x08
                 ),
@@ -488,11 +496,33 @@ class DeviceManager:
             "wheelHomed": False,
             "rgbLed1On": False,
             "rgbLed2On": False,
+            "rgbLed3On": False,
             "tungsten1On": False,
             "tungsten2On": False,
             "errorCode": None,
+            "stm32FirmwareProfile": self._stm32_profile_status(),
             "emergencyStopped": False,
             "cameras": self.camera_manager.status(),
+        }
+
+    def _stm32_profile_status(self) -> dict[str, Any]:
+        adapter = self.stm32_adapter
+        if adapter is None:
+            return {
+                "enabled": False,
+                "currentFirmwareProfileValidated": False,
+                "diagnostics": {},
+                "info": None,
+            }
+        info = adapter.info_cache
+        return {
+            "enabled": True,
+            "currentFirmwareProfileValidated": adapter.current_firmware_profile_validated,
+            "diagnostics": adapter.validate_profile_consistency(),
+            "info": info.to_dict() if info is not None else None,
+            "tungstenSupported": adapter.tungsten_supported,
+            "automaticHoming": adapter.automatic_homing_supported,
+            "physicalEncoderVerified": adapter.physical_encoder_verified,
         }
 
     def _new_serial_probe_service(self) -> SerialService:
