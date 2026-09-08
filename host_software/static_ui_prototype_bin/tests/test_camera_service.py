@@ -300,6 +300,64 @@ class LowLatencyPreviewCamera:
         }
 
 
+class LowLatencyRgbPreviewCamera:
+    role = "rgb"
+    transport = "UVC/DirectShow"
+
+    def __init__(self, *, fail_after: int | None = None):
+        self.fail_after = fail_after
+        self.is_open = False
+        self.started = False
+        self.capture_count = 0
+        self.stop_count = 0
+        self.close_count = 0
+        self.start_count = 0
+
+    def start_stream(self):
+        self.start_count += 1
+        self.is_open = True
+        self.started = True
+
+    def stop_stream(self):
+        self.stop_count += 1
+        self.started = False
+
+    def close(self):
+        self.close_count += 1
+        self.is_open = False
+
+    def capture_frame(self):
+        self.capture_count += 1
+        if self.fail_after is not None and self.capture_count > self.fail_after:
+            raise CameraCaptureError("rgb preview failed", "simulated RGB preview failure")
+        data = np.zeros((24, 32, 3), dtype=np.uint8)
+        data[:, :, 0] = self.capture_count % 255
+        data[:, :, 1] = 20
+        data[:, :, 2] = 200
+        return CameraFrame(
+            data=data,
+            color_space="RGB",
+            dtype=str(data.dtype),
+            shape=data.shape,
+            metadata={"sourceColorSpace": "BGR", "timestamp": 2000 + self.capture_count},
+        )
+
+    def get_status(self):
+        return {
+            "role": "rgb",
+            "sdkAvailable": True,
+            "detected": True,
+            "available": True,
+            "connected": True,
+            "opened": self.is_open,
+            "streaming": self.started,
+            "transport": self.transport,
+            "actual": {"width": 32, "height": 24, "fps": 25.0, "fourcc": "MJPG"},
+            "requested": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "capabilities": {},
+        }
+
+
 class CameraServiceTests(unittest.TestCase):
     def test_rgb_default_config_uses_verified_development_machine_settings(self):
         camera = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
@@ -745,14 +803,17 @@ class CameraServiceTests(unittest.TestCase):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=factory)
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
             manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
-            manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+            try:
+                manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
 
-            frame, meta = manager.capture_rgb_frame()
+                frame, meta = manager.capture_rgb_frame()
+            finally:
+                manager.stop_rgb_preview()
 
             self.assertEqual(frame.shape, (10, 11, 3))
             self.assertEqual(len(captures), 1)
-            self.assertTrue(rgb.is_open)
-            self.assertFalse(captures[0].released)
+            self.assertFalse(rgb.is_open)
+            self.assertTrue(captures[0].released)
             self.assertTrue(meta["previewWasRunning"])
             self.assertFalse(meta["openedForCapture"])
 
@@ -765,6 +826,89 @@ class CameraServiceTests(unittest.TestCase):
                 manager.start_rgb_preview()
 
             self.assertIn("AMCAP", context.exception.user_message)
+
+    def test_rgb_low_latency_preview_exposes_latest_frame_and_drops_old_frames(self):
+        camera = LowLatencyRgbPreviewCamera()
+        with tempfile.TemporaryDirectory(prefix="rgb_manager_") as tmp:
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            manager.start_rgb_preview({"width": 160, "height": 90, "fps": 20})
+            self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
+            deadline = time.time() + 1.0
+            while camera.capture_count < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            manager._rgb_preview_stop_event.set()
+
+            data, meta = manager.rgb_preview_jpeg()
+            latest_at_read = camera.capture_count
+            manager.stop_rgb_preview()
+
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+        self.assertGreaterEqual(meta["frameId"], 3)
+        self.assertEqual(meta["frameId"], latest_at_read)
+        self.assertEqual(meta["sourceTimestamp"], 2000 + meta["frameId"])
+        self.assertTrue(meta["lowLatency"])
+        self.assertGreaterEqual(meta["droppedFrames"], 1)
+        self.assertIn("sourceAgeMs", meta)
+        self.assertIn("previewEncoder", meta)
+
+    def test_rgb_preview_repeated_start_keeps_one_worker_and_restart_is_clean(self):
+        camera = LowLatencyRgbPreviewCamera()
+        with tempfile.TemporaryDirectory(prefix="rgb_manager_restart_") as tmp:
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            first = manager.start_rgb_preview({"width": 160, "height": 90, "fps": 15})
+            thread = manager._rgb_preview_thread
+            second = manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+            self.assertIs(manager._rgb_preview_thread, thread)
+            self.assertEqual(camera.start_count, 1)
+            self.assertTrue(first["preview"]["rgb"]["running"])
+            self.assertTrue(second["preview"]["rgb"]["running"])
+
+            stopped = manager.stop_rgb_preview()
+            self.assertFalse(stopped["preview"]["rgb"]["running"])
+            self.assertFalse(camera.is_open)
+            self.assertFalse(camera.started)
+            self.assertIsNone(manager._rgb_preview_thread)
+            self.assertGreaterEqual(camera.stop_count, 1)
+            self.assertGreaterEqual(camera.close_count, 1)
+
+            restarted = manager.start_rgb_preview({"width": 160, "height": 90, "fps": 15})
+            try:
+                self.assertTrue(restarted["preview"]["rgb"]["running"])
+                self.assertIsNotNone(manager._rgb_preview_thread)
+            finally:
+                manager.stop_rgb_preview()
+
+    def test_rgb_preview_polling_reads_encoded_cache_without_request_backlog(self):
+        camera = LowLatencyRgbPreviewCamera()
+        with tempfile.TemporaryDirectory(prefix="rgb_manager_cache_") as tmp:
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            manager.start_rgb_preview({"width": 160, "height": 90, "fps": 15})
+            self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
+            manager._rgb_preview_stop_event.set()
+            capture_count_after_cache_fill = camera.capture_count
+
+            first_data, first_meta = manager.rgb_preview_jpeg()
+            second_data, second_meta = manager.rgb_preview_jpeg()
+            manager.stop_rgb_preview()
+
+        self.assertTrue(first_data.startswith(b"\xff\xd8"))
+        self.assertTrue(second_data.startswith(b"\xff\xd8"))
+        self.assertEqual(camera.capture_count, capture_count_after_cache_fill)
+        self.assertEqual(first_meta["frameId"], second_meta["frameId"])
+        self.assertGreaterEqual(second_meta["measuredPreviewFps"], 0.0)
+
+    def test_rgb_preview_exception_cleans_state(self):
+        camera = LowLatencyRgbPreviewCamera(fail_after=0)
+        with tempfile.TemporaryDirectory(prefix="rgb_manager_error_") as tmp:
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            manager.start_rgb_preview({"width": 160, "height": 90, "fps": 15})
+
+            with self.assertRaises(CameraError):
+                manager.rgb_preview_jpeg()
+
+            self.assertFalse(manager.status()["preview"]["rgb"]["running"])
+            self.assertFalse(camera.is_open)
+            self.assertFalse(camera.started)
 
     def test_camera_manager_multispectral_preview_uses_jpeg_without_downcasting_capture(self):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture())
@@ -786,6 +930,7 @@ class CameraServiceTests(unittest.TestCase):
             self.assertTrue(data.startswith(b"\xff\xd8"))
             self.assertEqual(meta["previewWidth"], 320)
             self.assertEqual(meta["sourceDtype"], "uint16")
+            self.assertTrue(meta["encodedPreviewCache"])
             self.assertEqual(raw_frame.dtype, "uint16")
             self.assertEqual(raw_frame.data.dtype, np.uint16)
             self.assertFalse(stopped["preview"]["multispectral"]["running"])

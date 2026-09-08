@@ -2,6 +2,27 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-08 P1B-8 True Capture Integration
+
+- 修改内容：新增 `TrueCapturePlan` 与 `CaptureCoordinator.run_true_capture()`，把已有 Dark/White reference、RGB 正式 PNG、DVP2 raw mono PNG、多波段 sequence 和 Sample MultiView 软件路径编排为 True Hardware Capture 入口。单视角模式强制 `sample_rotation.enabled=false`，不要求真实 SampleStage；多视角模式继续由 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 阻断。
+- 修改内容：`DeviceManager.capture_readiness()` 按当前 capture plan 动态返回 `ready`、`trueCapturePrepared`、`blockingReasons`、`warnings`、`singleView`、`multiView` 和 capabilities。`POST /api/capture/start` 先执行 readiness gate，再调用 `run_true_capture()`；`GET /api/capture/readiness` 与 `/api/status` 暴露同一语义。
+- 修改内容：`/api/complete-capture` 明确降级为 Offline/Demo 入口，只能调用 `create_offline_capture_dataset()` 生成离线验证 PNG；显式 true hardware 模式会返回 `TRUE_CAPTURE_USES_CAPTURE_START`，防止把 offline dataset 误标为真实采集。
+- 修改内容：主 UI 样品采集页新增 True Hardware Capture 面板，提供单视角/多视角、existing/capture_new/no calibration、Calibration ID、Dark/White 操作员确认、readiness 刷新、开始真实采集和取消采集。多视角在样品台协议未知时禁用并显示 blocking reason。
+- 修改内容：新增 `manual_true_capture_test.py`，默认只做 readiness/dry-run；没有 `--allow-hardware` 不会启动真实硬件动作。新增/扩展测试覆盖单视角 capture_new、existing calibration、RGB/DVP2/filter/cancel safe stop、operator confirmation failure、DeviceManager readiness/start 和后端 True Capture API/UI wiring。
+- 修改文件：`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/manual_true_capture_test.py`、`host_software/static_ui_prototype_bin/tests/test_capture_coordinator.py`、`host_software/static_ui_prototype_bin/tests/test_device_manager.py`、`host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 firmware、滤光轮映射、相机驱动、DVP2 SDK binding、preview cache、训练算法或模型生命周期；不把 preview JPEG 写入 scientific capture；不把 offline/demo 数据当真实采集；不把 SampleStage simulation 当 PASS。`trueCapturePrepared` 现在是当前 plan readiness，不等于 hardware acceptance PASS，且 productionAccepted 继续为 false。
+
+## 2026-09-08 P1B-7.5B Sample Stage Boundary + Protocol Unknown
+
+- 修改内容：搜索仓库内 sample stage / rotation stage / 样品台 / 旋转台 / motor / STM32 / 串口 / protocol 等资料后，未找到独立样品旋转台控制器、通信方式、baudrate、命令格式、HOME 传感器、position feedback、busy/fault 或速度设置的真实 contract；现有 `UPPER_COMPUTER_STM32_INTEGRATION_REQUEST.md` 明确写着独立样品旋转台没有真实 STM32 控制接口。结论固定为 `SAMPLE_STAGE_PROTOCOL_UNKNOWN`，不实现猜测性 RealSampleStageAdapter。
+- 修改内容：扩展 `sample_stage.py`，新增 `SampleStageStatus`、`SAMPLE_STAGE_PROTOCOL_UNKNOWN`、connect/disconnect/home/move_to/move_relative/stop/get_status/get_position/safe_stop 接口语义。`UnimplementedSampleStage` 默认报告协议未知、无 HOME、无 position feedback；`SimulatedSampleStage` 只用于 unittest/离线软件编排。
+- 修改内容：`DeviceManager` 默认持有 `UnimplementedSampleStage` 并暴露 `sample_stage_status()`、`sample_stage_home()`、`sample_stage_move_absolute()`、`sample_stage_move_relative()`、`sample_stage_stop()`，后端新增 `GET /api/device/sample-stage/status` 与 `POST /api/device/sample-stage/home|move-absolute|move-relative|stop`。所有样品台 API 均走 `DeviceManager -> SampleStage adapter`，不从 HTTP handler 直接写串口，不复用滤光轮 STM32 motor。
+- 修改内容：主 UI 设备准备页新增样品旋转台调试区，显示连接、当前角度、目标角度、HOME、运动、Fault，并提供 HOME、+30°、-30°、Go 0/30/60/90、STOP、Return Home。默认真实 adapter 因协议未知不可用，按钮禁用/提示，不显示硬件成功。
+- 修改内容：`CaptureCoordinator.safe_stop()` 纳入 SampleStage `safe_stop()`，MultiView 失败、取消、超时时会尝试停止样品台，同时保留原有 HardwareController/DeviceManager safe stop 路径。`run_sample_multiview_capture()` 仍复用 P1B-5 RGB/DVP2/滤光轮 sequence，不重新实现采图或波段逻辑。
+- 修改内容：新增/扩展测试覆盖 SampleStage unknown/simulation 状态、DeviceManager sample stage API、后端 sample-stage endpoint、UI 调试入口和 MultiView 失败时 stage safe_stop。同步更新 `PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md` 和 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`；AC-STAGE 继续 `BLOCKED`，并列出 STAGE-01..STAGE-12 未来真实验收项。
+- 修改文件：`host_software/static_ui_prototype_bin/sample_stage.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/tests/test_sample_stage.py`、`host_software/static_ui_prototype_bin/tests/test_device_manager.py`、`host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`、`host_software/static_ui_prototype_bin/tests/test_sample_rotation_capture.py`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 firmware、不修改 `CURRENT_FILTER_WHEEL_MAPPING`、不把 filter wheel 和 sample stage 混用、不放行 `/api/capture/start`、不设置 `trueCapturePrepared=true`、不把 simulation test 当作真实样品台 PASS。
+
 ## 2026-09-07 P1B Hardware Acceptance Specification
 
 - 修改内容：新增 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`，作为 P1B 真实硬件与采集系统正式验收规范。文档覆盖 RGB、DVP2、STM32、Fan、LED3、Door/Actuator、Filter Wheel、Dark Reference、White Reference、Dark/White Compatibility、Multi-band Capture、Sample Stage、Multi-view Capture、Scientific Data Integrity、Metadata Integrity、Safety 和 True Capture Gate 等 17 个 acceptance domains。
@@ -9,6 +30,16 @@
 - 修改内容：同步 `PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md` 和 `docs/REQUIREMENTS.md`，明确 P1B 已进入 hardware acceptance 阶段，真实采集放行必须经过正式 acceptance gate；unit test、fake adapter 或 simulation 不能把 STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台或完整真实采集标记为 PASS。
 - 修改文件：`docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
 - 是否影响原有功能：只新增和同步验收文档，不修改业务代码、不放行 `/api/capture/start`、不设置 `trueCapturePrepared=true`、不把任何未现场验证硬件标记为 PASS。
+
+## 2026-09-07 RGB Low-Latency Preview + Scientific PNG Guardrails
+
+- 修改内容：RGB 网页预览改为后台 latest-frame + latest encoded JPEG cache。`CameraManager.start_rgb_preview()` 启动单一 RGB adapter/stream 和后台 worker，持续按当前 RGB 配置取帧、resize、JPEG 编码并覆盖最新缓存；`/api/camera/rgb/preview-frame` 直接返回最近 JPEG cache，不再按每个 HTTP 请求同步调用 `capture_frame()`。probe、preview 和正式 RGB capture 共用同一 capture lock，避免同一 UVC 句柄并发取帧。
+- 修改内容：DVP2 多光谱网页预览继续保持 P1B-5.4 latest-frame 架构，并将 resize/JPEG 编码前移到 preview worker，新增 latest encoded JPEG cache；HTTP 预览请求直接读缓存，不再逐请求编码。RGB/DVP2 预览响应和 UI 诊断补齐 `frameId`、`sourceTimestamp/sourceAgeMs`、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 计数和 encoder。
+- 修改内容：前端 RGB/DVP2 预览轮询由固定 `setInterval` 改为 fetch 完成后再 `setTimeout` 调度，确保最多一个 in-flight preview 请求；离开相机设置页时会停止 RGB/DVP2 预览和 DVP2 focus 辅助，避免后台页面继续拉流。
+- 修改内容：新增 `manual_camera_test.py --rgb-preview-benchmark`，在当前电脑实测 `3840x2160` RGB -> `960x540` 预览编码。OpenCV q80 resize/JPEG 约 0.77ms/6.92ms，PIL resize 约 46ms；old synchronous preview serverTotal 平均约 22.19ms，latest-frame HTTP cache serverTotal 平均约 0.03ms，latest-frame 的 sourceAge 平均约 64.20ms。CLI 不能测浏览器 fetch，主 UI 诊断栏负责现场显示。
+- 修改内容：强化正式 scientific capture PNG 边界。受保护 RGB 单帧、DVP2 raw mono 单帧、多波段 sample sequence、Dark/White reference、Sample MultiView 和 `create_offline_capture_dataset()` 离线验证正式数据均由测试覆盖 `.png` 保存，并校验正式 metadata 不引用 `.jpg/.jpeg`。JPEG 仍允许作为浏览器 preview 格式，但不得进入科学采集数据集或 metadata。
+- 修改文件：`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/manual_camera_test.py`、`host_software/static_ui_prototype_bin/tests/test_camera_service.py`、`host_software/static_ui_prototype_bin/tests/test_capture_coordinator.py`、`host_software/static_ui_prototype_bin/tests/test_backend_data_flow.py`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 firmware，不接入 SampleStage，不修改滤光轮协议，不放行 `/api/capture/start`，`trueCapturePrepared` 继续为 false；不使用 preview JPEG/latest-frame cache 冒充 RGB/DVP2/Dark/White/MultiView 正式采集；DVP2 当前环境枚举仍为 0，需在设备在线且 BasedCam3 退出后做网页端复核。
 
 ## 2026-09-06 P1B-7.5A.2 STM32 Web Hardware Control + Fresh Motion Verification
 

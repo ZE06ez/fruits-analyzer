@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from backend_server import JobStore, SessionState, create_handler, validate_file_path, validate_folder_path
+from backend_server import JobStore, SessionState, create_handler, create_offline_capture_dataset, validate_file_path, validate_folder_path
 from model_studio.service import ModelStudioService
 
 try:
@@ -115,6 +115,15 @@ class BackendDataFlowTests(unittest.TestCase):
 
         status = self.get_json("/api/status")
         self.assertFalse(status["trueCapturePrepared"])
+
+    def assert_no_jpeg_paths_under(self, root: Path) -> None:
+        suffixes = {path.suffix.lower() for path in root.rglob("*") if path.is_file()}
+        self.assertFalse({".jpg", ".jpeg"} & suffixes)
+        metadata_path = root / "metadata.json"
+        if metadata_path.exists():
+            text = metadata_path.read_text(encoding="utf-8").lower()
+            self.assertNotIn(".jpg", text)
+            self.assertNotIn(".jpeg", text)
 
     def make_dataset(self, name: str, rgb_dir_name: str = "rgb", spectral_dir_name: str = "multispectral") -> Path:
         dataset = self.root / name
@@ -371,6 +380,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertTrue((capture_dir / "multispectral" / "450.png").is_file())
         self.assertTrue((capture_dir / "calibration" / "dark" / "dark_001.png").is_file())
         self.assertTrue((capture_dir / "calibration" / "white" / "white_001.png").is_file())
+        self.assert_no_jpeg_paths_under(capture_dir)
 
         status = self.get_json("/api/status")
         self.assertEqual(Path(status["currentCaptureDir"]), capture_dir)
@@ -404,6 +414,30 @@ class BackendDataFlowTests(unittest.TestCase):
         job = self.wait_job(shape["jobId"])
         self.assertEqual(job["status"], "done")
         self.assertEqual(Path(job["result"]["datasetDir"]), capture_dir)
+
+    def test_offline_capture_dataset_uses_png_for_multiview_and_metadata(self):
+        capture_dir = self.root / "offline_multiview"
+        metadata = {
+            "sampleId": "S-OFFLINE-MV",
+            "sample_id": "S-OFFLINE-MV",
+            "image_directories": {"rgb": "rgb", "multispectral": "multispectral"},
+            "sample_rotation": {
+                "enabled": True,
+                "expectedIntervalDeg": 180,
+                "startAngleDeg": 0,
+                "direction": "CW",
+                "includeClosureView": True,
+            },
+        }
+
+        created = create_offline_capture_dataset(self.app_dir, "S-OFFLINE-MV", capture_dir=capture_dir, metadata=metadata)
+
+        self.assertEqual(created, capture_dir)
+        self.assertTrue((capture_dir / "rgb" / "rgb_view_000.png").is_file())
+        self.assertTrue((capture_dir / "multispectral" / "view000_450.png").is_file())
+        self.assertTrue((capture_dir / "calibration" / "dark" / "dark_450.png").is_file())
+        self.assertTrue((capture_dir / "calibration" / "white" / "white_450.png").is_file())
+        self.assert_no_jpeg_paths_under(capture_dir)
 
     def test_inspect_image_folders_lists_direct_children_and_suggests_roles(self):
         dataset = self.make_dataset("folder_scan", "color_images", "spectral_images")

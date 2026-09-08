@@ -508,6 +508,21 @@ def create_handler(
                 "tungsten2On": False,
                 "errorCode": None,
                 "emergencyStopped": False,
+                "sampleStage": {
+                    "connected": False,
+                    "available": False,
+                    "homed": False,
+                    "currentAngleDeg": None,
+                    "targetAngleDeg": None,
+                    "moving": False,
+                    "lastCommand": "",
+                    "lastError": "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+                    "fault": "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+                    "hardwareMode": "hardware",
+                    "implemented": False,
+                    "protocolKnown": False,
+                    "positionFeedbackSupported": False,
+                },
                 "cameras": getattr(device_manager, "camera_manager", None).status()
                 if getattr(device_manager, "camera_manager", None)
                 else {},
@@ -538,6 +553,29 @@ def create_handler(
                     dependencies = {"error": str(exc)}
                 session_info = session.snapshot()
                 device_status = safe_device_status()
+                readiness_payload = {
+                    "sampleId": session_info.get("sampleId") or "",
+                    "captureMode": "multi_view" if (session_info.get("captureRotationPlan") or {}).get("enabled") else "single_view",
+                    "outputDir": session_info.get("currentCaptureDir") or "",
+                    "rgbDirName": session_info.get("rgbDirName") or "rgb",
+                    "multispectralDirName": session_info.get("multispectralDirName") or "multispectral",
+                    "rotationPlan": session_info.get("captureRotationPlan") or {},
+                    "calibrationMode": "existing",
+                    "requireCalibration": False,
+                }
+                try:
+                    readiness = device_manager.capture_readiness(readiness_payload)
+                except Exception as exc:
+                    readiness = {
+                        "ready": False,
+                        "trueCapturePrepared": False,
+                        "blockingReasons": [{"code": "READINESS_UNAVAILABLE", "message": str(exc)}],
+                        "warnings": [],
+                        "capabilities": {},
+                    }
+                session_info["trueCapturePrepared"] = bool(readiness.get("trueCapturePrepared"))
+                session_info["trueCaptureCapabilities"] = readiness.get("capabilities") or {}
+                session_info["trueCaptureReadiness"] = readiness
                 self.json_response({
                     "ok": True,
                     "dependencies": dependencies,
@@ -563,6 +601,15 @@ def create_handler(
                     self.json_response({
                         "ok": True,
                         "device": device_manager.status(),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/device/sample-stage/status":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "sampleStage": device_manager.sample_stage_status(),
                     })
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
@@ -607,6 +654,20 @@ def create_handler(
                             "X-Preview-Width": str(meta.get("previewWidth") or ""),
                             "X-Preview-Height": str(meta.get("previewHeight") or ""),
                             "X-Source-Shape": "x".join(str(value) for value in meta.get("sourceShape") or ()),
+                            "X-Source-Dtype": str(meta.get("sourceDtype") or ""),
+                            "X-Frame-Id": str(meta.get("frameId") if meta.get("frameId") is not None else ""),
+                            "X-Source-Timestamp": str(meta.get("sourceTimestamp") if meta.get("sourceTimestamp") is not None else ""),
+                            "X-Capture-Started-At": f"{float(meta.get('captureStartedAt') or 0.0):.6f}",
+                            "X-Captured-At": f"{float(meta.get('capturedAt') or 0.0):.6f}",
+                            "X-Source-Age-Ms": f"{float(meta.get('sourceAgeMs') or 0.0):.3f}",
+                            "X-Capture-Duration-Ms": f"{float(meta.get('captureDurationMs') or 0.0):.3f}",
+                            "X-Resize-Duration-Ms": f"{float(meta.get('resizeDurationMs') or 0.0):.3f}",
+                            "X-Jpeg-Encode-Duration-Ms": f"{float(meta.get('jpegEncodeDurationMs') or 0.0):.3f}",
+                            "X-Server-Total-Ms": f"{float(meta.get('serverTotalMs') or 0.0):.3f}",
+                            "X-Measured-Preview-Fps": f"{float(meta.get('measuredPreviewFps') or 0.0):.3f}",
+                            "X-Dropped-Frames": str(meta.get("droppedFrames") if meta.get("droppedFrames") is not None else ""),
+                            "X-Low-Latency-Preview": "1" if meta.get("lowLatency") else "0",
+                            "X-Preview-Encoder": str(meta.get("previewEncoder") or ""),
                         },
                     )
                 except CameraError as exc:
@@ -632,6 +693,9 @@ def create_handler(
                             "X-Pixel-Format": str(meta.get("pixelFormat") or ""),
                             "X-Frame-Id": str(meta.get("frameId") if meta.get("frameId") is not None else ""),
                             "X-Source-Timestamp": str(meta.get("sourceTimestamp") if meta.get("sourceTimestamp") is not None else ""),
+                            "X-Capture-Started-At": f"{float(meta.get('captureStartedAt') or 0.0):.6f}",
+                            "X-Captured-At": f"{float(meta.get('capturedAt') or 0.0):.6f}",
+                            "X-Source-Age-Ms": f"{float(meta.get('sourceAgeMs') or 0.0):.3f}",
                             "X-Frame-Min": str(meta.get("frameMin") if meta.get("frameMin") is not None else ""),
                             "X-Frame-Max": str(meta.get("frameMax") if meta.get("frameMax") is not None else ""),
                             "X-Frame-Mean": str(meta.get("frameMean") if meta.get("frameMean") is not None else ""),
@@ -660,6 +724,29 @@ def create_handler(
                         "ok": True,
                         "capture": device_manager.capture_status(),
                     })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
+            if path == "/api/capture/readiness":
+                try:
+                    query = parse_qs(parsed.query)
+                    session_info = session.snapshot()
+                    mode = (query.get("captureMode") or query.get("mode") or [""])[0]
+                    calibration_mode = (query.get("calibrationMode") or ["existing"])[0]
+                    readiness_payload = {
+                        "sampleId": session_info.get("sampleId") or "",
+                        "captureMode": mode or ("multi_view" if (session_info.get("captureRotationPlan") or {}).get("enabled") else "single_view"),
+                        "outputDir": session_info.get("currentCaptureDir") or "",
+                        "rgbDirName": session_info.get("rgbDirName") or "rgb",
+                        "multispectralDirName": session_info.get("multispectralDirName") or "multispectral",
+                        "rotationPlan": session_info.get("captureRotationPlan") or {},
+                        "calibrationMode": calibration_mode,
+                        "calibrationId": (query.get("calibrationId") or [""])[0],
+                        "requireCalibration": (query.get("requireCalibration") or ["false"])[0],
+                        "operatorConfirmedDark": (query.get("operatorConfirmedDark") or ["false"])[0],
+                        "operatorConfirmedWhite": (query.get("operatorConfirmedWhite") or ["false"])[0],
+                    }
+                    self.json_response({"ok": True, "readiness": device_manager.capture_readiness(readiness_payload)})
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
@@ -834,6 +921,54 @@ def create_handler(
                         "ok": True,
                         "result": device_manager.set_filter_wheel_origin(True),
                     })
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/sample-stage/home":
+                try:
+                    self.json_response({"ok": True, "result": device_manager.sample_stage_home()})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/sample-stage/move-absolute":
+                payload = self.read_json()
+                try:
+                    if "angleDeg" not in payload:
+                        raise ValueError("angleDeg is required")
+                    direction = str(payload.get("direction") or "CW").strip().upper()
+                    if direction not in {"CW", "CCW"}:
+                        raise ValueError("direction must be CW or CCW")
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.sample_stage_move_absolute(
+                            float(payload.get("angleDeg")),
+                            direction=direction,
+                        ),
+                    })
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/sample-stage/move-relative":
+                payload = self.read_json()
+                try:
+                    if "deltaDeg" not in payload:
+                        raise ValueError("deltaDeg is required")
+                    direction = str(payload.get("direction") or ("CCW" if float(payload.get("deltaDeg")) >= 0 else "CW")).strip().upper()
+                    if direction not in {"CW", "CCW"}:
+                        raise ValueError("direction must be CW or CCW")
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.sample_stage_move_relative(
+                            float(payload.get("deltaDeg")),
+                            direction=direction,
+                        ),
+                    })
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/sample-stage/stop":
+                try:
+                    self.json_response({"ok": True, "result": device_manager.sample_stage_stop()})
                 except Exception as exc:
                     self.device_error_response(exc)
                 return
@@ -1076,12 +1211,48 @@ def create_handler(
             if parsed.path == "/api/capture/start":
                 payload = self.read_json()
                 try:
+                    session_info = session.snapshot()
+                    output_dir_raw = payload.get("outputDir") or payload.get("captureDir") or session_info.get("currentCaptureDir")
+                    if not output_dir_raw:
+                        self.json_response({"ok": False, "error": "True Capture readiness 未通过: OUTPUT_DIR_REQUIRED"}, status=409)
+                        return
+                    output_dir = resolve_user_path(output_dir_raw, app_dir)
+                    filter_config_path = payload.get("filterConfigPath")
+                    if filter_config_path:
+                        filter_config_path = resolve_user_path(filter_config_path, app_dir)
+                    start_payload = {
+                        **payload,
+                        "sampleId": str(payload.get("sampleId") or session_info.get("sampleId") or ""),
+                        "outputDir": str(output_dir),
+                        "rgbDirName": payload.get("rgbDirName") or session_info.get("rgbDirName") or "rgb",
+                        "multispectralDirName": payload.get("multispectralDirName") or session_info.get("multispectralDirName") or "multispectral",
+                        "rotationPlan": payload.get("rotationPlan") if isinstance(payload.get("rotationPlan"), dict) else session_info.get("captureRotationPlan") or {},
+                        "filterConfigPath": str(filter_config_path) if filter_config_path else None,
+                    }
                     capture = device_manager.start_capture(
-                        sample_id=str(payload.get("sampleId") or "")
+                        sample_id=str(start_payload.get("sampleId") or ""),
+                        payload=start_payload,
                     )
-                    self.json_response({"ok": True, "capture": capture})
+                    completed = (capture.get("state") or capture.get("status")) == "completed"
+                    if completed:
+                        image_dirs = image_directory_names_from_payload(start_payload, session_info)
+                        session.set_image_directories(
+                            rgb_dir_name=image_dirs["rgb"],
+                            multispectral_dir_name=image_dirs["multispectral"],
+                        )
+                        session.set_capture_started(True)
+                        session.set_current_capture_dir(output_dir)
+                        session.set_analysis_data_dir(output_dir)
+                    self.json_response({
+                        "ok": completed,
+                        "capture": capture,
+                        "currentCaptureDir": str(output_dir),
+                        "analysisDataDir": str(output_dir) if completed else session_info.get("analysisDataDir", ""),
+                    }, status=200 if completed else 409)
                 except CameraIntegrationRequired as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=409)
+                except CaptureCoordinatorError as exc:
+                    self.json_response({"ok": False, "error": str(exc), "details": exc.to_dict()}, status=409)
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
@@ -1860,7 +2031,18 @@ def create_handler(
                 return
             sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
+                mode = str(payload.get("captureMode") or payload.get("mode") or "offline").strip().lower()
+                if mode not in {"offline", "demo", "development", "dev"}:
+                    self.json_response({
+                        "ok": False,
+                        "code": "TRUE_CAPTURE_USES_CAPTURE_START",
+                        "error": "True Hardware Capture 必须通过 /api/capture/start 执行；/api/complete-capture 仅保留 offline/demo 数据生成。",
+                    }, status=409)
+                    return
                 metadata = dict(info)
+                metadata["captureMode"] = "offline"
+                metadata["offlineCapture"] = True
+                metadata["trueHardwareCapture"] = False
                 image_dirs = image_directory_names_from_payload(payload, metadata)
                 metadata["rgbDirName"] = image_dirs["rgb"]
                 metadata["multispectralDirName"] = image_dirs["multispectral"]
@@ -1888,8 +2070,10 @@ def create_handler(
                     "colorDir": image_dirs["rgb"],
                     "multispectralDir": image_dirs["multispectral"],
                     "depthDir": image_dirs["multispectral"],
+                    "captureMode": "offline",
+                    "offlineCapture": True,
                     "captureRotationPlan": metadata.get("sample_rotation") if isinstance(metadata.get("sample_rotation"), dict) else info.get("captureRotationPlan"),
-                    "message": "本次拍摄数据已保存",
+                    "message": "Offline/Demo 本次拍摄数据已保存",
                 })
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"保存本次拍摄数据失败: {exc}"}, status=500)

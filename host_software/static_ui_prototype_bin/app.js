@@ -37,6 +37,21 @@ const state = {
     door: "unknown",
     wheelPosition: null,
     wheelHomed: false,
+    sampleStage: {
+      connected: false,
+      available: false,
+      homed: false,
+      currentAngleDeg: null,
+      targetAngleDeg: null,
+      moving: false,
+      lastCommand: "",
+      lastError: "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+      fault: "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+      hardwareMode: "hardware",
+      implemented: false,
+      protocolKnown: false,
+      positionFeedbackSupported: false,
+    },
     rgbLed1On: false,
     rgbLed2On: false,
     tungsten1On: false,
@@ -72,6 +87,9 @@ const state = {
   serialPorts: [],
   dataSource: "other",
   captureCompleting: false,
+  trueCaptureRunning: false,
+  trueCaptureReadiness: null,
+  trueCaptureStatus: null,
   captureRotationPlan: null,
   hasSample: false,
   sampleName: "",
@@ -422,7 +440,9 @@ function renderRotationPlan(plan = null) {
     setText("rotationViewCount", `${nextPlan.total_capture_views || nextPlan.view_count} 个视角`);
     setText("rotationActualInterval", nextPlan.enabled ? `${formatAngleDeg(nextPlan.actual_interval_deg)}°` : "--");
     setText("rotationAngles", (nextPlan.angles_deg || [0]).map((angle) => `${formatAngleDeg(angle)}°`).join(" · "));
+    if ($("#trueCaptureMode") && !state.captureStarted) $("#trueCaptureMode").value = nextPlan.enabled ? "multi_view" : "single_view";
     renderCaptureRotationStatus(nextPlan);
+    renderTrueCaptureReadiness(state.trueCaptureReadiness);
     return nextPlan;
   } catch (error) {
     if (card) card.dataset.status = "invalid";
@@ -852,8 +872,23 @@ async function stopRgbPreview() {
 
 function scheduleRgbPreviewFrames() {
   clearRgbPreviewTimer();
-  fetchRgbPreviewFrame();
-  state.rgbPreviewTimer = window.setInterval(fetchRgbPreviewFrame, 1000 / 12);
+  state.rgbPreviewTimer = window.setTimeout(() => {
+    state.rgbPreviewTimer = null;
+    fetchRgbPreviewFrame();
+  }, 0);
+}
+
+function scheduleNextRgbPreviewFrame(fetchStartedAt) {
+  if (!state.rgbPreviewRunning) return;
+  const preview = state.cameraStatus?.preview?.rgb || {};
+  const targetFps = Math.max(1, Math.min(Number(preview.fps) || 12, 30));
+  const elapsedMs = performance.now() - fetchStartedAt;
+  const delayMs = Math.max(0, (1000 / targetFps) - elapsedMs);
+  clearRgbPreviewTimer();
+  state.rgbPreviewTimer = window.setTimeout(() => {
+    state.rgbPreviewTimer = null;
+    fetchRgbPreviewFrame();
+  }, delayMs);
 }
 
 function clearRgbPreviewTimer() {
@@ -874,6 +909,7 @@ async function fetchRgbPreviewFrame() {
   if (!state.rgbPreviewRunning) return;
   if (state.rgbPreviewFetching) return;
   state.rgbPreviewFetching = true;
+  const fetchStarted = performance.now();
   try {
     const response = await fetch(`/api/camera/rgb/preview-frame?t=${Date.now()}`);
     if (!response.ok) {
@@ -885,6 +921,7 @@ async function fetchRgbPreviewFrame() {
       throw new Error(message);
     }
     const blob = await response.blob();
+    const browserFetchDurationMs = performance.now() - fetchStarted;
     releaseRgbPreviewUrl();
     state.rgbPreviewFrameUrl = URL.createObjectURL(blob);
     const image = $("#rgbLivePreview");
@@ -893,7 +930,20 @@ async function fetchRgbPreviewFrame() {
       image.classList.add("active");
     }
     setText("rgbLivePreviewEmpty", "");
-    setText("rgbPreviewMeta", `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"}；正式拍照配置仍保持 3840 x 2160。`);
+    const frameId = response.headers.get("X-Frame-Id");
+    const sourceAgeMs = response.headers.get("X-Source-Age-Ms");
+    const captureMs = response.headers.get("X-Capture-Duration-Ms");
+    const resizeMs = response.headers.get("X-Resize-Duration-Ms");
+    const jpegMs = response.headers.get("X-Jpeg-Encode-Duration-Ms");
+    const serverMs = response.headers.get("X-Server-Total-Ms");
+    const measuredFps = response.headers.get("X-Measured-Preview-Fps");
+    const droppedFrames = response.headers.get("X-Dropped-Frames");
+    const previewEncoder = response.headers.get("X-Preview-Encoder");
+    const lowLatency = response.headers.get("X-Low-Latency-Preview") === "1";
+    setText(
+      "rgbPreviewMeta",
+      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""}；frameId=${frameId || "--"} age=${sourceAgeMs || "--"}ms capture=${captureMs || "--"}ms resize=${resizeMs || "--"}ms jpeg=${jpegMs || "--"}ms server=${serverMs || "--"}ms fetch=${browserFetchDurationMs.toFixed(1)}ms fps=${measuredFps || "--"} drop=${droppedFrames || "0"} encoder=${previewEncoder || "--"}；${lowLatency ? "Low Latency enabled" : "Low Latency off"}；正式拍照配置仍保持 3840 x 2160。`
+    );
   } catch (error) {
     const message = cameraFetchErrorMessage(error, "RGB 预览已停止");
     clearRgbPreviewTimer();
@@ -904,6 +954,7 @@ async function fetchRgbPreviewFrame() {
     addLog(message, "WARN");
   } finally {
     state.rgbPreviewFetching = false;
+    scheduleNextRgbPreviewFrame(fetchStarted);
   }
 }
 
@@ -992,8 +1043,23 @@ async function stopMultispectralPreview() {
 
 function scheduleMultispectralPreviewFrames() {
   clearMultispectralPreviewTimer();
-  fetchMultispectralPreviewFrame();
-  state.multispectralPreviewTimer = window.setInterval(fetchMultispectralPreviewFrame, 1000 / 15);
+  state.multispectralPreviewTimer = window.setTimeout(() => {
+    state.multispectralPreviewTimer = null;
+    fetchMultispectralPreviewFrame();
+  }, 0);
+}
+
+function scheduleNextMultispectralPreviewFrame(fetchStartedAt) {
+  if (!state.multispectralPreviewRunning) return;
+  const preview = state.cameraStatus?.preview?.multispectral || {};
+  const targetFps = Math.max(1, Math.min(Number(preview.fps) || 12, 30));
+  const elapsedMs = performance.now() - fetchStartedAt;
+  const delayMs = Math.max(0, (1000 / targetFps) - elapsedMs);
+  clearMultispectralPreviewTimer();
+  state.multispectralPreviewTimer = window.setTimeout(() => {
+    state.multispectralPreviewTimer = null;
+    fetchMultispectralPreviewFrame();
+  }, delayMs);
 }
 
 function clearMultispectralPreviewTimer() {
@@ -1040,6 +1106,7 @@ async function fetchMultispectralPreviewFrame() {
     const frameMean = response.headers.get("X-Frame-Mean");
     const frameId = response.headers.get("X-Frame-Id");
     const sourceTimestamp = response.headers.get("X-Source-Timestamp");
+    const sourceAgeMs = response.headers.get("X-Source-Age-Ms");
     const captureMs = response.headers.get("X-Capture-Duration-Ms");
     const resizeMs = response.headers.get("X-Resize-Duration-Ms");
     const jpegMs = response.headers.get("X-Jpeg-Encode-Duration-Ms");
@@ -1055,7 +1122,7 @@ async function fetchMultispectralPreviewFrame() {
       : "";
     setText(
       "multispectralPreviewMeta",
-      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""} ${response.headers.get("X-Pixel-Format") || ""}；frameId=${frameId || "--"} timestamp=${sourceTimestamp || "--"}；capture=${captureMs || "--"}ms resize=${resizeMs || "--"}ms jpeg=${jpegMs || "--"}ms server=${serverMs || "--"}ms fetch=${browserFetchDurationMs.toFixed(1)}ms fps=${measuredFps || "--"} drop=${droppedFrames || "0"} encoder=${previewEncoder || "--"}；${lowLatency ? "Low Latency enabled" : "Low Latency off"}；亮度 min=${frameMin || "--"} max=${frameMax || "--"} mean=${frameMean || "--"}。${brightnessHint}`
+      `预览 ${response.headers.get("X-Preview-Width") || "960"} x ${response.headers.get("X-Preview-Height") || "540"}，源帧 ${response.headers.get("X-Source-Shape") || "未知"} ${response.headers.get("X-Source-Dtype") || ""} ${response.headers.get("X-Pixel-Format") || ""}；frameId=${frameId || "--"} timestamp=${sourceTimestamp || "--"} age=${sourceAgeMs || "--"}ms；capture=${captureMs || "--"}ms resize=${resizeMs || "--"}ms jpeg=${jpegMs || "--"}ms server=${serverMs || "--"}ms fetch=${browserFetchDurationMs.toFixed(1)}ms fps=${measuredFps || "--"} drop=${droppedFrames || "0"} encoder=${previewEncoder || "--"}；${lowLatency ? "Low Latency enabled" : "Low Latency off"}；亮度 min=${frameMin || "--"} max=${frameMax || "--"} mean=${frameMean || "--"}。${brightnessHint}`
     );
   } catch (error) {
     const message = cameraFetchErrorMessage(error, "多光谱预览已停止");
@@ -1067,6 +1134,7 @@ async function fetchMultispectralPreviewFrame() {
     addLog(message, "WARN");
   } finally {
     state.multispectralPreviewFetching = false;
+    scheduleNextMultispectralPreviewFrame(fetchStarted);
   }
 }
 
@@ -1433,10 +1501,8 @@ function renderHardwareStatus() {
   setText("hardwareActionState", connected
     ? `STATUS rev ${hardware.statusRevision ?? "--"}；推杆${hardware.actuatorBusy ? "定时动作中" : "空闲"}`
     : "硬件动作: 待连接");
-  const sampleStage = connected
-    ? "样品台: 未接入控制"
-    : "样品台: 未连接";
-  setText("sampleRotationState", sampleStage);
+  const sampleStage = hardware.sampleStage || {};
+  renderSampleStageStatus(sampleStage);
   const profile = hardware.stm32FirmwareProfile || {};
   const controlReady = connected && profile.currentFirmwareProfileValidated !== false;
   $("#connectDevice") && ($("#connectDevice").disabled = connected);
@@ -1461,6 +1527,50 @@ function renderHardwareStatus() {
   });
   $("#actuatorStop") && ($("#actuatorStop").disabled = !connected);
   $("#wheelStop") && ($("#wheelStop").disabled = !connected);
+  updateSampleStageButtons(sampleStage);
+}
+
+function sampleStageAngleText(value) {
+  return value == null || Number.isNaN(Number(value)) ? "--" : `${Number(value).toFixed(2)}°`;
+}
+
+function renderSampleStageStatus(stage = {}) {
+  const protocolKnown = Boolean(stage.protocolKnown);
+  const available = Boolean(stage.available);
+  const connected = Boolean(stage.connected);
+  const fault = stage.fault || stage.lastError || "";
+  const summary = available
+    ? `样品台 adapter 可用；position feedback ${stage.positionFeedbackSupported ? "已声明支持" : "不支持/未知"}。`
+    : fault === "SAMPLE_STAGE_PROTOCOL_UNKNOWN" || !protocolKnown
+      ? "协议未知；禁止复用滤光轮电机。"
+      : "样品台不可用。";
+  setText("sampleRotationState", `样品台: ${available ? "可调试" : protocolKnown ? "不可用" : "协议未知"}`);
+  setText("sampleStageSummary", summary);
+  setText("sampleStageConnection", `连接: ${connected ? "已连接" : available ? "未连接" : "--"} / ${stage.hardwareMode || "hardware"}`);
+  setText("sampleStageAngle", `角度: ${sampleStageAngleText(stage.currentAngleDeg)}`);
+  setText("sampleStageTarget", `目标: ${sampleStageAngleText(stage.targetAngleDeg)}`);
+  setText("sampleStageHomeState", `HOME: ${stage.homed === true ? "已 HOME" : stage.homed === false ? "未 HOME" : "unsupported"}`);
+  setText("sampleStageMotionState", `运动: ${stage.moving ? "运动中" : "空闲"}`);
+  setText("sampleStageFaultState", `Fault: ${fault || "--"}`);
+}
+
+function updateSampleStageButtons(stage = state.hardwareStatus.sampleStage || {}) {
+  const stageReady = Boolean(stage.available && stage.protocolKnown && !stage.fault);
+  [
+    "#sampleStageHome",
+    "#sampleStageMovePos30",
+    "#sampleStageMoveNeg30",
+    "#sampleStageStop",
+    "#sampleStageReturnHome",
+    "[data-sample-stage-angle]",
+  ].forEach((selector) => {
+    $$(selector).forEach((button) => {
+      button.disabled = !stageReady || Boolean(stage.moving && selector !== "#sampleStageStop");
+      button.title = stageReady ? "" : "样品旋转台协议未知或 adapter 不可用";
+    });
+  });
+  const refresh = $("#refreshSampleStageStatus");
+  if (refresh) refresh.disabled = false;
 }
 
 function defaultDeviceChecks(status = "pending") {
@@ -2044,6 +2154,55 @@ async function setWheelOrigin() {
   const ok = window.confirm("请先人工将 1 号滤光片准确对准光路。确认对准后才可设置逻辑零点。");
   if (!ok) return;
   await postHardwareAction("/api/device/wheel/set-origin", { operatorConfirmedAligned: true }, () => "逻辑零点已建立；这不是自动寻零。");
+}
+
+async function refreshSampleStageStatus() {
+  try {
+    const payload = await api("/api/device/sample-stage/status");
+    applyHardwareStatus({ sampleStage: payload.sampleStage || {} });
+    const stage = payload.sampleStage || {};
+    addLog(`样品台状态：${stage.lastError || stage.fault || (stage.available ? "available" : "unavailable")}。`);
+  } catch (error) {
+    addLog(error.message || "样品台状态读取失败。", "ERROR");
+  }
+}
+
+async function postSampleStageAction(path, body, successMessage) {
+  try {
+    const payload = await api(path, {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    });
+    const result = payload.result || {};
+    applyHardwareStatus({ sampleStage: result.status || {} });
+    if (successMessage) addLog(successMessage(result));
+    return result;
+  } catch (error) {
+    addLog(error.message || "样品台命令不可用。", "ERROR");
+    await refreshSampleStageStatus();
+    throw error;
+  }
+}
+
+async function sampleStageHome() {
+  await postSampleStageAction("/api/device/sample-stage/home", {}, () => "样品台 HOME 命令完成。");
+}
+
+async function sampleStageMoveRelative(deltaDeg) {
+  const direction = Number(deltaDeg) >= 0 ? "CCW" : "CW";
+  await postSampleStageAction("/api/device/sample-stage/move-relative", { deltaDeg, direction }, () => (
+    `样品台相对移动 ${deltaDeg > 0 ? "+" : ""}${deltaDeg}° 命令完成。`
+  ));
+}
+
+async function sampleStageMoveAbsolute(angleDeg) {
+  await postSampleStageAction("/api/device/sample-stage/move-absolute", { angleDeg }, () => (
+    `样品台移动到 ${angleDeg}° 命令完成。`
+  ));
+}
+
+async function sampleStageStop() {
+  await postSampleStageAction("/api/device/sample-stage/stop", {}, () => "样品台 STOP 已发送。");
 }
 
 function updateAnalysisButtonStates() {
@@ -2733,6 +2892,11 @@ function applyModuleLayout(view) {
 }
 
 function switchView(view, stepKey = null) {
+  if (view !== "camera-settings") {
+    if (state.rgbPreviewRunning) stopRgbPreview();
+    if (state.multispectralPreviewRunning) stopMultispectralPreview();
+    if (state.multispectralFocusRunning) stopMultispectralFocus();
+  }
   applyModuleLayout(view);
   document.querySelectorAll(".view-page").forEach((page) => {
     page.classList.toggle("active", page.dataset.page === view);
@@ -2807,6 +2971,130 @@ async function confirmCalibrationCheck() {
   renderCalibrationStatus();
   addLog("采集前标定检查已人工确认通过；不代表完整几何或尺寸标定完成。");
   await syncDevicePreparation();
+}
+
+function collectTrueCapturePayload() {
+  const rotationSettings = collectRotationPayload();
+  if (!rotationSettings) return null;
+  const captureMode = $("#trueCaptureMode")?.value || (rotationSettings.enabled ? "multi_view" : "single_view");
+  const calibrationMode = $("#trueCalibrationMode")?.value || "existing";
+  const operatorConfirmed = Boolean($("#operatorConfirmedReferences")?.checked);
+  return {
+    sampleId: $("#sampleId")?.value || state.sampleId || "",
+    captureMode,
+    calibrationMode,
+    calibrationId: $("#trueCalibrationId")?.value || "",
+    captureDark: calibrationMode === "capture_new",
+    captureWhite: calibrationMode === "capture_new",
+    operatorConfirmedDark: operatorConfirmed,
+    operatorConfirmedWhite: operatorConfirmed,
+    requireCalibration: calibrationMode !== "none",
+    sampleRotation: rotationSettings,
+    rotationPlan: state.captureRotationPlan || {},
+    rgbDirName: state.rgbDirName || "rgb",
+    multispectralDirName: state.multispectralDirName || "multispectral",
+    sampleStageMode: "hardware",
+    returnHome: true,
+  };
+}
+
+function renderTrueCaptureReadiness(readiness = state.trueCaptureReadiness) {
+  state.trueCaptureReadiness = readiness || state.trueCaptureReadiness;
+  const ready = Boolean(state.trueCaptureReadiness?.ready);
+  const reasons = state.trueCaptureReadiness?.blockingReasons || [];
+  const firstReason = reasons[0]?.code || reasons[0]?.message || "";
+  setText("trueCaptureReadiness", ready ? "就绪" : firstReason ? `未就绪: ${firstReason}` : "未就绪");
+  const hint = ready
+    ? "当前 capture plan 满足软件 readiness；硬件验收仍需按 checklist 记录。"
+    : (reasons.map((item) => item.message || item.code).filter(Boolean).join("；") || "等待样品、目录和硬件状态。");
+  setText("trueCaptureHint", hint);
+  const start = $("#startTrueCapture");
+  if (start) start.disabled = !ready || state.trueCaptureRunning || !hasActiveSample();
+  const cancel = $("#cancelTrueCapture");
+  if (cancel) cancel.disabled = !state.trueCaptureRunning;
+  const mode = $("#trueCaptureMode");
+  const multi = state.trueCaptureReadiness?.multiView;
+  if (mode?.options) {
+    const option = [...mode.options].find((item) => item.value === "multi_view");
+    if (option && multi) {
+      option.disabled = !multi.ready;
+      option.textContent = multi.ready ? "多视角" : "多视角（样品台协议未接入）";
+    }
+  }
+}
+
+async function refreshTrueCaptureReadiness() {
+  const payload = collectTrueCapturePayload();
+  if (!payload) {
+    setText("trueCaptureReadiness", "旋转设置无效");
+    return null;
+  }
+  const query = new URLSearchParams({
+    captureMode: payload.captureMode,
+    calibrationMode: payload.calibrationMode,
+    calibrationId: payload.calibrationId || "",
+    requireCalibration: String(payload.requireCalibration),
+    operatorConfirmedDark: String(payload.operatorConfirmedDark),
+    operatorConfirmedWhite: String(payload.operatorConfirmedWhite),
+  });
+  const response = await api(`/api/capture/readiness?${query.toString()}`);
+  renderTrueCaptureReadiness(response.readiness);
+  return response.readiness;
+}
+
+async function startTrueCapture() {
+  if (!requireActiveSample()) return;
+  const payload = collectTrueCapturePayload();
+  if (!payload) return;
+  state.trueCaptureRunning = true;
+  state.captureStarted = true;
+  lockRotationSettings();
+  renderTrueCaptureReadiness();
+  setText("captureSaveStatus", "正在执行 True Hardware Capture...");
+  const progress = $("#captureProgress");
+  if (progress) progress.style.width = "5%";
+  try {
+    const response = await api("/api/capture/start", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const capture = response.capture || {};
+    state.trueCaptureStatus = capture;
+    state.currentCaptureDir = response.currentCaptureDir || capture.outputDir || state.currentCaptureDir;
+    state.currentCaptureValid = Boolean(state.currentCaptureDir);
+    state.analysisDataDir = response.analysisDataDir || state.currentCaptureDir;
+    state.captureStep = 4;
+    if (progress) progress.style.width = "100%";
+    setText("captureProgressText", "采集进度: 完成");
+    ["sample", "dark", "white", "rgb", "spectral", "integrity"].forEach((key) => setStepStatus(key, "done"));
+    setText("captureSaveStatus", `True Capture 已保存: ${state.currentCaptureDir}`);
+    addLog(`True Capture 完成: ${state.currentCaptureDir}`);
+    renderCurrentSample();
+    updateCurrentCaptureControls();
+    await loadSampleFolder(state.currentCaptureDir, { source: "current" });
+  } catch (error) {
+    setText("captureSaveStatus", "True Capture 未完成");
+    addLog(error.message || "True Capture 失败。", "ERROR");
+  } finally {
+    state.trueCaptureRunning = false;
+    renderTrueCaptureReadiness();
+    renderSystemStatus();
+    await refreshTrueCaptureReadiness().catch(() => null);
+  }
+}
+
+async function cancelTrueCapture() {
+  try {
+    const response = await api("/api/capture/cancel", { method: "POST", body: JSON.stringify({}) });
+    state.trueCaptureStatus = response.capture || {};
+    state.trueCaptureRunning = false;
+    setText("captureSaveStatus", "采集已取消，已保留 partial 数据。");
+    addLog("True Capture 已请求取消。", "WARN");
+  } catch (error) {
+    addLog(error.message || "取消采集失败。", "ERROR");
+  } finally {
+    renderTrueCaptureReadiness();
+  }
 }
 
 async function updateCaptureProgress(step) {
@@ -3241,6 +3529,7 @@ async function createNewSample() {
   setStepStatus("sample", "done");
   await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
   renderCurrentSample();
+  await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
   closeSampleModal();
   addLog(`已创建当前样品：${state.sampleName}`);
 }
@@ -4187,6 +4476,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#wheelClockwise")?.addEventListener("click", () => moveWheel("clockwise").catch(() => {}));
   $("#wheelStop")?.addEventListener("click", () => stopWheel().catch(() => {}));
   $("#wheelSetOrigin")?.addEventListener("click", () => setWheelOrigin().catch(() => {}));
+  $("#refreshSampleStageStatus")?.addEventListener("click", () => refreshSampleStageStatus());
+  $("#sampleStageHome")?.addEventListener("click", () => sampleStageHome().catch(() => {}));
+  $("#sampleStageMovePos30")?.addEventListener("click", () => sampleStageMoveRelative(30).catch(() => {}));
+  $("#sampleStageMoveNeg30")?.addEventListener("click", () => sampleStageMoveRelative(-30).catch(() => {}));
+  $("#sampleStageStop")?.addEventListener("click", () => sampleStageStop().catch(() => {}));
+  $("#sampleStageReturnHome")?.addEventListener("click", () => sampleStageMoveAbsolute(0).catch(() => {}));
+  document.querySelectorAll("[data-sample-stage-angle]").forEach((button) => {
+    button.addEventListener("click", () => sampleStageMoveAbsolute(Number(button.dataset.sampleStageAngle || 0)).catch(() => {}));
+  });
 
   $("#startWorkflow")?.addEventListener("click", () => {
     if (!requireDevicePreparation()) return;
@@ -4220,6 +4518,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
   $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
+  $("#trueCaptureMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
+  $("#trueCalibrationMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
+  $("#trueCalibrationId")?.addEventListener("input", () => renderTrueCaptureReadiness(state.trueCaptureReadiness));
+  $("#operatorConfirmedReferences")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
+  $("#startTrueCapture")?.addEventListener("click", () => startTrueCapture().catch((error) => addLog(error.message, "ERROR")));
+  $("#cancelTrueCapture")?.addEventListener("click", () => cancelTrueCapture().catch((error) => addLog(error.message, "ERROR")));
+  $("#refreshTrueCaptureReadiness")?.addEventListener("click", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));
   document.querySelectorAll('input[name="dataSource"]').forEach((input) => {
     input.addEventListener("change", (event) => handleDataSourceChange(event.target.value));
@@ -4256,6 +4561,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderRotationPlan();
   resetCaptureStepStatuses();
   renderCalibrationStatus();
+  renderTrueCaptureReadiness();
   updateDevicePreparationControls();
   updateShapeMode();
   renderDeviceChecks(checksFromHardwareStatus());
@@ -4269,6 +4575,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     applyHardwareStatus(status.device || {});
     applyCameraStatus(status.cameras || status.device?.cameras || {});
     if (status.devicePrep) state.devicePrep = { ...state.devicePrep, ...status.devicePrep };
+    state.trueCaptureReadiness = status.trueCaptureReadiness || state.trueCaptureReadiness;
     if (state.hardwareStatus.connected) state.devicePrep.connect = true;
     renderDevicePreparationStatus();
     applySampleSessionState(status);
@@ -4288,6 +4595,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
     renderCurrentSample();
     updateCurrentCaptureControls();
+    renderTrueCaptureReadiness(state.trueCaptureReadiness);
     if (hasActiveSample() && state.analysisDataDir) {
       const source = state.currentCaptureValid && state.analysisDataDir === state.currentCaptureDir ? "current" : "other";
       await loadSampleFolder(state.analysisDataDir, { source });

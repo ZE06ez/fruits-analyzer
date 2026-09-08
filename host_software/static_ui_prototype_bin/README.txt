@@ -6,9 +6,9 @@
 
 当前架构
 - launcher.py: 启动本地 Python HTTP 服务，释放打包内置网页资源，并打开浏览器界面。
-- backend_server.py: 提供静态页面、JSON API、样品会话、目录选择、任务队列、进度轮询、离线采集验证和结果文件服务。
+- backend_server.py: 提供静态页面、JSON API、样品会话、目录选择、任务队列、进度轮询、True Capture readiness/启动、离线采集验证和结果文件服务。
 - camera_service/: RGB UVC 相机和 DO3THINK/DVP2 多光谱黑白相机接入层；adapter 只负责设备状态、参数和帧，不直接决定样品目录或文件命名。
-- serial_service.py / hardware_controller.py / device_manager.py: STM32 串口、基础硬件控制和设备状态管理；在完整真实采集协调器接入前，/api/capture/start 仍受 CameraIntegrationRequired 保护。
+- serial_service.py / hardware_controller.py / device_manager.py: STM32 串口、基础硬件控制、设备状态管理和 True Capture readiness gate；/api/capture/start 会先检查当前 TrueCapturePlan，再进入受保护采集编排。
 - pointcloud_service.py: 当前优先执行 RGB + multispectral 二维形态与表面分析，兼容旧 RGB-D/PLY 点云流程。
 - pipeline_v2.py: 旧 RGB-D/SFM 点云重建工具函数，作为兼容路径保留。
 - quality_algorithm/、training/、quality_prediction.py: 多光谱校正、ROI、特征提取、RAW/SNV/MSC 预处理、PLSR/SVR/RF 训练和 SSC/TA/pH 预测入口。
@@ -16,21 +16,21 @@
 - index.html / styles.css / app.js: 主工作站界面、设备准备、相机设置、采集/分析状态流转和 API 调用。
 
 当前硬件接入状态
-- RGB 彩色相机已通过 camera_service/RgbUvcCamera 使用 OpenCV/DirectShow 接入。当前电脑已验证 device_index=1、MJPG、3840x2160、25fps，可进行设备探测、预览、参数应用，并显示 requested/actual 状态；device_index 只是当前配置默认值，不是跨电脑固定设备身份。RGB 尚未接入正式真实采集保存流程。
-- 多光谱黑白相机为 DO3THINK/度申 DVP2 GigE/RJ45 相机，已通过 Dvp2MonoCamera -> Dvp2Binding -> ctypes -> DVPCamera64.dll 接入。当前代码支持 DVP2 SDK 查找、设备枚举、按设备标识匹配、open/close、stream、capture_frame、曝光、增益、preview 和 frame metadata；用户实机 manual test 已验证 Mono8、2048x1200、uint8 取帧和 PNG 保存。正式多波段采集保存尚未接入。
+- RGB 彩色相机已通过 camera_service/RgbUvcCamera 使用 OpenCV/DirectShow 接入。当前电脑已验证 device_index=1、MJPG、3840x2160、25fps，可进行设备探测、预览、参数应用，并显示 requested/actual 状态；device_index 只是当前配置默认值，不是跨电脑固定设备身份。正式 RGB capture 保存 PNG，不读取预览 JPEG/cache。
+- 多光谱黑白相机为 DO3THINK/度申 DVP2 GigE/RJ45 相机，已通过 Dvp2MonoCamera -> Dvp2Binding -> ctypes -> DVPCamera64.dll 接入。当前代码支持 DVP2 SDK 查找、设备枚举、按设备标识匹配、open/close、stream、capture_frame、曝光、增益、preview 和 frame metadata；用户实机 manual test 已验证 Mono8、2048x1200、uint8 取帧和 PNG 保存。正式 DVP2 raw mono 单帧、多波段 sequence、Dark/White reference 和 Sample MultiView 软件路径已接入。
 - STM32 / 硬件控制层已存在真实 serial_service.py、hardware_controller.py、device_manager.py，支持串口连接、PING、风扇、升降门、RGB LED、钨灯、滤光轮 HOME / 相对旋转、急停、fault clear 和基础安全 interlock。完整真实设备流程仍需要进一步实机联调。
-- 样品旋转平台当前已有 sample_rotation 角度计划、metadata 和 views.json 记录；真实样品台电机控制尚未接入。sample_rotation 与 filter_wheel_rotation 是两个独立控制对象。
+- 样品旋转平台当前已有 sample_rotation 角度计划、metadata 和 views.json 记录；真实样品台电机协议未知，默认 `SAMPLE_STAGE_PROTOCOL_UNKNOWN`，多视角硬件采集仍被阻断。sample_rotation 与 filter_wheel_rotation 是两个独立控制对象。
 
 当前采集状态
 - RGB / DVP2 可以真实预览，STM32 基础控制可以真实执行。
-- 当前还没有完整 CaptureCoordinator，因此 RGB + DVP2 + 光源 + 滤光轮 + 样品旋转 + 图片保存 + metadata 尚未形成完整真实采集闭环。
-- /api/capture/start 仍然受到 CameraIntegrationRequired 保护，trueCapturePrepared 仍保持 false。
-- 当前“完成采集”的离线验证路径仍会调用 create_offline_capture_dataset()，用于生成可分析的本地验证图像、校准目录和 metadata；这不是正式真实相机采集。
+- P1B-8 后 /api/capture/start 是 True Hardware Capture 的 readiness-gated 启动入口，单视角可编排 Dark/White、RGB PNG、DVP2 raw mono PNG、多波段 sequence 和 metadata；多视角仍因真实样品台协议未知被阻断。
+- trueCapturePrepared 表示当前 TrueCapturePlan 是否满足软件执行条件，不等于 hardware acceptance PASS；productionAccepted 仍为 false。
+- 当前“完成采集”的离线验证路径 /api/complete-capture 仍会调用 create_offline_capture_dataset()，用于生成可分析的本地验证图像、校准目录和 metadata；这不是正式真实相机采集。
 
 样品数据与分析流程
 1. 用户完成设备准备后创建样品，系统创建样品目录、RGB 子目录、多光谱子目录、calibration/dark、calibration/white 和 metadata.json。
 2. RGB 和多光谱子目录默认分别为 rgb、multispectral，也可在保存前配置，实际名称写入 metadata.json.image_directories。
-3. 完成采集时当前走离线验证函数 create_offline_capture_dataset() 写入测试图像；本次拍摄目录会自动进入分析流程。
+3. 真采集使用 /api/capture/start；离线演示使用 /api/complete-capture 调用 create_offline_capture_dataset() 写入测试图像；本次拍摄目录会自动进入分析流程。
 4. 形态分析优先读取 RGB + multispectral 数据，输出面积、宽度、高度、果粉覆盖率、颜色均匀度和多光谱统计等结果。
 5. RGB-D / PLY 点云流程仍作为兼容支持保留；三维尺寸和体积仍需要进一步真实标定和算法验证。
 

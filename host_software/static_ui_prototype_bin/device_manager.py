@@ -5,9 +5,10 @@ import threading
 from typing import Any, Callable
 
 from camera_service import CameraManager
-from capture_coordinator import CaptureCoordinator
+from capture_coordinator import CaptureCoordinator, TrueCapturePlan
 from device_discovery import DeviceDiscovery, DeviceRegistry
 from hardware_controller import DoorState, HardwareController
+from sample_stage import SAMPLE_STAGE_PROTOCOL_UNKNOWN, SampleStageNotImplemented, UnimplementedSampleStage
 from serial_service import SerialDependencyError, SerialService
 from stm32_controller import Stm32ControllerAdapter
 from stm32_protocol import (
@@ -82,7 +83,7 @@ class DeviceManager:
             camera_manager=self.camera_manager,
         )
         self.controller: HardwareController | None = None
-        self.sample_stage_controller = sample_stage_controller
+        self.sample_stage_controller = sample_stage_controller or UnimplementedSampleStage()
         self.capture_coordinator = capture_coordinator or CaptureCoordinator(
             camera_manager=self.camera_manager,
             device_manager=self,
@@ -231,6 +232,7 @@ class DeviceManager:
                 "statusReceivedMonotonic": adapter_snapshot.received_monotonic if adapter_snapshot is not None else None,
                 "actuatorBusy": self._actuator_busy,
                 "lastActuatorAction": self._last_actuator_action,
+                "sampleStage": self.sample_stage_status(),
                 "stm32FirmwareProfile": firmware_profile,
                 "emergencyStopped": (
                     self._emergency_stopped or error_code == 0x08
@@ -299,10 +301,12 @@ class DeviceManager:
         with self._lock:
             controller = self._require_controller()
             controller.safe_stop()
+            sample_stage_stop = self.sample_stage_safe_stop()
             self._emergency_stopped = True
 
             result = self.status()
             result["emergencyStopped"] = True
+            result["sampleStageSafeStop"] = sample_stage_stop
             return result
 
     def fault_clear(self) -> dict[str, Any]:
@@ -432,15 +436,133 @@ class DeviceManager:
         with self._lock:
             snapshot = self.capture_coordinator.snapshot()
             if snapshot.get("state") == "idle":
-                snapshot["message"] = "完整真实采集协调器骨架已接入，真实采集启动仍未开放"
+                snapshot["message"] = "True Capture 编排入口已接入；启动前按 capture plan 动态检查 readiness"
             return snapshot
 
-    def start_capture(self, sample_id: str = "") -> dict[str, Any]:
-        """CaptureCoordinator 接入前，明确拒绝启动真实采集。"""
+    def capture_readiness(self, payload: dict[str, Any] | TrueCapturePlan | None = None) -> dict[str, Any]:
+        """Evaluate whether the current true-capture plan can run."""
 
         with self._lock:
-            self._require_controller()
-            raise CameraIntegrationRequired("完整真实采集协调器尚未开放，不能开始真实采集")
+            plan = payload if isinstance(payload, TrueCapturePlan) else self._build_true_capture_plan(payload or {})
+            status = self.status()
+            cameras = status.get("cameras") or {}
+            rgb_status = cameras.get("rgb") or {}
+            multispectral_status = cameras.get("multispectral") or {}
+            sample_stage = status.get("sampleStage") or self.sample_stage_status()
+            blocking: list[dict[str, str]] = []
+            warnings: list[dict[str, str]] = []
+
+            if not str(plan.sample_id or "").strip():
+                blocking.append({"code": "SAMPLE_REQUIRED", "message": "请先创建当前样品"})
+            if not str(plan.output_dir or "").strip():
+                blocking.append({"code": "OUTPUT_DIR_REQUIRED", "message": "请先创建或指定样品保存目录"})
+
+            controller_ready = bool(status.get("connected")) and status.get("errorCode") in (None, 0)
+            if not controller_ready:
+                blocking.append({"code": "STM32_NOT_READY", "message": "STM32 控制器未连接或存在故障"})
+
+            rgb_ready = (not plan.rgb_enabled) or bool(rgb_status.get("available"))
+            if plan.rgb_enabled and not rgb_ready:
+                blocking.append({"code": "RGB_NOT_AVAILABLE", "message": rgb_status.get("error") or "RGB 相机不可用"})
+
+            multispectral_ready = (not plan.multispectral_enabled) or bool(multispectral_status.get("available"))
+            if plan.multispectral_enabled and not multispectral_ready:
+                blocking.append({"code": "DVP2_NOT_AVAILABLE", "message": multispectral_status.get("error") or "DVP2 多光谱相机不可用"})
+
+            filter_wheel_ready = (not plan.multispectral_enabled) or (
+                bool(status.get("connected")) and bool(status.get("wheelHomed"))
+            )
+            if plan.multispectral_enabled and not filter_wheel_ready:
+                blocking.append({"code": "FILTER_WHEEL_NOT_READY", "message": "滤光轮未连接或尚未建立逻辑零点"})
+
+            sample_stage_required = plan.capture_mode == "multi_view" and bool((plan.rotation_plan or {}).get("enabled"))
+            sample_stage_ready = (not sample_stage_required) or (
+                bool(sample_stage.get("available")) and bool(sample_stage.get("protocolKnown"))
+            )
+            if sample_stage_required and not sample_stage_ready:
+                blocking.append({
+                    "code": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN,
+                    "message": "真实多视角采集需要独立样品旋转台，当前协议未知",
+                })
+
+            calibration_ready = True
+            if plan.multispectral_enabled:
+                if plan.calibration_mode == "existing":
+                    calibration_ready = bool(plan.calibration_id)
+                    if not calibration_ready:
+                        blocking.append({"code": "CALIBRATION_ID_REQUIRED", "message": "使用已有校正时必须提供 calibrationId"})
+                elif plan.calibration_mode == "capture_new":
+                    calibration_ready = bool(plan.capture_dark and plan.capture_white)
+                    if not calibration_ready:
+                        blocking.append({"code": "CALIBRATION_CAPTURE_REQUIRED", "message": "重新校正必须采集 Dark 和 White"})
+                    if not plan.operator_confirmed_dark:
+                        blocking.append({"code": "DARK_OPERATOR_CONFIRMATION_REQUIRED", "message": "请确认暗场遮光状态"})
+                    if not plan.operator_confirmed_white:
+                        blocking.append({"code": "WHITE_OPERATOR_CONFIRMATION_REQUIRED", "message": "请放置白板并确认"})
+
+            warnings.append({
+                "code": "HARDWARE_ACCEPTANCE_NOT_PASSED",
+                "message": "P1B hardware acceptance checklist 仍未 PASS；软件可执行不等于生产放行",
+            })
+
+            sample_stage_block_codes = {
+                SAMPLE_STAGE_PROTOCOL_UNKNOWN,
+                str(sample_stage.get("lastError") or ""),
+            }
+            single_view_blocking = [
+                reason for reason in blocking if str(reason.get("code") or "") not in sample_stage_block_codes
+            ]
+            ready = not blocking
+            single_view_ready = not single_view_blocking
+            multi_view_ready = sample_stage_ready and ready
+
+            capabilities = {
+                "singleViewReady": single_view_ready,
+                "multiViewReady": multi_view_ready,
+                "rgbReady": rgb_ready,
+                "multispectralReady": multispectral_ready,
+                "calibrationReady": calibration_ready,
+                "filterWheelReady": filter_wheel_ready,
+                "sampleStageReady": sample_stage_ready,
+                "controllerReady": controller_ready,
+                "productionAccepted": False,
+            }
+            return {
+                "ready": ready,
+                "trueCapturePrepared": ready,
+                "captureMode": plan.capture_mode,
+                "plan": plan.to_dict(),
+                "blockingReasons": blocking,
+                "warnings": warnings,
+                "capabilities": capabilities,
+                "singleView": {
+                    "ready": single_view_ready,
+                    "blockingReasons": single_view_blocking,
+                },
+                "multiView": {
+                    "ready": multi_view_ready,
+                    "blockingReasons": blocking if plan.capture_mode == "multi_view" else [
+                        {"code": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN, "message": "样品台协议未知"}
+                    ] if not sample_stage_ready else [],
+                },
+            }
+
+    def start_capture(self, sample_id: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Start formal true capture through CaptureCoordinator protected paths."""
+
+        with self._lock:
+            plan_payload = dict(payload or {})
+            if sample_id and not plan_payload.get("sampleId"):
+                plan_payload["sampleId"] = sample_id
+            plan = self._build_true_capture_plan(plan_payload)
+            readiness = self.capture_readiness(plan)
+            if not readiness.get("ready"):
+                codes = ", ".join(str(item.get("code")) for item in readiness.get("blockingReasons") or [])
+                raise CameraIntegrationRequired(f"True Capture readiness 未通过: {codes}")
+
+        capture = self.capture_coordinator.run_true_capture(plan)
+        capture["readiness"] = readiness
+        return capture
 
     def cancel_capture(self) -> dict[str, Any]:
         """取消当前采集；设备已连接时同时执行安全停止。"""
@@ -449,8 +571,81 @@ class DeviceManager:
             if self.controller is not None and self.serial.is_connected:
                 self.controller.safe_stop()
                 self._emergency_stopped = True
+            try:
+                self.sample_stage_safe_stop()
+            except Exception as exc:
+                LOGGER.warning("取消采集时样品台 safe_stop 失败：%s", exc)
 
             return self.capture_coordinator.request_cancel()
+
+    def _build_true_capture_plan(self, payload: dict[str, Any]) -> TrueCapturePlan:
+        payload = dict(payload or {})
+        capture_mode = str(payload.get("captureMode") or payload.get("mode") or "single_view").strip().lower()
+        if capture_mode in {"single", "single-view", "singleview"}:
+            capture_mode = "single_view"
+        if capture_mode in {"multi", "multi-view", "multiview", "sample_multiview"}:
+            capture_mode = "multi_view"
+        if capture_mode not in {"single_view", "multi_view"}:
+            raise ValueError("captureMode must be single_view or multi_view")
+
+        calibration_mode = str(payload.get("calibrationMode") or "existing").strip().lower()
+        if calibration_mode in {"new", "capture-new", "capture"}:
+            calibration_mode = "capture_new"
+        if calibration_mode not in {"existing", "capture_new", "none"}:
+            raise ValueError("calibrationMode must be existing, capture_new, or none")
+        capture_new = calibration_mode == "capture_new"
+        require_calibration = self._bool_payload(payload.get("requireCalibration"), default=calibration_mode != "none")
+        rotation_plan = payload.get("rotationPlan") if isinstance(payload.get("rotationPlan"), dict) else {}
+        sample_rotation = payload.get("sampleRotation") if isinstance(payload.get("sampleRotation"), dict) else None
+        if not rotation_plan and sample_rotation is not None:
+            try:
+                from rotation_plan import build_capture_rotation_plan
+
+                rotation_plan = build_capture_rotation_plan(sample_rotation)
+            except Exception:
+                rotation_plan = dict(sample_rotation)
+        if capture_mode == "single_view":
+            rotation_plan = {"enabled": False, "views": []}
+
+        return TrueCapturePlan(
+            sample_id=str(payload.get("sampleId") or payload.get("sample_id") or "").strip(),
+            capture_mode=capture_mode,
+            rgb_enabled=self._bool_payload(payload.get("rgbEnabled"), default=True),
+            multispectral_enabled=self._bool_payload(payload.get("multispectralEnabled"), default=True),
+            calibration_mode=calibration_mode,
+            calibration_id=str(payload.get("calibrationId") or payload.get("calibration_id") or "").strip() or None,
+            capture_dark=self._bool_payload(payload.get("captureDark"), default=capture_new),
+            capture_white=self._bool_payload(payload.get("captureWhite"), default=capture_new),
+            rotation_plan=dict(rotation_plan or {}),
+            band_plan=payload.get("bandPlan"),
+            filter_config_path=payload.get("filterConfigPath"),
+            settling_ms=self._optional_int(payload.get("settlingMs")),
+            sample_stage_settling_ms=self._optional_int(payload.get("sampleStageSettlingMs"), default=300) or 300,
+            rgb_dir_name=str(payload.get("rgbDirName") or "rgb"),
+            multispectral_dir_name=str(payload.get("multispectralDirName") or "multispectral"),
+            output_dir=payload.get("outputDir") or payload.get("captureDir"),
+            return_home=self._bool_payload(payload.get("returnHome"), default=True),
+            require_calibration=require_calibration,
+            sample_stage_mode=str(payload.get("sampleStageMode") or "hardware").strip().lower(),
+            operator_confirmed_dark=self._bool_payload(payload.get("operatorConfirmedDark", payload.get("operatorConfirmed")), default=False),
+            operator_confirmed_white=self._bool_payload(payload.get("operatorConfirmedWhite", payload.get("operatorConfirmed")), default=False),
+            rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=0x03) or 0x03,
+            tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x03) or 0x03,
+        )
+
+    @staticmethod
+    def _bool_payload(value: Any, *, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "no", "off"}
+        return bool(value)
+
+    @staticmethod
+    def _optional_int(value: Any, *, default: int | None = None) -> int | None:
+        if value in (None, ""):
+            return default
+        return int(value)
 
     def _require_controller(self) -> HardwareController:
         if self.controller is None or not self.serial.is_connected:
@@ -696,10 +891,128 @@ class DeviceManager:
             "tungsten1On": False,
             "tungsten2On": False,
             "errorCode": None,
+            "sampleStage": self.sample_stage_status(),
             "stm32FirmwareProfile": self._stm32_profile_status(),
             "emergencyStopped": False,
             "cameras": self.camera_manager.status(),
         }
+
+    def sample_stage_status(self) -> dict[str, Any]:
+        """Return the independent fruit rotation stage status.
+
+        This is deliberately separate from the filter wheel STM32 status.
+        Until a real sample-stage protocol is documented, the default adapter
+        reports SAMPLE_STAGE_PROTOCOL_UNKNOWN and no position feedback.
+        """
+
+        stage = self.sample_stage_controller
+        if stage is None:
+            stage = UnimplementedSampleStage()
+            self.sample_stage_controller = stage
+        if hasattr(stage, "get_status"):
+            status = stage.get_status()
+            return status.to_dict() if hasattr(status, "to_dict") else dict(status or {})
+        return {
+            "connected": bool(getattr(stage, "is_connected", False)),
+            "available": bool(getattr(stage, "implemented", False)),
+            "homed": None,
+            "currentAngleDeg": None,
+            "targetAngleDeg": None,
+            "moving": bool(getattr(stage, "is_moving", False)),
+            "lastCommand": "",
+            "lastError": "SAMPLE_STAGE_STATUS_UNAVAILABLE",
+            "fault": "SAMPLE_STAGE_STATUS_UNAVAILABLE",
+            "hardwareMode": str(getattr(stage, "mode", "hardware")),
+            "implemented": bool(getattr(stage, "implemented", False)),
+            "protocolKnown": False,
+            "positionFeedbackSupported": False,
+        }
+
+    def sample_stage_home(self) -> dict[str, Any]:
+        return self._run_sample_stage_command("home")
+
+    def sample_stage_move_absolute(self, angle_deg: float, *, direction: str = "CW") -> dict[str, Any]:
+        angle = self._normalize_sample_angle(angle_deg)
+        return self._run_sample_stage_command("move_to", angle, direction=direction)
+
+    def sample_stage_move_relative(self, delta_deg: float, *, direction: str = "CW") -> dict[str, Any]:
+        if isinstance(delta_deg, bool):
+            raise ValueError("deltaDeg must be a number")
+        delta = float(delta_deg)
+        if abs(delta) > 360.0:
+            raise ValueError("deltaDeg must be within -360..360")
+        return self._run_sample_stage_command("move_relative", delta, direction=direction)
+
+    def sample_stage_stop(self) -> dict[str, Any]:
+        stage = self._sample_stage()
+        try:
+            if hasattr(stage, "stop"):
+                result = stage.stop()
+            elif hasattr(stage, "safe_stop"):
+                result = stage.safe_stop()
+            else:
+                raise SampleStageNotImplemented("SAMPLE_STAGE_STOP_UNAVAILABLE")
+            return {
+                "command": "stop",
+                "result": dict(result or {}),
+                "status": self.sample_stage_status(),
+            }
+        except SampleStageNotImplemented as exc:
+            raise UnsupportedCapabilityError(str(exc)) from exc
+
+    def sample_stage_safe_stop(self) -> dict[str, Any]:
+        stage = self._sample_stage()
+        if hasattr(stage, "safe_stop"):
+            result = stage.safe_stop()
+            return {"command": "safe_stop", "result": dict(result or {}), "status": self.sample_stage_status()}
+        return {"command": "safe_stop", "result": {"commandSent": False}, "status": self.sample_stage_status()}
+
+    def _sample_stage(self) -> Any:
+        if self.sample_stage_controller is None:
+            self.sample_stage_controller = UnimplementedSampleStage()
+        return self.sample_stage_controller
+
+    def _run_sample_stage_command(self, command: str, *args: Any, direction: str = "CW") -> dict[str, Any]:
+        stage = self._sample_stage()
+        try:
+            if command == "home":
+                if hasattr(stage, "home"):
+                    result = stage.home()
+                else:
+                    result = stage.home_sample_stage()
+            elif command == "move_to":
+                if hasattr(stage, "move_to"):
+                    result = stage.move_to(args[0], direction=direction)
+                else:
+                    result = stage.move_sample_stage_to_angle(args[0], direction=direction)
+            elif command == "move_relative":
+                if hasattr(stage, "move_relative"):
+                    result = stage.move_relative(args[0], direction=direction)
+                else:
+                    position = stage.get_sample_stage_position()
+                    angle = position.angle_deg if hasattr(position, "angle_deg") else None
+                    if angle is None:
+                        raise SampleStageNotImplemented("SAMPLE_STAGE_RELATIVE_MOVE_REQUIRES_POSITION_FEEDBACK")
+                    result = stage.move_sample_stage_to_angle(self._normalize_sample_angle(float(angle) + float(args[0])), direction=direction)
+            else:
+                raise ValueError(f"unknown sample stage command: {command}")
+            return {
+                "command": command,
+                "result": dict(result or {}),
+                "status": self.sample_stage_status(),
+            }
+        except SampleStageNotImplemented as exc:
+            raise UnsupportedCapabilityError(str(exc)) from exc
+
+    @staticmethod
+    def _normalize_sample_angle(value: float) -> float:
+        if isinstance(value, bool):
+            raise ValueError("angleDeg must be a number")
+        angle = float(value)
+        if not -360_000.0 < angle < 360_000.0:
+            raise ValueError("angleDeg is outside supported bounds")
+        normalized = angle % 360.0
+        return 0.0 if abs(normalized) < 1e-9 else normalized
 
     def _stm32_profile_status(self) -> dict[str, Any]:
         adapter = self.stm32_adapter
