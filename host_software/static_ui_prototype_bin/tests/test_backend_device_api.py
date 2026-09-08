@@ -9,7 +9,7 @@ from pathlib import Path
 
 from backend_server import JobStore, SessionState, create_handler
 from device_discovery import DeviceCandidate, DeviceRegistry, DeviceRole
-from device_manager import CameraIntegrationRequired
+from device_manager import CameraIntegrationRequired, UnsupportedCapabilityError
 
 try:
     from .http_test_utils import InProcessHttpClient
@@ -323,6 +323,21 @@ class FakeDeviceManager:
             "actuatorBusy": self.actuator_busy,
             "errorCode": 0 if self.connected else None,
             "emergencyStopped": self.emergency_stopped,
+            "sampleStage": {
+                "connected": False,
+                "available": False,
+                "homed": False,
+                "currentAngleDeg": None,
+                "targetAngleDeg": None,
+                "moving": False,
+                "lastCommand": "",
+                "lastError": "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+                "fault": "SAMPLE_STAGE_PROTOCOL_UNKNOWN",
+                "hardwareMode": "hardware",
+                "implemented": False,
+                "protocolKnown": False,
+                "positionFeedbackSupported": False,
+            },
             "cameras": self.camera_manager.status(),
         }
 
@@ -445,10 +460,46 @@ class FakeDeviceManager:
             raise ValueError("operatorConfirmedAligned must be true")
         return {"commandAccepted": True, "originEstablished": True, "automaticHoming": False, "message": "逻辑零点已建立", "status": self._status()}
 
+    def sample_stage_status(self):
+        return self._status()["sampleStage"]
+
+    def sample_stage_home(self):
+        raise UnsupportedCapabilityError("SAMPLE_STAGE_PROTOCOL_UNKNOWN: sample stage hardware adapter is not implemented")
+
+    def sample_stage_move_absolute(self, angle_deg, *, direction="CW"):
+        raise UnsupportedCapabilityError("SAMPLE_STAGE_PROTOCOL_UNKNOWN: sample stage hardware adapter is not implemented")
+
+    def sample_stage_move_relative(self, delta_deg, *, direction="CW"):
+        raise UnsupportedCapabilityError("SAMPLE_STAGE_PROTOCOL_UNKNOWN: sample stage hardware adapter is not implemented")
+
+    def sample_stage_stop(self):
+        raise UnsupportedCapabilityError("SAMPLE_STAGE_PROTOCOL_UNKNOWN: sample stage hardware adapter is not implemented")
+
     def capture_status(self):
         return {"status": "not_ready", "progress": 0, "message": "完整真实采集协调器尚未接入"}
 
-    def start_capture(self, sample_id=""):
+    def capture_readiness(self, payload=None):
+        payload = payload or {}
+        return {
+            "ready": False,
+            "trueCapturePrepared": False,
+            "captureMode": payload.get("captureMode") or "single_view",
+            "blockingReasons": [{"code": "FAKE_TRUE_CAPTURE_NOT_READY", "message": "fake manager keeps true capture guarded"}],
+            "warnings": [],
+            "capabilities": {
+                "singleViewReady": False,
+                "multiViewReady": False,
+                "rgbReady": True,
+                "multispectralReady": True,
+                "filterWheelReady": True,
+                "sampleStageReady": False,
+            },
+            "singleView": {"ready": False, "blockingReasons": []},
+            "multiView": {"ready": False, "blockingReasons": [{"code": "SAMPLE_STAGE_PROTOCOL_UNKNOWN", "message": "样品台协议未知"}]},
+            "plan": dict(payload),
+        }
+
+    def start_capture(self, sample_id="", payload=None):
         raise CameraIntegrationRequired("完整真实采集协调器尚未接入，不能开始真实采集")
 
     def cancel_capture(self):
@@ -575,7 +626,22 @@ class BackendDeviceApiTests(unittest.TestCase):
             self.post_json("/api/device/led", {"channel": 1, "enabled": True})
         self.assertEqual(context.exception.code, 400)
 
+    def test_sample_stage_api_reports_protocol_unknown_boundary(self):
+        status = self.get_json("/api/device/sample-stage/status")["sampleStage"]
+        self.assertFalse(status["available"])
+        self.assertEqual(status["lastError"], "SAMPLE_STAGE_PROTOCOL_UNKNOWN")
+
+        with self.assertRaises(urllib.error.HTTPError) as context:
+            self.post_json("/api/device/sample-stage/home", {})
+        self.assertEqual(context.exception.code, 409)
+        body = json.loads(context.exception.fp.read().decode("utf-8"))
+        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", body["message"])
+
     def test_capture_start_reports_camera_integration_gap(self):
+        readiness = self.get_json("/api/capture/readiness?captureMode=single_view")["readiness"]
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["blockingReasons"][0]["code"], "FAKE_TRUE_CAPTURE_NOT_READY")
+
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.post_json("/api/capture/start", {"sampleId": "S001"})
 
@@ -800,10 +866,20 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("id=\"wheelSetOrigin\"", html)
         self.assertIn("id=\"actuatorExtend\"", html)
         self.assertIn("id=\"led3OnButton\"", html)
+        self.assertIn("id=\"sampleStageHome\"", html)
+        self.assertIn("id=\"sampleStageMovePos30\"", html)
+        self.assertIn("id=\"startTrueCapture\"", html)
+        self.assertIn("id=\"trueCaptureMode\"", html)
+        self.assertIn("data-sample-stage-angle=\"90\"", html)
         self.assertIn("/api/device/wheel/move-relative", app_js)
         self.assertIn("/api/device/actuator", app_js)
         self.assertIn("/api/device/fan", app_js)
         self.assertIn("/api/device/led", app_js)
+        self.assertIn("/api/device/sample-stage/status", app_js)
+        self.assertIn("/api/device/sample-stage/move-absolute", app_js)
+        self.assertIn("/api/capture/readiness", app_js)
+        self.assertIn("/api/capture/start", app_js)
+        self.assertIn("协议未知；禁止复用滤光轮电机", app_js)
         self.assertNotIn("平台正转", html)
         self.assertNotIn("平台反转", html)
         self.assertNotIn("升降复位", html)

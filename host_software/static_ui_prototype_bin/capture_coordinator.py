@@ -16,6 +16,8 @@ from sample_stage import SampleStageNotImplemented, SampleStagePosition, Simulat
 class CaptureState(str, Enum):
     IDLE = "idle"
     PREPARING = "preparing"
+    WAITING_OPERATOR = "waiting_operator"
+    CALIBRATING = "calibrating"
     CAPTURING = "capturing"
     FINALIZING = "finalizing"
     COMPLETED = "completed"
@@ -277,6 +279,55 @@ class SampleMultiViewPlan:
         }
 
 
+@dataclass(frozen=True)
+class TrueCapturePlan:
+    sample_id: str = ""
+    capture_mode: str = "single_view"
+    rgb_enabled: bool = True
+    multispectral_enabled: bool = True
+    calibration_mode: str = "existing"
+    calibration_id: str | None = None
+    capture_dark: bool = False
+    capture_white: bool = False
+    rotation_plan: dict[str, Any] = field(default_factory=dict)
+    band_plan: MultispectralCapturePlan | list[MultispectralBandPlan] | list[dict[str, Any]] | None = None
+    filter_config_path: str | Path | None = None
+    settling_ms: int | None = None
+    sample_stage_settling_ms: int = 300
+    rgb_dir_name: str = "rgb"
+    multispectral_dir_name: str = "multispectral"
+    output_dir: str | Path | None = None
+    return_home: bool = True
+    require_calibration: bool = True
+    sample_stage_mode: str = "hardware"
+    operator_confirmed_dark: bool = False
+    operator_confirmed_white: bool = False
+    rgb_led_mask: int = 0x03
+    tungsten_mask: int = 0x03
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sampleId": self.sample_id,
+            "captureMode": self.capture_mode,
+            "singleView": self.capture_mode == "single_view",
+            "multiView": self.capture_mode == "multi_view",
+            "rgbEnabled": self.rgb_enabled,
+            "multispectralEnabled": self.multispectral_enabled,
+            "calibrationMode": self.calibration_mode,
+            "calibrationId": self.calibration_id,
+            "captureDark": self.capture_dark,
+            "captureWhite": self.capture_white,
+            "rotationPlan": dict(self.rotation_plan),
+            "rgbDirName": self.rgb_dir_name,
+            "multispectralDirName": self.multispectral_dir_name,
+            "outputDir": str(self.output_dir or ""),
+            "returnHome": self.return_home,
+            "requireCalibration": self.require_calibration,
+            "sampleStageMode": self.sample_stage_mode,
+            "sampleStageSettlingMs": self.sample_stage_settling_ms,
+        }
+
+
 @dataclass
 class CaptureRun:
     capture_id: str
@@ -294,13 +345,26 @@ class CaptureRun:
     mode: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        current_step = next((step for step in self.steps if step.id == self.current_step), None)
+        current_view = _current_view_from_step(self.current_step or "")
+        current_band = _current_band_from_step(self.current_step or "")
+        views = self.metadata.get("views") if isinstance(self.metadata, dict) else []
+        enabled_bands = []
+        sequence = self.metadata.get("multispectralSequence") if isinstance(self.metadata, dict) else {}
+        if isinstance(sequence, dict):
+            enabled_bands = sequence.get("enabledBandIds") or sequence.get("enabledBands") or []
         return {
             "captureId": self.capture_id,
             "sampleId": self.sample_id,
             "state": self.state.value,
             "status": self.state.value,
             "currentStep": self.current_step,
+            "stepName": current_step.name if current_step is not None else "",
             "progress": self.progress,
+            "currentView": current_view,
+            "totalViews": len(views) if isinstance(views, list) else None,
+            "currentBand": current_band,
+            "totalBands": len(enabled_bands) if isinstance(enabled_bands, list) else None,
             "startedAt": self.started_at,
             "finishedAt": self.finished_at,
             "error": self.error,
@@ -887,6 +951,109 @@ class CaptureCoordinator:
             self._active_multiview_plan = None
             self._active_multispectral_view_id = None
 
+    def run_true_capture(self, plan: TrueCapturePlan) -> dict[str, Any]:
+        """Orchestrate one formal capture request with existing protected paths."""
+
+        capture_mode = str(plan.capture_mode or "single_view").strip().lower()
+        if capture_mode not in {"single_view", "multi_view"}:
+            raise ValueError("capture_mode must be single_view or multi_view")
+        if not plan.rgb_enabled and not plan.multispectral_enabled:
+            raise ValueError("true capture requires RGB or multispectral capture")
+        if not plan.output_dir:
+            raise ValueError("true capture requires output_dir")
+
+        calibration_id = self._normalize_calibration_id(plan.calibration_id) if (
+            plan.capture_dark or plan.capture_white or plan.calibration_id
+        ) else None
+        orchestration: dict[str, Any] = {
+            "plan": plan.to_dict(),
+            "calibrationRuns": [],
+            "sampleRun": None,
+            "captureStatus": "in_progress",
+            "offlineDatasetUsed": False,
+        }
+
+        if plan.capture_dark:
+            dark = self.run_dark_reference_capture(
+                sample_id=plan.sample_id,
+                output_dir=plan.output_dir,
+                band_plan=plan.band_plan,
+                filter_config_path=plan.filter_config_path,
+                settling_ms=plan.settling_ms,
+                calibration_id=calibration_id,
+                operator_confirmed=plan.operator_confirmed_dark,
+            )
+            orchestration["calibrationRuns"].append({
+                "type": "dark",
+                "state": dark.get("state"),
+                "captureId": dark.get("captureId"),
+                "error": dark.get("error"),
+            })
+            if dark.get("state") != CaptureState.COMPLETED.value:
+                self._run.metadata["trueCapture"] = {**orchestration, "captureStatus": dark.get("state")}
+                return self.snapshot()
+
+        if plan.capture_white:
+            white = self.run_white_reference_capture(
+                sample_id=plan.sample_id,
+                output_dir=plan.output_dir,
+                band_plan=plan.band_plan,
+                filter_config_path=plan.filter_config_path,
+                settling_ms=plan.settling_ms,
+                calibration_id=calibration_id,
+                operator_confirmed=plan.operator_confirmed_white,
+                tungsten_mask=plan.tungsten_mask,
+            )
+            orchestration["calibrationRuns"].append({
+                "type": "white",
+                "state": white.get("state"),
+                "captureId": white.get("captureId"),
+                "error": white.get("error"),
+            })
+            if white.get("state") != CaptureState.COMPLETED.value:
+                self._run.metadata["trueCapture"] = {**orchestration, "captureStatus": white.get("state")}
+                return self.snapshot()
+
+        if plan.multispectral_enabled:
+            sample_rotation = None if capture_mode == "multi_view" else {"enabled": False}
+            sample = self.run_sample_multiview_capture(
+                sample_id=plan.sample_id,
+                output_dir=plan.output_dir,
+                rgb_dir_name=plan.rgb_dir_name,
+                multispectral_dir_name=plan.multispectral_dir_name,
+                rotation_plan=plan.rotation_plan if capture_mode == "multi_view" else None,
+                sample_rotation=sample_rotation,
+                band_plan=plan.band_plan,
+                filter_config_path=plan.filter_config_path,
+                settling_ms=plan.settling_ms,
+                sample_stage_settling_ms=plan.sample_stage_settling_ms,
+                sample_stage_mode=plan.sample_stage_mode,
+                return_home=plan.return_home,
+                calibration_id=calibration_id,
+                require_calibration=bool(plan.require_calibration and calibration_id),
+                rgb_led_mask=plan.rgb_led_mask,
+                tungsten_mask=plan.tungsten_mask,
+            )
+        else:
+            sample = self.run_rgb_capture(
+                sample_id=plan.sample_id,
+                output_dir=plan.output_dir,
+                rgb_dir_name=plan.rgb_dir_name,
+                rgb_led_mask=plan.rgb_led_mask,
+            )
+        orchestration["sampleRun"] = {
+            "state": sample.get("state"),
+            "captureId": sample.get("captureId"),
+            "error": sample.get("error"),
+        }
+        orchestration["captureStatus"] = sample.get("state")
+        self._run.metadata["trueCapture"] = orchestration
+        self._run.metadata["trueCapturePlan"] = plan.to_dict()
+        self._run.metadata["capture_status"] = "completed" if sample.get("state") == "completed" else sample.get("state")
+        self._run.metadata["captureIncomplete"] = sample.get("state") != "completed"
+        self._write_current_sample_files()
+        return self.snapshot()
+
     def default_dry_run_steps(self) -> list[CaptureStepPlan]:
         return [
             CaptureStepPlan("prepare", "准备采集上下文", CaptureState.PREPARING, self.DEFAULT_STEP_TIMEOUTS_MS["prepare"]),
@@ -1201,21 +1368,36 @@ class CaptureCoordinator:
         return path
 
     def safe_stop(self) -> None:
+        errors: list[str] = []
         try:
             if self.safe_stop_callback is not None:
                 self.safe_stop_callback()
-                return
-            if self.hardware_controller is not None and hasattr(self.hardware_controller, "safe_stop"):
+        except Exception as exc:
+            errors.append(str(exc))
+        stage = self.sample_stage_controller or getattr(self.device_manager, "sample_stage_controller", None) or getattr(self.device_manager, "sample_stage", None)
+        if stage is not None and hasattr(stage, "safe_stop"):
+            try:
+                stage.safe_stop()
+            except Exception as exc:
+                errors.append(str(exc))
+        if self.hardware_controller is not None and hasattr(self.hardware_controller, "safe_stop"):
+            try:
                 self.hardware_controller.safe_stop()
-                return
+            except Exception as exc:
+                errors.append(str(exc))
+        else:
             controller = getattr(self.device_manager, "controller", None)
             if controller is not None and hasattr(controller, "safe_stop"):
-                controller.safe_stop()
-        except Exception as exc:
+                try:
+                    controller.safe_stop()
+                except Exception as exc:
+                    errors.append(str(exc))
+        if errors:
+            message = "; ".join(error for error in errors if error)
             if self._run.error is None:
-                self._run.error = CaptureSafetyError("安全停止失败", cause=exc).to_dict()
+                self._run.error = CaptureSafetyError("安全停止失败", cause=RuntimeError(message)).to_dict()
             else:
-                self._run.error["safeStopError"] = str(exc)
+                self._run.error["safeStopError"] = message
 
     def _run_steps(
         self,
@@ -2184,6 +2366,11 @@ class CaptureCoordinator:
 
     def _write_sample_multiview_files(self) -> None:
         if self._run.mode != "sample_multiview" or not self._run.output_dir:
+            return
+        self._write_current_sample_files()
+
+    def _write_current_sample_files(self) -> None:
+        if not self._run.output_dir:
             return
         output_dir = Path(self._run.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -3329,3 +3516,28 @@ def _sample_camera_stable_id(sample_frames: dict[str, dict[str, Any]]) -> str:
     first = next(iter(sample_frames.values()), {})
     device = first.get("device") or {}
     return str(device.get("stableId") or device.get("stable_id") or device.get("serial") or device.get("cameraSerial") or device.get("userId") or "")
+
+
+def _current_view_from_step(step_id: str) -> str | None:
+    if not step_id or ":" not in step_id:
+        return None
+    parts = step_id.split(":")
+    for part in parts[1:]:
+        if part.startswith("view_"):
+            return part
+    return None
+
+
+def _current_band_from_step(step_id: str) -> str | None:
+    if not step_id or ":" not in step_id:
+        return None
+    parts = step_id.split(":")
+    if parts[0] in {
+        "filter_wheel_move",
+        "filter_wheel_position_verify",
+        "filter_wheel_settle",
+        "band_camera_settings",
+        "multispectral_capture",
+    }:
+        return parts[-1]
+    return None

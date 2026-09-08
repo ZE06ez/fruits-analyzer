@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import tempfile
 import time
 from pathlib import Path
@@ -55,6 +56,102 @@ def run_rgb_test(config: RgbCameraConfig, save: bool, frames: int) -> int:
         return 2
     finally:
         camera.close()
+
+
+def run_rgb_preview_benchmark(
+    *,
+    config: RgbCameraConfig,
+    preview_width: int,
+    preview_height: int,
+    target_fps: float,
+    duration_seconds: float,
+) -> int:
+    target = (int(preview_width), int(preview_height))
+    frame_count = max(5, int(max(0.5, duration_seconds) * max(1.0, target_fps)))
+    print("RGB Preview latency benchmark")
+    print("This uses the real RGB camera. It does not save scientific data and does not fake hardware results.")
+    print(f"preview target: {target[0]}x{target[1]} @ {target_fps:g} FPS")
+    print(f"frames per mode: {frame_count}")
+    print()
+
+    camera = RgbUvcCamera(config=config)
+    try:
+        camera.start_stream()
+        status = camera.get_status().to_dict()
+        actual = status.get("actual") or {}
+        print("source:")
+        print(f"  requested: {config.width}x{config.height} @ {config.fps:g} FPS {config.fourcc}")
+        print(f"  actual: {actual.get('width', '--')}x{actual.get('height', '--')} @ {actual.get('fps', '--')} FPS {actual.get('fourcc', '--')}")
+        first = camera.capture_frame()
+        print(f"  firstFrame: shape={first.shape} dtype={first.dtype} color={first.color_space}")
+        print()
+        print("encoder micro-benchmark on one captured frame:")
+        for item in _benchmark_preview_encoders(first.data, target):
+            print(
+                f"  {item['encoder']} quality={item['quality']} optimize={item.get('optimize', '--')} "
+                f"resize={item['resizeMs']:.3f}ms jpeg={item['jpegMs']:.3f}ms bytes={item['bytes']}"
+            )
+        print()
+        sync_rows = []
+        print("old synchronous preview path:")
+        for _ in range(frame_count):
+            started = time.perf_counter()
+            capture_started = time.perf_counter()
+            frame = camera.capture_frame()
+            capture_ms = (time.perf_counter() - capture_started) * 1000.0
+            data, resize_ms, jpeg_ms, encoder = CameraManager._encode_rgb_preview_jpeg_cv2(frame.data, target)
+            total_ms = (time.perf_counter() - started) * 1000.0
+            sync_rows.append({
+                "captureDurationMs": capture_ms,
+                "resizeDurationMs": resize_ms,
+                "jpegEncodeDurationMs": jpeg_ms,
+                "serverTotalMs": total_ms,
+                "sourceAgeMs": max(0.0, total_ms - capture_ms),
+                "bytes": len(data),
+                "encoder": encoder,
+            })
+            _sleep_for_preview(target_fps, started)
+        _print_preview_benchmark_summary("old_sync_capture_read_resize_jpeg", sync_rows)
+    except CameraError as exc:
+        print(f"Camera error: {exc.user_message}")
+        print(f"Technical detail: {exc.technical_message}")
+        return 2
+    finally:
+        camera.stop_stream()
+        camera.close()
+
+    manager = CameraManager(rgb_camera=RgbUvcCamera(config=config))
+    try:
+        print()
+        print("latest-frame preview path:")
+        manager.start_rgb_preview({"width": target[0], "height": target[1], "fps": target_fps})
+        rows = []
+        deadline = time.time() + 2.0
+        while not manager._rgb_preview_ready_event.is_set() and time.time() < deadline:
+            time.sleep(0.01)
+        for _ in range(frame_count):
+            started = time.perf_counter()
+            data, meta = manager.rgb_preview_jpeg()
+            row = dict(meta)
+            row["bytes"] = len(data)
+            rows.append(row)
+            _sleep_for_preview(target_fps, started)
+        _print_preview_benchmark_summary("latest_frame_worker_encoded_cache", rows)
+        print()
+        print("browser fetch:")
+        print("  CLI cannot measure real browser fetch duration. Open Camera Settings in the app and use the RGB preview diagnostics line; it prints fetch=...ms from performance.now().")
+        print("target guidance:")
+        print("  960x540 should aim for sourceAge <150ms and end-to-end <250ms. If not, use the printed capture/resize/jpeg/server/fetch fields to locate the bottleneck.")
+        return 0
+    except CameraError as exc:
+        print(f"Camera error: {exc.user_message}")
+        print(f"Technical detail: {exc.technical_message}")
+        return 2
+    finally:
+        try:
+            manager.stop_rgb_preview()
+        except Exception as exc:
+            print(f"preview stop warning: {exc}")
 
 
 def run_multispectral_test(
@@ -747,6 +844,110 @@ def _run_multispectral_frame_loop(camera: Dvp2MonoCamera, frames: int) -> None:
     _print_section("post_loop_actual", status.get("actual") or {})
 
 
+def _benchmark_preview_encoders(data, target: tuple[int, int]) -> list[dict]:
+    rows = []
+    for quality in (75, 80, 85):
+        try:
+            encoded, resize_ms, jpeg_ms, _ = _encode_rgb_preview_cv2_quality(data, target, quality)
+            rows.append({"encoder": "opencv", "quality": quality, "resizeMs": resize_ms, "jpegMs": jpeg_ms, "bytes": len(encoded)})
+        except Exception as exc:
+            rows.append({"encoder": "opencv", "quality": quality, "resizeMs": 0.0, "jpegMs": 0.0, "bytes": 0, "error": str(exc)})
+    for optimize in (False, True):
+        for quality in (75, 80, 85):
+            try:
+                encoded, resize_ms, jpeg_ms = _encode_rgb_preview_pil_quality(data, target, quality, optimize)
+                rows.append({
+                    "encoder": "pil",
+                    "quality": quality,
+                    "optimize": optimize,
+                    "resizeMs": resize_ms,
+                    "jpegMs": jpeg_ms,
+                    "bytes": len(encoded),
+                })
+            except Exception as exc:
+                rows.append({
+                    "encoder": "pil",
+                    "quality": quality,
+                    "optimize": optimize,
+                    "resizeMs": 0.0,
+                    "jpegMs": 0.0,
+                    "bytes": 0,
+                    "error": str(exc),
+                })
+    return rows
+
+
+def _encode_rgb_preview_cv2_quality(data, target: tuple[int, int], quality: int) -> tuple[bytes, float, float, str]:
+    import cv2
+    import numpy as np
+
+    resize_started = time.perf_counter()
+    array = np.asarray(data)
+    if array.shape[1] != target[0] or array.shape[0] != target[1]:
+        array = cv2.resize(array[:, :, :3], target, interpolation=cv2.INTER_LINEAR)
+    resize_ms = (time.perf_counter() - resize_started) * 1000.0
+    encode_started = time.perf_counter()
+    bgr = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+    ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        raise RuntimeError("cv2.imencode returned false")
+    jpeg_ms = (time.perf_counter() - encode_started) * 1000.0
+    return encoded.tobytes(), resize_ms, jpeg_ms, "opencv"
+
+
+def _encode_rgb_preview_pil_quality(data, target: tuple[int, int], quality: int, optimize: bool) -> tuple[bytes, float, float]:
+    import io
+    import numpy as np
+    from PIL import Image
+
+    resize_started = time.perf_counter()
+    image = Image.fromarray(np.asarray(data)[:, :, :3], mode="RGB")
+    if image.size != target:
+        resampling = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+        image = image.resize(target, resampling)
+    resize_ms = (time.perf_counter() - resize_started) * 1000.0
+    encode_started = time.perf_counter()
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=int(quality), optimize=bool(optimize))
+    jpeg_ms = (time.perf_counter() - encode_started) * 1000.0
+    return buffer.getvalue(), resize_ms, jpeg_ms
+
+
+def _print_preview_benchmark_summary(name: str, rows: list[dict]) -> None:
+    print(f"  {name}:")
+    for key in ("sourceAgeMs", "captureDurationMs", "resizeDurationMs", "jpegEncodeDurationMs", "serverTotalMs"):
+        values = [float(row[key]) for row in rows if isinstance(row.get(key), (int, float))]
+        if values:
+            print(f"    {key}: avg={statistics.mean(values):.3f}ms p95={_percentile(values, 0.95):.3f}ms")
+    fps_values = [float(row["measuredPreviewFps"]) for row in rows if isinstance(row.get("measuredPreviewFps"), (int, float))]
+    if fps_values:
+        print(f"    measuredPreviewFps: last={fps_values[-1]:.3f}")
+    dropped = [int(row["droppedFrames"]) for row in rows if isinstance(row.get("droppedFrames"), int)]
+    if dropped:
+        print(f"    droppedFrames: last={dropped[-1]}")
+    byte_values = [int(row["bytes"]) for row in rows if isinstance(row.get("bytes"), int)]
+    if byte_values:
+        print(f"    jpegBytes: avg={statistics.mean(byte_values):.0f}")
+    encoders = sorted({str(row.get("previewEncoder") or row.get("encoder") or "") for row in rows if row.get("previewEncoder") or row.get("encoder")})
+    if encoders:
+        print(f"    encoders: {', '.join(encoders)}")
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * quantile))))
+    return ordered[index]
+
+
+def _sleep_for_preview(target_fps: float, started: float) -> None:
+    interval = 1.0 / max(1.0, float(target_fps or 1.0))
+    elapsed = time.perf_counter() - started
+    if elapsed < interval:
+        time.sleep(interval - elapsed)
+
+
 def _print_frame_stats(name: str, frame) -> None:
     import numpy as np
 
@@ -778,6 +979,7 @@ def _fmt_float(value) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manual camera verification; not used by unittest.")
     parser.add_argument("--rgb", action="store_true", help="Test RGB UVC camera through OpenCV DirectShow.")
+    parser.add_argument("--rgb-preview-benchmark", action="store_true", help="Benchmark old synchronous RGB preview vs latest-frame preview with the real RGB camera.")
     parser.add_argument("--rgb-capture-once", action="store_true", help="Run protected CaptureCoordinator -> CameraManager -> RgbUvcCamera single-frame PNG validation.")
     parser.add_argument("--multispectral", action="store_true", help="Test DO3THINK DVP2 GigE monochrome camera.")
     parser.add_argument("--multispectral-capture-once", action="store_true", help="Run protected CaptureCoordinator -> CameraManager -> DVP2 single-frame raw PNG validation.")
@@ -794,6 +996,10 @@ def main() -> int:
     parser.add_argument("--white-balance", type=float, default=None, help="Requested white balance temperature/value.")
     parser.add_argument("--auto-exposure", type=float, default=None, help="Requested OpenCV auto exposure value.")
     parser.add_argument("--auto-white-balance", type=float, default=None, help="Requested OpenCV auto white balance value.")
+    parser.add_argument("--preview-width", type=int, default=960, help="Preview benchmark width, default: 960.")
+    parser.add_argument("--preview-height", type=int, default=540, help="Preview benchmark height, default: 540.")
+    parser.add_argument("--preview-fps", type=float, default=12.0, help="Preview benchmark target FPS, default: 12.")
+    parser.add_argument("--benchmark-seconds", type=float, default=3.0, help="Preview benchmark duration per mode, default: 3 seconds.")
     parser.add_argument("--sdk-dir", default=None, help="DVP2 SDK root directory, for example: D:\\Netease\\DVP2 SDK CN.")
     parser.add_argument("--serial", default=None, help="DVP2 camera serial number, default: GP23400004963.")
     parser.add_argument("--stm32-port", default=None, help="STM32 serial port for real filter-wheel motion, for example COM5.")
@@ -826,6 +1032,26 @@ def main() -> int:
             auto_white_balance=args.auto_white_balance,
         )
         return run_rgb_test(config, args.save, max(1, args.frames))
+    if args.rgb_preview_benchmark:
+        config = RgbCameraConfig(
+            device_index=args.device_index,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            fourcc=args.fourcc,
+            exposure=args.exposure,
+            gain=args.gain,
+            white_balance=args.white_balance,
+            auto_exposure=args.auto_exposure,
+            auto_white_balance=args.auto_white_balance,
+        )
+        return run_rgb_preview_benchmark(
+            config=config,
+            preview_width=args.preview_width,
+            preview_height=args.preview_height,
+            target_fps=args.preview_fps,
+            duration_seconds=args.benchmark_seconds,
+        )
     if args.rgb_capture_once:
         config = RgbCameraConfig(
             device_index=args.device_index,

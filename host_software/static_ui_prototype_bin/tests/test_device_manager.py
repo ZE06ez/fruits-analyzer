@@ -7,8 +7,11 @@ from pathlib import Path
 from device_discovery import DeviceCandidate, DeviceDiscovery, DeviceRegistry, DeviceRole
 from device_manager import CameraIntegrationRequired, DeviceManager, UnsupportedCapabilityError
 from hardware_controller import DoorState, OutputStatus
+from sample_stage import SimulatedSampleStage
 from serial_service import SerialDependencyError
 from stm32_protocol import Stm32ProtocolProfile
+from tests.test_capture_coordinator import FakeCameraManager as ReadyCameraManager
+from tests.test_capture_coordinator import FakeHardwareController as ReadyHardwareController
 
 
 class FakePort:
@@ -198,6 +201,8 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertFalse(status["cameras"]["rgb"]["connected"])
         self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
         self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
+        self.assertEqual(status["sampleStage"]["lastError"], "SAMPLE_STAGE_PROTOCOL_UNKNOWN")
+        self.assertFalse(status["sampleStage"]["protocolKnown"])
 
     def test_current_firmware_profile_wraps_same_serial_owner_in_adapter(self):
         serial = FakeSerialService()
@@ -323,6 +328,74 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertEqual(manager.capture_status()["status"], "idle")
         self.assertEqual(manager.capture_status()["progress"], 0)
 
+    def test_true_capture_readiness_and_single_view_start_use_coordinator(self):
+        hardware = ReadyHardwareController()
+        hardware.wheel_position = 0
+        camera = ReadyCameraManager()
+        serial = FakeSerialService()
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=lambda _transport: hardware,
+            camera_manager=camera,
+            stm32_protocol_profile=None,
+        )
+        manager.connect("COM3")
+
+        with tempfile.TemporaryDirectory(prefix="dm_true_capture_") as tmp:
+            payload = {
+                "sampleId": "S-DM-TRUE",
+                "outputDir": tmp,
+                "captureMode": "single_view",
+                "calibrationMode": "none",
+                "requireCalibration": False,
+                "settlingMs": 0,
+                "bandPlan": [{"bandId": "A520", "wheelPosition": 1, "wavelengthNm": 520}],
+            }
+            readiness = manager.capture_readiness(payload)
+            capture = manager.start_capture("S-DM-TRUE", payload=payload)
+
+            self.assertTrue(readiness["ready"])
+            self.assertTrue(readiness["trueCapturePrepared"])
+            self.assertEqual(capture["state"], "completed")
+            self.assertTrue((Path(tmp) / "metadata.json").exists())
+            self.assertTrue((Path(tmp) / "views" / "view_000" / "rgb" / "rgb_view_000.png").exists())
+            self.assertEqual(camera.capture_count, 1)
+            self.assertEqual(camera.multispectral_capture_count, 1)
+
+    def test_true_capture_multiview_blocks_on_sample_stage_protocol_unknown(self):
+        hardware = ReadyHardwareController()
+        hardware.wheel_position = 0
+        serial = FakeSerialService()
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=lambda _transport: hardware,
+            camera_manager=ReadyCameraManager(),
+            stm32_protocol_profile=None,
+        )
+        manager.connect("COM3")
+        payload = {
+            "sampleId": "S-DM-MV",
+            "outputDir": str(Path(tempfile.gettempdir()) / "dm_true_capture_mv"),
+            "captureMode": "multi_view",
+            "calibrationMode": "none",
+            "requireCalibration": False,
+            "rotationPlan": {
+                "enabled": True,
+                "views": [
+                    {"viewId": "view_000", "logicalAngleDeg": 0, "mechanicalAngleDeg": 0, "captureOrder": 1},
+                    {"viewId": "view_090", "logicalAngleDeg": 90, "mechanicalAngleDeg": 90, "captureOrder": 2},
+                ],
+            },
+            "bandPlan": [{"bandId": "A520", "wheelPosition": 1, "wavelengthNm": 520}],
+        }
+
+        readiness = manager.capture_readiness(payload)
+
+        self.assertFalse(readiness["ready"])
+        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", [item["code"] for item in readiness["blockingReasons"]])
+        with self.assertRaises(CameraIntegrationRequired):
+            manager.start_capture("S-DM-MV", payload=payload)
+
     def test_emergency_stop_and_fault_clear_update_state(self):
         manager, _ = self.make_manager()
         manager.connect("COM3")
@@ -334,6 +407,39 @@ class DeviceManagerTests(unittest.TestCase):
         with self.assertRaises(UnsupportedCapabilityError):
             manager.fault_clear()
         self.assertEqual(manager.controller.fault_clear_count, 0)
+
+    def test_sample_stage_default_boundary_reports_protocol_unknown(self):
+        manager, _ = self.make_manager()
+
+        status = manager.sample_stage_status()
+
+        self.assertFalse(status["available"])
+        self.assertFalse(status["protocolKnown"])
+        self.assertFalse(status["positionFeedbackSupported"])
+        self.assertEqual(status["lastError"], "SAMPLE_STAGE_PROTOCOL_UNKNOWN")
+        with self.assertRaises(UnsupportedCapabilityError):
+            manager.sample_stage_home()
+
+    def test_sample_stage_adapter_commands_stay_independent_from_filter_wheel(self):
+        stage = SimulatedSampleStage()
+        manager = DeviceManager(
+            serial_service=FakeSerialService(),
+            controller_factory=FakeHardwareController,
+            camera_manager=FakeCameraManager(),
+            sample_stage_controller=stage,
+        )
+
+        home = manager.sample_stage_home()
+        move = manager.sample_stage_move_absolute(90)
+        relative = manager.sample_stage_move_relative(30)
+        stopped = manager.sample_stage_stop()
+
+        self.assertTrue(home["status"]["homed"])
+        self.assertEqual(move["status"]["currentAngleDeg"], 90.0)
+        self.assertEqual(relative["status"]["currentAngleDeg"], 120.0)
+        self.assertTrue(stopped["result"]["stopped"])
+        self.assertIn(("move_sample_stage_to_angle", 90.0, "CW"), stage.calls)
+        self.assertFalse(any(call[0] == "wheel_home" for call in getattr(manager.controller, "calls", [])))
 
     def test_disconnect_safely_stops_then_closes_serial(self):
         manager, serial = self.make_manager()

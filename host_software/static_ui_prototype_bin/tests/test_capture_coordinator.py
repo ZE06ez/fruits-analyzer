@@ -16,6 +16,7 @@ from capture_coordinator import (
     CaptureStepPlan,
     MultispectralBandPlan,
     MultispectralCapturePlan,
+    TrueCapturePlan,
     validate_calibration_compatibility,
 )
 from hardware_controller import DoorState, OutputStatus
@@ -255,6 +256,20 @@ class CaptureCoordinatorTests(unittest.TestCase):
             return current["value"]
 
         return tick
+
+    def assert_no_jpeg_metadata_references(self, metadata):
+        def walk(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from walk(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from walk(item)
+            elif isinstance(value, str):
+                yield value
+
+        offenders = [value for value in walk(metadata) if ".jpg" in value.lower() or ".jpeg" in value.lower()]
+        self.assertEqual(offenders, [])
 
     def test_initial_state_is_idle(self):
         coordinator = CaptureCoordinator(capture_id_factory=lambda: "cap-1")
@@ -525,6 +540,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             )
             frame_meta = result["metadata"]["frames"][0]
             self.assertEqual(frame_meta["relativePath"], "rgb/rgb_view_000.png")
+            self.assertEqual(Path(frame_meta["relativePath"]).suffix.lower(), ".png")
             self.assertEqual(frame_meta["width"], 4)
             self.assertEqual(frame_meta["height"], 3)
             self.assertEqual(frame_meta["channels"], 3)
@@ -532,6 +548,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(frame_meta["pixelOrder"], "RGB")
             self.assertEqual(frame_meta["sourcePixelOrder"], "BGR")
             self.assertEqual(frame_meta["device"]["deviceIndex"], 1)
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_rgb_capture_rejects_empty_frame_and_safe_stops(self):
         camera = FakeCameraManager(frame=CameraFrame(
@@ -683,6 +700,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(saved.shape, (2, 3))
             frame_meta = result["metadata"]["frames"][0]
             self.assertEqual(frame_meta["relativePath"], "multispectral/multispectral_frame_000.png")
+            self.assertEqual(Path(frame_meta["relativePath"]).suffix.lower(), ".png")
             self.assertEqual(frame_meta["role"], "multispectral")
             self.assertEqual(frame_meta["width"], 3)
             self.assertEqual(frame_meta["height"], 2)
@@ -696,6 +714,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertFalse(frame_meta["filterWheelSynchronized"])
             self.assertEqual(frame_meta["device"]["serial"], "DSGP23400004963")
             self.assertEqual(frame_meta["device"]["ip"], "169.254.25.110")
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_multispectral_capture_preserves_uint16_png_depth(self):
         frame_data = np.array([[0, 512, 65535], [1000, 4095, 32768]], dtype=np.uint16)
@@ -747,6 +766,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(frame_meta["pixelFormat"], "Mono16")
             self.assertTrue(frame_meta["previewWasRunning"])
             self.assertFalse(frame_meta["openedForCapture"])
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_multispectral_capture_rejects_empty_frame_and_safe_stops(self):
         camera = FakeCameraManager(multispectral_frame=CameraFrame(
@@ -938,11 +958,13 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(frame_meta["filterWheel"]["position"], 2)
             self.assertEqual(frame_meta["filterWheel"]["settlingMs"], 17)
             self.assertEqual(frame_meta["relativePath"], "multispectral/band_01_A520.png")
+            self.assertEqual(Path(frame_meta["relativePath"]).suffix.lower(), ".png")
             self.assertEqual(frame_meta["focus"]["status"], "ok")
             self.assertEqual(frame_meta["focus"]["classification"], "unknown")
             self.assertEqual(frame_meta["focus"]["bandId"], "A520")
             self.assertEqual(frame_meta["focus"]["wavelengthNm"], 520)
             self.assertIn("tenengrad", frame_meta["focus"])
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_multispectral_sequence_preserves_uint16_band_png_depth(self):
         frame_data = np.array([[0, 65535], [4096, 1024]], dtype=np.uint16)
@@ -1216,6 +1238,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             frame_meta = result["metadata"]["frames"][0]
             self.assertEqual(frame_meta["captureType"], "dark")
             self.assertEqual(frame_meta["relativePath"], "calibration/dark/band_01_A520.png")
+            self.assertEqual(Path(frame_meta["relativePath"]).suffix.lower(), ".png")
             self.assertEqual(frame_meta["frameStats"]["std"], float(np.std(frame_data)))
             self.assertEqual(frame_meta["darkQuality"]["status"], "unvalidated")
             self.assertNotIn("focus", frame_meta)
@@ -1225,6 +1248,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(calibration["completedDarkBands"], ["A520", "B610"])
             self.assertEqual(calibration["missingWhiteBands"], ["A520", "B610"])
             self.assertTrue((Path(tmp) / "calibration" / "calibration_set_cal-unit.json").exists())
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_white_reference_capture_uses_multispectral_lighting_and_completes_existing_set(self):
         plan = MultispectralCapturePlan(
@@ -1287,6 +1311,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             frame_meta = result["metadata"]["frames"][0]
             self.assertEqual(frame_meta["captureType"], "white")
             self.assertEqual(frame_meta["relativePath"], "calibration/white/band_01_A520.png")
+            self.assertEqual(Path(frame_meta["relativePath"]).suffix.lower(), ".png")
             self.assertEqual(frame_meta["saturationDiagnostics"]["saturationValue"], 255)
             self.assertEqual(frame_meta["saturationDiagnostics"]["bitDepthStatus"], "unknown")
             self.assertEqual(frame_meta["whiteUniformity"]["status"], "unvalidated")
@@ -1297,6 +1322,7 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertFalse(calibration["missingDarkBands"])
             self.assertFalse(calibration["missingWhiteBands"])
             self.assertTrue(calibration["sameBandSettingsMatched"])
+            self.assert_no_jpeg_metadata_references(result["metadata"])
 
     def test_calibration_reference_uint16_depth_and_saturation_bits_are_preserved(self):
         frame_data = np.array([[0, 4095], [2048, 4095]], dtype=np.uint16)
@@ -1609,6 +1635,183 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(rgb["state"], "completed")
             self.assertEqual(rgb["metadata"]["frames"][0]["role"], "rgb")
             self.assertNotIn("focus", rgb["metadata"]["frames"][0])
+
+    def test_true_capture_single_view_capture_new_runs_calibration_rgb_multispectral_and_metadata(self):
+        plan = MultispectralCapturePlan(
+            bands=[
+                MultispectralBandPlan("A520", 1, 520, exposure_us=11000.0, gain=1.1),
+                MultispectralBandPlan("B610", 2, 610, exposure_us=12000.0, gain=1.2),
+            ],
+            filter_config_source="unit-test",
+            filter_config_version="p1b8",
+            development_config=False,
+            settling_ms=0,
+        )
+        camera = FakeCameraManager()
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="true_capture_single_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                sleep_fn=lambda seconds: None,
+                capture_id_factory=lambda: "cap-true-single",
+            )
+            result = coordinator.run_true_capture(TrueCapturePlan(
+                sample_id="S-TRUE-1",
+                output_dir=tmp,
+                calibration_mode="capture_new",
+                capture_dark=True,
+                capture_white=True,
+                operator_confirmed_dark=True,
+                operator_confirmed_white=True,
+                band_plan=plan,
+                settling_ms=0,
+            ))
+            root = Path(tmp)
+            self.assertEqual(result["state"], "completed")
+            self.assertEqual(camera.capture_count, 1)
+            self.assertEqual(camera.multispectral_capture_count, 6)
+            self.assertTrue((root / "calibration" / "dark" / "band_01_A520.png").exists())
+            self.assertTrue((root / "calibration" / "white" / "band_02_B610.png").exists())
+            self.assertTrue((root / "views" / "view_000" / "rgb" / "rgb_view_000.png").exists())
+            self.assertTrue((root / "views" / "view_000" / "multispectral" / "band_02_B610.png").exists())
+            metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["trueCapture"]["offlineDatasetUsed"], False)
+        self.assertEqual(metadata["capture_status"], "completed")
+        self.assertFalse(metadata["captureIncomplete"])
+        self.assert_no_jpeg_metadata_references(metadata)
+
+    def test_true_capture_existing_calibration_does_not_recapture_dark_white(self):
+        plan = [MultispectralBandPlan("A520", 1, 520), MultispectralBandPlan("B610", 2, 610)]
+        with tempfile.TemporaryDirectory(prefix="true_capture_existing_cal_") as tmp:
+            setup = CaptureCoordinator(
+                camera_manager=FakeCameraManager(),
+                hardware_controller=FakeHardwareController(),
+                sleep_fn=lambda seconds: None,
+            )
+            setup.run_dark_reference_capture(
+                sample_id="S-CAL",
+                output_dir=tmp,
+                band_plan=plan,
+                calibration_id="cal-existing",
+                operator_confirmed=True,
+            )
+            setup.run_white_reference_capture(
+                sample_id="S-CAL",
+                output_dir=tmp,
+                band_plan=plan,
+                calibration_id="cal-existing",
+                operator_confirmed=True,
+            )
+            camera = FakeCameraManager()
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=FakeHardwareController(),
+                sleep_fn=lambda seconds: None,
+            )
+            result = coordinator.run_true_capture(TrueCapturePlan(
+                sample_id="S-TRUE-EXISTING",
+                output_dir=tmp,
+                calibration_mode="existing",
+                calibration_id="cal-existing",
+                band_plan=plan,
+                settling_ms=0,
+            ))
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(camera.capture_count, 1)
+        self.assertEqual(camera.multispectral_capture_count, 2)
+        self.assertEqual(len(result["metadata"]["trueCapture"]["calibrationRuns"]), 0)
+        self.assertEqual(result["metadata"]["calibrationId"], "cal-existing")
+
+    def test_true_capture_rgb_dvp2_filter_and_cancel_fail_safely(self):
+        cases = [
+            ("rgb", FakeCameraManager(fail_capture=RuntimeError("rgb busy")), FakeHardwareController(), "rgb_capture_failed"),
+            ("dvp2", FakeCameraManager(fail_multispectral_capture=RuntimeError("dvp2 busy")), FakeHardwareController(), "multispectral_capture_failed"),
+        ]
+        for name, camera, hardware, code in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix=f"true_capture_{name}_fail_") as tmp:
+                coordinator = CaptureCoordinator(
+                    camera_manager=camera,
+                    hardware_controller=hardware,
+                    sleep_fn=lambda seconds: None,
+                )
+                result = coordinator.run_true_capture(TrueCapturePlan(
+                    sample_id=f"S-{name}",
+                    output_dir=tmp,
+                    calibration_mode="none",
+                    require_calibration=False,
+                    band_plan=[MultispectralBandPlan("A520", 1, 520)],
+                    settling_ms=0,
+                ))
+                self.assertEqual(result["state"], "failed")
+                self.assertEqual(result["error"]["code"], code)
+                self.assertEqual(hardware.safe_stop_count, 1)
+
+        hardware = FakeHardwareController()
+        hardware.fail_on.add("wheel_move_relative")
+        with tempfile.TemporaryDirectory(prefix="true_capture_filter_fail_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=FakeCameraManager(),
+                hardware_controller=hardware,
+                sleep_fn=lambda seconds: None,
+            )
+            result = coordinator.run_true_capture(TrueCapturePlan(
+                sample_id="S-FILTER",
+                output_dir=tmp,
+                calibration_mode="none",
+                require_calibration=False,
+                band_plan=[MultispectralBandPlan("A520", 0, 520), MultispectralBandPlan("B610", 2, 610)],
+                settling_ms=0,
+            ))
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["code"], "safety_error")
+        self.assertEqual(result["metadata"]["multispectralSequence"]["completedBands"], ["A520"])
+        self.assertEqual(hardware.safe_stop_count, 1)
+
+        with tempfile.TemporaryDirectory(prefix="true_capture_cancel_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=FakeCameraManager(),
+                hardware_controller=FakeHardwareController(),
+                sleep_fn=lambda seconds: coordinator.request_cancel(),
+            )
+            result = coordinator.run_true_capture(TrueCapturePlan(
+                sample_id="S-CANCEL",
+                output_dir=tmp,
+                calibration_mode="none",
+                require_calibration=False,
+                band_plan=[MultispectralBandPlan("A520", 1, 520), MultispectralBandPlan("B610", 2, 610)],
+                settling_ms=0,
+            ))
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["metadata"]["captureIncomplete"])
+
+    def test_true_capture_calibration_confirmation_failure_stops_before_sample_capture(self):
+        camera = FakeCameraManager()
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="true_capture_cal_fail_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                sleep_fn=lambda seconds: None,
+            )
+            result = coordinator.run_true_capture(TrueCapturePlan(
+                sample_id="S-CAL-FAIL",
+                output_dir=tmp,
+                calibration_mode="capture_new",
+                capture_dark=True,
+                capture_white=True,
+                operator_confirmed_dark=False,
+                operator_confirmed_white=True,
+                band_plan=[MultispectralBandPlan("A520", 1, 520)],
+                settling_ms=0,
+            ))
+
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["code"], "operator_confirmation_required")
+        self.assertEqual(camera.capture_count, 0)
+        self.assertEqual(camera.multispectral_capture_count, 0)
+        self.assertEqual(hardware.safe_stop_count, 1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # P1B Hardware Acceptance Checklist
 
-更新时间：2026-09-07
+更新时间：2026-09-08
 
 本文档是 P1B 阶段真实硬件、预览链路、科学采集数据和完整采集放行的正式验收表。它用于现场联调和最终 release gate，不是普通 TODO list。
 
@@ -32,12 +32,12 @@
 | White Reference | `NOT TESTED` |  |  |
 | Dark / White Compatibility | `NOT TESTED` |  |  |
 | Multi-band Capture | `NOT TESTED` |  |  |
-| Sample Stage | `BLOCKED` |  | Real sample stage adapter is not implemented. |
-| Multi-view Capture | `NOT TESTED` |  | Real sample stage remains blocked; only software/simulated acceptance may be run before P1B-7.5B. |
+| Sample Stage | `BLOCKED` | P1B-7.5B software boundary implemented; repository evidence still shows `SAMPLE_STAGE_PROTOCOL_UNKNOWN`. | Real sample stage controller/protocol/HOME/position feedback contract is unknown. |
+| Multi-view Capture | `BLOCKED` |  | Real sample stage remains blocked by `SAMPLE_STAGE_PROTOCOL_UNKNOWN`; only software/simulated acceptance may be run before real controller/protocol evidence exists. |
 | Scientific Data Integrity | `NOT TESTED` |  |  |
 | Metadata Integrity | `NOT TESTED` |  |  |
 | Safety | `NOT TESTED` |  |  |
-| True Capture Workflow | `BLOCKED` |  | Do not enable `trueCapturePrepared` or `POST /api/capture/start` before all required domains pass. |
+| True Capture Workflow | `NOT TESTED` | P1B-8 software entry implemented for readiness-gated `/api/capture/start`. | Production release remains blocked until all required domains pass; multi-view remains blocked by SampleStage protocol unknown. |
 
 ## Test Environment
 
@@ -1159,21 +1159,30 @@ Follow-up:
 
 Overall status: `BLOCKED`
 
-Current status: real sample stage adapter is not implemented. Do not mark this domain PASS using simulation.
+Current status: P1B-7.5B has a software/API/UI boundary, but the real sample stage protocol is unknown. `UnimplementedSampleStage` reports `SAMPLE_STAGE_PROTOCOL_UNKNOWN`, and simulation must not be used as Real Sample Stage PASS evidence.
 
-Future P1B-7.5B tests:
+Repository evidence found before P1B-7.5B implementation:
 
-- connection
-- home
-- move_to
-- position confirmation
-- `+30°`
-- `+60°`
-- return home
-- timeout
-- stop
-- disconnect
-- recovery
+- `UPPER_COMPUTER_STM32_INTEGRATION_REQUEST.md` states that the independent sample rotation stage has no real STM32 control interface.
+- Existing STM32 AA55 adapter and `CURRENT_FILTER_WHEEL_MAPPING` only describe the filter wheel motor.
+- No repository file confirms the sample stage controller, COM/CAN/Ethernet transport, baudrate, command format, encoder, HOME sensor, status query, absolute/relative move, STOP, busy/moving state, fault state, or speed setting.
+
+Future real-stage acceptance items:
+
+| Item | Status | Required Evidence |
+| --- | --- | --- |
+| STAGE-01 Connect | `BLOCKED` | Real controller identity, transport and successful connection log |
+| STAGE-02 Home | `BLOCKED` | HOME command result and proof of whether it is automatic sensor HOME or operator-assisted origin |
+| STAGE-03 Move +30° | `BLOCKED` | Command, observed physical motion and status/result |
+| STAGE-04 Move absolute 90° | `BLOCKED` | Absolute target command and observed final angle |
+| STAGE-05 Position feedback | `BLOCKED` | Fresh post-command status proving current/target angle, or explicit unsupported contract |
+| STAGE-06 Stop | `BLOCKED` | STOP command evidence and physical stop observation |
+| STAGE-07 Return home | `BLOCKED` | Return-to-zero command/result and final position |
+| STAGE-08 Timeout | `BLOCKED` | Induced timeout and safe failure result |
+| STAGE-09 Disconnect recovery | `BLOCKED` | Disconnect behavior, UI/API error, reconnect and recovery |
+| STAGE-10 Emergency stop | `BLOCKED` | SampleStage safe_stop included in emergency/cancel path |
+| STAGE-11 MultiView 3-view test | `BLOCKED` | View 0/30/60 sequence with stage move -> RGB -> multispectral ordering |
+| STAGE-12 Full rotation repeatability | `BLOCKED` | 0..330° repeated cycle measurements and repeatability summary |
 
 PASS criteria:
 
@@ -1196,7 +1205,7 @@ Observed Result:
 Expected Result:
 Measured Values:
 Evidence:
-Failure Reason: Real sample stage adapter not implemented.
+Failure Reason: SAMPLE_STAGE_PROTOCOL_UNKNOWN; real controller/protocol/HOME/position feedback contract missing.
 Follow-up:
 ```
 
@@ -1345,15 +1354,17 @@ Follow-up:
 
 ## AC-TRUE-CAPTURE — True Capture Gate
 
-Overall status: `BLOCKED`
+Overall status: `NOT TESTED`
 
-This domain must remain `BLOCKED` in the current stage.
+Production release gate: `BLOCKED`
 
-Only after all required domains pass may the team discuss setting:
+P1B-8 implements the readiness-gated software entry for `POST /api/capture/start`. This does not equal hardware acceptance PASS. Single-view True Capture may be attempted only when `DeviceManager.capture_readiness()` returns ready for the current `TrueCapturePlan`; multi-view remains blocked while the real SampleStage protocol is unknown.
+
+Only after all required domains pass may the team mark production acceptance:
 
 ```text
-trueCapturePrepared=true
-POST /api/capture/start
+productionAccepted=true
+releaseDecision=PASS
 ```
 
 Required prerequisites:
@@ -1374,9 +1385,9 @@ Required prerequisites:
 
 Rules:
 
-- Do not remove `CameraIntegrationRequired`.
-- Do not enable `/api/capture/start`.
-- Do not set `trueCapturePrepared=true`.
+- Do not bypass `DeviceManager.capture_readiness()`.
+- Do not route true hardware capture through `/api/complete-capture`.
+- Do not treat `trueCapturePrepared=true` as production acceptance; it only reflects the current plan readiness.
 - Do not use unit tests, fake adapter tests, or simulation as a replacement for hardware PASS.
 
 Acceptance record:
@@ -1411,12 +1422,12 @@ Follow-up:
 | White Reference | `NOT TESTED` |  |  |
 | Dark / White Compatibility | `NOT TESTED` |  |  |
 | Multi-band Capture | `NOT TESTED` |  |  |
-| Real Sample Stage | `BLOCKED` |  | Real adapter missing. |
+| Real Sample Stage | `BLOCKED` | P1B-7.5B software boundary only; `SAMPLE_STAGE_PROTOCOL_UNKNOWN`. | Real controller/protocol/HOME/position feedback contract missing. |
 | Multi-view Capture | `NOT TESTED` |  | Real stage blocked for hardware PASS. |
 | Scientific Data Integrity | `NOT TESTED` |  |  |
 | Metadata Integrity | `NOT TESTED` |  |  |
 | Safety | `NOT TESTED` |  |  |
-| True Capture Workflow | `BLOCKED` |  | Required acceptance domains are not all PASS. |
+| True Capture Workflow | `NOT TESTED` | P1B-8 software entry exists. | Required acceptance domains are not all PASS; production release remains blocked. |
 
 ### Release Decision
 

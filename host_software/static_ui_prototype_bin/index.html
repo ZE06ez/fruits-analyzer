@@ -224,6 +224,36 @@
               <span id="filterWheelState">滤光片轮: 待连接</span>
               <span id="hardwareActionState">硬件动作: 待连接</span>
             </div>
+            <section class="device-check-panel sample-stage-debug">
+              <div class="device-check-head">
+                <div>
+                  <strong>样品旋转台调试</strong>
+                  <small id="sampleStageSummary">协议未知；禁止复用滤光轮电机。</small>
+                </div>
+                <button class="test-button secondary" id="refreshSampleStageStatus" type="button">刷新样品台状态</button>
+              </div>
+              <div class="device-status-grid">
+                <span id="sampleStageConnection">连接: --</span>
+                <span id="sampleStageAngle">角度: --</span>
+                <span id="sampleStageTarget">目标: --</span>
+                <span id="sampleStageHomeState">HOME: --</span>
+                <span id="sampleStageMotionState">运动: --</span>
+                <span id="sampleStageFaultState">Fault: --</span>
+              </div>
+              <div class="control-grid hardware-actions">
+                <button class="test-button secondary" id="sampleStageHome" type="button">HOME</button>
+                <button class="test-button secondary" id="sampleStageMovePos30" type="button">+30°</button>
+                <button class="test-button secondary" id="sampleStageMoveNeg30" type="button">-30°</button>
+                <button class="test-button secondary danger" id="sampleStageStop" type="button">STOP</button>
+              </div>
+              <div class="control-grid hardware-actions">
+                <button class="test-button secondary" data-sample-stage-angle="0" type="button">Go 0°</button>
+                <button class="test-button secondary" data-sample-stage-angle="30" type="button">Go 30°</button>
+                <button class="test-button secondary" data-sample-stage-angle="60" type="button">Go 60°</button>
+                <button class="test-button secondary" data-sample-stage-angle="90" type="button">Go 90°</button>
+                <button class="test-button secondary" id="sampleStageReturnHome" type="button">Return Home</button>
+              </div>
+            </section>
           </article>
 
           <article class="view-page" data-page="light">
@@ -376,6 +406,40 @@
               <button data-step="2">2. RGB 外观采集</button>
               <button data-step="3">3. 多光谱图像采集</button>
               <button data-step="4">4. 进入分析</button>
+            </div>
+            <div class="rotation-capture-card" id="trueCaptureCard">
+              <div class="rotation-capture-head">
+                <strong>True Hardware Capture</strong>
+                <span id="trueCaptureReadiness">等待检查</span>
+              </div>
+              <div class="rotation-settings-fields">
+                <label>采集模式
+                  <select id="trueCaptureMode">
+                    <option value="single_view">单视角</option>
+                    <option value="multi_view">多视角</option>
+                  </select>
+                </label>
+                <label>校正
+                  <select id="trueCalibrationMode">
+                    <option value="existing">使用已有 CalibrationSet</option>
+                    <option value="capture_new">重新采集 Dark / White</option>
+                    <option value="none">本次不要求校正</option>
+                  </select>
+                </label>
+                <label>Calibration ID
+                  <input id="trueCalibrationId" placeholder="capture_new 可留空自动生成" />
+                </label>
+                <label class="toggle-line">
+                  <input id="operatorConfirmedReferences" type="checkbox" />
+                  <span>已完成暗场遮光并放置白板</span>
+                </label>
+              </div>
+              <div class="capture-actions">
+                <button class="primary-action" id="startTrueCapture" type="button" disabled>开始真实采集</button>
+                <button id="cancelTrueCapture" type="button" disabled>取消采集</button>
+                <button id="refreshTrueCaptureReadiness" type="button">刷新就绪状态</button>
+              </div>
+              <p class="hint" id="trueCaptureHint">单视角不要求真实样品旋转台；多视角必须等待 SampleStage 真实协议接入。</p>
             </div>
             <div class="progress-track"><div id="captureProgress"></div></div>
             <p id="captureProgressText">采集进度: 0 / 4</p>

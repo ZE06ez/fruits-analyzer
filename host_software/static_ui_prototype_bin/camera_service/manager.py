@@ -33,6 +33,8 @@ class CameraManager:
             "height": 540,
             "fps": 12,
             "format": "image/jpeg",
+            "lowLatency": True,
+            "diagnostics": {},
         }
         self._multispectral_preview = {
             "running": False,
@@ -44,9 +46,24 @@ class CameraManager:
             "diagnostics": {},
         }
         self._multispectral_capture_lock = threading.RLock()
+        self._rgb_capture_lock = threading.RLock()
+        self._rgb_latest_lock = threading.Lock()
+        self._rgb_latest_frame: CameraFrame | None = None
+        self._rgb_latest_diagnostics: dict[str, Any] = {}
+        self._rgb_latest_jpeg: tuple[bytes, dict[str, Any]] | None = None
+        self._rgb_preview_error: CameraError | None = None
+        self._rgb_preview_stop_event = threading.Event()
+        self._rgb_preview_ready_event = threading.Event()
+        self._rgb_preview_thread: threading.Thread | None = None
+        self._rgb_preview_served_count = 0
+        self._rgb_preview_served_started_at: float | None = None
+        self._rgb_preview_sequence = 0
+        self._rgb_preview_last_served_frame_id = 0
+        self._rgb_preview_dropped_frames_total = 0
         self._multispectral_latest_lock = threading.Lock()
         self._multispectral_latest_frame: CameraFrame | None = None
         self._multispectral_latest_diagnostics: dict[str, Any] = {}
+        self._multispectral_latest_jpeg: tuple[bytes, dict[str, Any]] | None = None
         self._multispectral_preview_error: CameraError | None = None
         self._multispectral_preview_stop_event = threading.Event()
         self._multispectral_preview_ready_event = threading.Event()
@@ -121,14 +138,25 @@ class CameraManager:
 
     def apply_rgb_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = RgbCameraConfig.from_dict(payload)
+        thread: threading.Thread | None = None
         with self._lock:
             current = getattr(self.rgb, "config", RgbCameraConfig.from_env())
             restart_required = self._rgb_restart_required(current, config)
             preview_was_running = bool(self._rgb_preview.get("running"))
-            result = self.rgb.apply_config(config, restart=restart_required)
-            if preview_was_running:
-                self.rgb.start_stream()
-                self._rgb_preview["running"] = True
+            if preview_was_running and restart_required:
+                self._rgb_preview["running"] = False
+                self._rgb_preview_stop_event.set()
+                thread = self._rgb_preview_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        with self._lock:
+            with self._rgb_capture_lock:
+                result = self.rgb.apply_config(config, restart=restart_required)
+                if preview_was_running:
+                    self.rgb.start_stream()
+                    self._reset_rgb_preview_cache()
+                    self._rgb_preview["running"] = True
+                    self._start_rgb_preview_worker_locked()
             status = result["status"]
             return {
                 "restartRequired": restart_required,
@@ -177,14 +205,30 @@ class CameraManager:
                 f"[camera.rgb] preview start requested: width={width}; height={height}; fps={fps}",
                 flush=True,
             )
-            self.rgb.start_stream()
+            if self._rgb_preview.get("running") and getattr(self.rgb, "is_open", False):
+                self._rgb_preview.update({
+                    "width": max(160, min(width, 1920)),
+                    "height": max(90, min(height, 1080)),
+                    "fps": max(1, min(fps, 30)),
+                    "format": "image/jpeg",
+                    "lowLatency": True,
+                })
+                return {
+                    "status": self._status_dict(self.rgb),
+                    "preview": self._preview_status(),
+                }
+            with self._rgb_capture_lock:
+                self.rgb.start_stream()
+            self._reset_rgb_preview_cache()
             self._rgb_preview.update({
                 "running": True,
                 "width": max(160, min(width, 1920)),
                 "height": max(90, min(height, 1080)),
-                "fps": max(1, min(fps, 15)),
+                "fps": max(1, min(fps, 30)),
                 "format": "image/jpeg",
+                "lowLatency": True,
             })
+            self._start_rgb_preview_worker_locked()
             status = self._status_dict(self.rgb)
             return {
                 "status": status,
@@ -192,10 +236,19 @@ class CameraManager:
             }
 
     def stop_rgb_preview(self) -> dict[str, Any]:
+        thread: threading.Thread | None
         with self._lock:
             self._rgb_preview["running"] = False
-            self.rgb.stop_stream()
-            self.rgb.close()
+            self._rgb_preview_stop_event.set()
+            thread = self._rgb_preview_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        with self._lock:
+            with self._rgb_capture_lock:
+                self.rgb.stop_stream()
+                self.rgb.close()
+            self._rgb_preview_thread = None
+            self._reset_rgb_preview_cache()
             print("[camera.rgb] preview stopped", flush=True)
             return {
                 "status": self._status_dict(self.rgb),
@@ -203,32 +256,31 @@ class CameraManager:
             }
 
     def rgb_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
+        server_started = time.perf_counter()
         with self._lock:
             if not self._rgb_preview.get("running"):
                 raise CameraError("RGB 预览未启动", "Call /api/camera/rgb/preview/start first")
-            try:
-                frame = self.rgb.capture_frame()
-                from PIL import Image
+            fps = self._rgb_preview["fps"]
 
-                image = Image.fromarray(frame.data)
-                target = (int(self._rgb_preview["width"]), int(self._rgb_preview["height"]))
-                if image.size != target:
-                    resampling = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
-                    image = image.resize(target, resampling)
-                buffer = io.BytesIO()
-                image.save(buffer, format="JPEG", quality=82, optimize=True)
-                return buffer.getvalue(), {
-                    "sourceShape": frame.shape,
-                    "previewWidth": target[0],
-                    "previewHeight": target[1],
-                    "fps": self._rgb_preview["fps"],
-                    "contentType": "image/jpeg",
-                }
-            except CameraError:
-                self._rgb_preview["running"] = False
-                self.rgb.stop_stream()
-                self.rgb.close()
-                raise
+        data, encoded_meta = self._latest_rgb_preview_jpeg()
+        now_epoch = time.time()
+        source_age_ms = max(0.0, (now_epoch - float(encoded_meta.get("capturedAt") or now_epoch)) * 1000.0)
+        server_total_ms = (time.perf_counter() - server_started) * 1000.0
+        measured_fps = self._record_rgb_preview_served_fps(encoded_meta.get("frameId"))
+        diagnostics = {
+            **encoded_meta,
+            "sourceAgeMs": source_age_ms,
+            "serverTotalMs": server_total_ms,
+            "measuredPreviewFps": measured_fps,
+            "lowLatency": True,
+        }
+        with self._lock:
+            self._rgb_preview["diagnostics"] = dict(diagnostics)
+        return data, {
+            "fps": fps,
+            "contentType": "image/jpeg",
+            **diagnostics,
+        }
 
     def capture_rgb_frame(self) -> tuple[CameraFrame, dict[str, Any]]:
         """Capture one production RGB frame through the owned RGB adapter."""
@@ -236,7 +288,8 @@ class CameraManager:
         with self._lock:
             was_open = bool(getattr(self.rgb, "is_open", False))
             preview_was_running = bool(self._rgb_preview.get("running") and was_open)
-            frame = self.rgb.capture_frame()
+            with self._rgb_capture_lock:
+                frame = self.rgb.capture_frame()
             status = self._status_dict(self.rgb)
             metadata = {
                 "status": status,
@@ -248,8 +301,9 @@ class CameraManager:
                 "device": self._camera_device_metadata(status, frame.metadata),
             }
             if not was_open:
-                self.rgb.stop_stream()
-                self.rgb.close()
+                with self._rgb_capture_lock:
+                    self.rgb.stop_stream()
+                    self.rgb.close()
             return frame, metadata
 
     def capture_multispectral_frame(self) -> tuple[CameraFrame, dict[str, Any]]:
@@ -377,35 +431,77 @@ class CameraManager:
         with self._lock:
             if not self._multispectral_preview.get("running"):
                 raise CameraError("多光谱预览未启动", "Call /api/camera/multispectral/preview/start first")
-            target = (int(self._multispectral_preview["width"]), int(self._multispectral_preview["height"]))
             fps = self._multispectral_preview["fps"]
 
-        frame, capture_diag = self._latest_multispectral_preview_frame()
-        data, resize_duration_ms, jpeg_encode_duration_ms, encoder = self._encode_multispectral_preview_jpeg(frame, target)
+        data, encoded_meta = self._latest_multispectral_preview_jpeg()
+        now_epoch = time.time()
+        source_age_ms = max(0.0, (now_epoch - float(encoded_meta.get("capturedAt") or now_epoch)) * 1000.0)
         server_total_ms = (time.perf_counter() - server_started) * 1000.0
         measured_fps = self._record_multispectral_preview_served_fps()
         diagnostics = {
-            **capture_diag,
-            "resizeDurationMs": resize_duration_ms,
-            "jpegEncodeDurationMs": jpeg_encode_duration_ms,
+            **encoded_meta,
+            "sourceAgeMs": source_age_ms,
             "serverTotalMs": server_total_ms,
             "measuredPreviewFps": measured_fps,
             "lowLatency": True,
-            "previewEncoder": encoder,
+            "encodedPreviewCache": True,
         }
         with self._lock:
             self._multispectral_preview["diagnostics"] = dict(diagnostics)
         return data, {
-            "sourceShape": frame.shape,
-            "sourceDtype": frame.dtype,
-            "previewWidth": target[0],
-            "previewHeight": target[1],
             "fps": fps,
             "contentType": "image/jpeg",
-            "pixelFormat": frame.metadata.get("pixelFormat", ""),
-            **self._frame_stats(frame.data),
             **diagnostics,
         }
+
+    def _encode_rgb_preview_jpeg(self, frame: CameraFrame, target: tuple[int, int]) -> tuple[bytes, float, float, str]:
+        try:
+            return self._encode_rgb_preview_jpeg_cv2(frame.data, target)
+        except Exception:
+            return self._encode_rgb_preview_jpeg_pil(frame.data, target)
+
+    @staticmethod
+    def _encode_rgb_preview_jpeg_cv2(data: Any, target: tuple[int, int]) -> tuple[bytes, float, float, str]:
+        import cv2
+        import numpy as np
+
+        resize_started = time.perf_counter()
+        array = np.asarray(data)
+        if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] < 3:
+            raise CameraError("RGB 预览帧格式无效", f"Unexpected RGB preview array: shape={array.shape}; dtype={array.dtype}")
+        array = array[:, :, :3]
+        if array.shape[1] != target[0] or array.shape[0] != target[1]:
+            array = cv2.resize(array, target, interpolation=cv2.INTER_LINEAR)
+        resize_duration_ms = (time.perf_counter() - resize_started) * 1000.0
+
+        encode_started = time.perf_counter()
+        bgr = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+        ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok:
+            raise CameraError("RGB 预览 JPEG 编码失败", "cv2.imencode returned false")
+        jpeg_encode_duration_ms = (time.perf_counter() - encode_started) * 1000.0
+        return encoded.tobytes(), resize_duration_ms, jpeg_encode_duration_ms, "opencv"
+
+    @staticmethod
+    def _encode_rgb_preview_jpeg_pil(data: Any, target: tuple[int, int]) -> tuple[bytes, float, float, str]:
+        from PIL import Image
+        import numpy as np
+
+        resize_started = time.perf_counter()
+        array = np.asarray(data)
+        if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] < 3:
+            raise CameraError("RGB 预览帧格式无效", f"Unexpected RGB preview array: shape={array.shape}; dtype={array.dtype}")
+        image = Image.fromarray(array[:, :, :3], mode="RGB")
+        if image.size != target:
+            resampling = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+            image = image.resize(target, resampling)
+        resize_duration_ms = (time.perf_counter() - resize_started) * 1000.0
+
+        encode_started = time.perf_counter()
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=80, optimize=False)
+        jpeg_encode_duration_ms = (time.perf_counter() - encode_started) * 1000.0
+        return buffer.getvalue(), resize_duration_ms, jpeg_encode_duration_ms, "pil"
 
     def _encode_multispectral_preview_jpeg(self, frame: CameraFrame, target: tuple[int, int]) -> tuple[bytes, float, float, str]:
         try:
@@ -427,7 +523,7 @@ class CameraManager:
         resize_duration_ms = (time.perf_counter() - resize_started) * 1000.0
 
         encode_started = time.perf_counter()
-        ok, encoded = cv2.imencode(".jpg", array, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        ok, encoded = cv2.imencode(".jpg", array, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         if not ok:
             raise CameraError("多光谱预览 JPEG 编码失败", "cv2.imencode returned false")
         jpeg_encode_duration_ms = (time.perf_counter() - encode_started) * 1000.0
@@ -446,9 +542,146 @@ class CameraManager:
 
         encode_started = time.perf_counter()
         buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=82, optimize=True)
+        image.save(buffer, format="JPEG", quality=80, optimize=False)
         jpeg_encode_duration_ms = (time.perf_counter() - encode_started) * 1000.0
         return buffer.getvalue(), resize_duration_ms, jpeg_encode_duration_ms, "pil"
+
+    def _start_rgb_preview_worker_locked(self) -> None:
+        if self._rgb_preview_thread and self._rgb_preview_thread.is_alive():
+            return
+        self._rgb_preview_stop_event.clear()
+        self._rgb_preview_ready_event.clear()
+        self._rgb_preview_thread = threading.Thread(
+            target=self._rgb_preview_worker,
+            name="rgb-preview-latest-frame",
+            daemon=True,
+        )
+        self._rgb_preview_thread.start()
+
+    def _rgb_preview_worker(self) -> None:
+        while not self._rgb_preview_stop_event.is_set():
+            with self._lock:
+                target_fps = float(self._rgb_preview.get("fps") or 12)
+                target = (int(self._rgb_preview["width"]), int(self._rgb_preview["height"]))
+                running = bool(self._rgb_preview.get("running"))
+            if not running:
+                break
+            perf_started = time.perf_counter()
+            capture_started_at = time.time()
+            try:
+                with self._rgb_capture_lock:
+                    frame = self.rgb.capture_frame()
+            except CameraError as exc:
+                self._rgb_preview_error = exc
+                self._rgb_preview_stop_event.set()
+                break
+            except Exception as exc:
+                self._rgb_preview_error = CameraError("RGB 预览取帧失败", str(exc))
+                self._rgb_preview_stop_event.set()
+                break
+            captured_at = time.time()
+            capture_duration_ms = (time.perf_counter() - perf_started) * 1000.0
+            try:
+                data, resize_duration_ms, jpeg_encode_duration_ms, encoder = self._encode_rgb_preview_jpeg(frame, target)
+            except CameraError as exc:
+                self._rgb_preview_error = exc
+                self._rgb_preview_stop_event.set()
+                break
+            except Exception as exc:
+                self._rgb_preview_error = CameraError("RGB 预览 JPEG 编码失败", str(exc))
+                self._rgb_preview_stop_event.set()
+                break
+            with self._rgb_latest_lock:
+                if (
+                    self._rgb_preview_sequence > 0
+                    and self._rgb_preview_last_served_frame_id < self._rgb_preview_sequence
+                ):
+                    self._rgb_preview_dropped_frames_total += 1
+                self._rgb_preview_sequence += 1
+                frame_id = self._rgb_preview_sequence
+                diagnostics = {
+                    "frameId": frame_id,
+                    "sourceTimestamp": frame.metadata.get("timestamp"),
+                    "captureStartedAt": capture_started_at,
+                    "capturedAt": captured_at,
+                    "captureDurationMs": capture_duration_ms,
+                    "resizeDurationMs": resize_duration_ms,
+                    "jpegEncodeDurationMs": jpeg_encode_duration_ms,
+                    "droppedFrames": self._rgb_preview_dropped_frames_total,
+                    "acquiredAt": captured_at,
+                    "sourceShape": frame.shape,
+                    "sourceDtype": frame.dtype,
+                    "previewWidth": target[0],
+                    "previewHeight": target[1],
+                    "previewEncoder": encoder,
+                    "previewQuality": 80,
+                }
+                self._rgb_latest_frame = frame
+                self._rgb_latest_diagnostics = dict(diagnostics)
+                self._rgb_latest_jpeg = (data, dict(diagnostics))
+                self._rgb_preview_ready_event.set()
+            elapsed = time.perf_counter() - perf_started
+            interval = 1.0 / max(1.0, min(target_fps, 60.0))
+            self._rgb_preview_stop_event.wait(timeout=max(0.0, interval - elapsed))
+
+    def _latest_rgb_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
+        if not self._rgb_preview_ready_event.wait(timeout=1.0):
+            if self._rgb_preview_error is not None:
+                exc = self._rgb_preview_error
+                self._cleanup_failed_rgb_preview()
+                raise exc
+            self._cleanup_failed_rgb_preview()
+            raise CameraError("RGB 预览尚未取得帧", "RGB latest-frame preview cache is empty")
+        if self._rgb_preview_error is not None:
+            exc = self._rgb_preview_error
+            self._cleanup_failed_rgb_preview()
+            raise exc
+        with self._rgb_latest_lock:
+            cached = self._rgb_latest_jpeg
+        if cached is None:
+            self._cleanup_failed_rgb_preview()
+            raise CameraError("RGB 预览尚未取得帧", "RGB latest-frame preview JPEG cache is empty")
+        return cached[0], dict(cached[1])
+
+    def _cleanup_failed_rgb_preview(self) -> None:
+        with self._lock:
+            self._rgb_preview["running"] = False
+            self._rgb_preview_stop_event.set()
+            with self._rgb_capture_lock:
+                self.rgb.stop_stream()
+                self.rgb.close()
+            self._rgb_preview_thread = None
+            self._reset_rgb_preview_cache(clear_error=False)
+
+    def _reset_rgb_preview_cache(self, *, clear_error: bool = True) -> None:
+        with self._rgb_latest_lock:
+            self._rgb_latest_frame = None
+            self._rgb_latest_diagnostics = {}
+            self._rgb_latest_jpeg = None
+        self._rgb_preview_ready_event.clear()
+        if clear_error:
+            self._rgb_preview_error = None
+        self._rgb_preview_served_count = 0
+        self._rgb_preview_served_started_at = None
+        self._rgb_preview_sequence = 0
+        self._rgb_preview_last_served_frame_id = 0
+        self._rgb_preview_dropped_frames_total = 0
+        self._rgb_preview["diagnostics"] = {}
+
+    def _record_rgb_preview_served_fps(self, frame_id: Any = None) -> float:
+        now = time.perf_counter()
+        if self._rgb_preview_served_started_at is None:
+            self._rgb_preview_served_started_at = now
+            self._rgb_preview_served_count = 0
+        self._rgb_preview_served_count += 1
+        coerced = self._coerce_frame_id(frame_id)
+        if coerced is not None:
+            with self._rgb_latest_lock:
+                self._rgb_preview_last_served_frame_id = max(self._rgb_preview_last_served_frame_id, coerced)
+        elapsed = now - self._rgb_preview_served_started_at
+        if elapsed <= 0:
+            return 0.0
+        return self._rgb_preview_served_count / elapsed
 
     def _start_multispectral_preview_worker_locked(self) -> None:
         if self._multispectral_preview_thread and self._multispectral_preview_thread.is_alive():
@@ -483,21 +716,48 @@ class CameraManager:
                 self._multispectral_preview_stop_event.set()
                 break
             capture_duration_ms = (time.perf_counter() - started) * 1000.0
+            captured_at = time.time()
             frame_id = self._coerce_frame_id(frame.metadata.get("frameId"))
             dropped_frames = 0
             if frame_id is not None and last_frame_id is not None and frame_id > last_frame_id:
                 dropped_frames = max(0, frame_id - last_frame_id - 1)
             if frame_id is not None:
                 last_frame_id = frame_id
+            with self._lock:
+                target = (int(self._multispectral_preview["width"]), int(self._multispectral_preview["height"]))
+            try:
+                data, resize_duration_ms, jpeg_encode_duration_ms, encoder = self._encode_multispectral_preview_jpeg(frame, target)
+            except CameraError as exc:
+                self._multispectral_preview_error = exc
+                self._multispectral_preview_stop_event.set()
+                break
+            except Exception as exc:
+                self._multispectral_preview_error = CameraError("多光谱预览 JPEG 编码失败", str(exc))
+                self._multispectral_preview_stop_event.set()
+                break
             with self._multispectral_latest_lock:
                 self._multispectral_latest_frame = frame
-                self._multispectral_latest_diagnostics = {
+                diagnostics = {
                     "frameId": frame_id,
                     "sourceTimestamp": frame.metadata.get("timestamp"),
+                    "captureStartedAt": captured_at - (capture_duration_ms / 1000.0),
+                    "capturedAt": captured_at,
                     "captureDurationMs": capture_duration_ms,
+                    "resizeDurationMs": resize_duration_ms,
+                    "jpegEncodeDurationMs": jpeg_encode_duration_ms,
                     "droppedFrames": dropped_frames,
-                    "acquiredAt": time.time(),
+                    "acquiredAt": captured_at,
+                    "sourceShape": frame.shape,
+                    "sourceDtype": frame.dtype,
+                    "previewWidth": target[0],
+                    "previewHeight": target[1],
+                    "pixelFormat": frame.metadata.get("pixelFormat", ""),
+                    **self._frame_stats(frame.data),
+                    "previewEncoder": encoder,
+                    "previewQuality": 80,
                 }
+                self._multispectral_latest_diagnostics = dict(diagnostics)
+                self._multispectral_latest_jpeg = (data, dict(diagnostics))
                 self._multispectral_preview_ready_event.set()
             elapsed = time.perf_counter() - started
             interval = 1.0 / max(1.0, min(target_fps, 60.0))
@@ -523,6 +783,40 @@ class CameraManager:
             raise CameraError("多光谱预览尚未取得帧", "DVP2 latest-frame preview cache is empty")
         return frame, diagnostics
 
+    def _latest_multispectral_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
+        if not self._multispectral_preview_ready_event.wait(timeout=1.0):
+            if self._multispectral_preview_error is not None:
+                exc = self._multispectral_preview_error
+                self._cleanup_failed_multispectral_preview()
+                raise exc
+            self._cleanup_failed_multispectral_preview()
+            raise CameraError("多光谱预览尚未取得帧", "DVP2 latest-frame preview JPEG cache is empty")
+        if self._multispectral_preview_error is not None:
+            exc = self._multispectral_preview_error
+            self._cleanup_failed_multispectral_preview()
+            raise exc
+        with self._multispectral_latest_lock:
+            cached = self._multispectral_latest_jpeg
+        if cached is None:
+            frame, diagnostics = self._latest_multispectral_preview_frame()
+            with self._lock:
+                target = (int(self._multispectral_preview["width"]), int(self._multispectral_preview["height"]))
+            data, resize_duration_ms, jpeg_encode_duration_ms, encoder = self._encode_multispectral_preview_jpeg(frame, target)
+            diagnostics = {
+                **diagnostics,
+                "resizeDurationMs": resize_duration_ms,
+                "jpegEncodeDurationMs": jpeg_encode_duration_ms,
+                "sourceShape": frame.shape,
+                "sourceDtype": frame.dtype,
+                "previewWidth": target[0],
+                "previewHeight": target[1],
+                "pixelFormat": frame.metadata.get("pixelFormat", ""),
+                **self._frame_stats(frame.data),
+                "previewEncoder": encoder,
+            }
+            return data, diagnostics
+        return cached[0], dict(cached[1])
+
     def _cleanup_failed_multispectral_preview(self) -> None:
         with self._lock:
             self._multispectral_preview["running"] = False
@@ -537,6 +831,7 @@ class CameraManager:
         with self._multispectral_latest_lock:
             self._multispectral_latest_frame = None
             self._multispectral_latest_diagnostics = {}
+            self._multispectral_latest_jpeg = None
         self._multispectral_preview_ready_event.clear()
         if clear_error:
             self._multispectral_preview_error = None
@@ -565,7 +860,8 @@ class CameraManager:
     def _probe_rgb_locked(self) -> dict[str, Any]:
         if self._rgb_preview.get("running") and getattr(self.rgb, "is_open", False):
             try:
-                self.rgb.capture_frame()
+                with self._rgb_capture_lock:
+                    self.rgb.capture_frame()
             except CameraError as exc:
                 rgb_status = self._status_dict(self.rgb)
                 rgb_status.update({
@@ -578,8 +874,10 @@ class CameraManager:
                     "technicalError": exc.technical_message,
                 })
                 self._rgb_preview["running"] = False
-                self.rgb.stop_stream()
-                self.rgb.close()
+                self._rgb_preview_stop_event.set()
+                with self._rgb_capture_lock:
+                    self.rgb.stop_stream()
+                    self.rgb.close()
                 return {"status": rgb_status}
             rgb_status = self._status_dict(self.rgb)
             rgb_status.update({

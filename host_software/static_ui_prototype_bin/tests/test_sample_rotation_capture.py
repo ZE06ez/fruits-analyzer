@@ -21,6 +21,7 @@ class FakeSampleStage:
         self.fail_move_on: set[str] = set()
         self.fail_return_home = False
         self.home_count = 0
+        self.safe_stop_count = 0
 
     def home_sample_stage(self):
         self.calls.append(("home_sample_stage",))
@@ -44,6 +45,11 @@ class FakeSampleStage:
     def get_sample_stage_position(self):
         self.calls.append(("get_sample_stage_position",))
         return SampleStagePosition(self.angle, True, status="verified")
+
+    def safe_stop(self):
+        self.calls.append(("safe_stop",))
+        self.safe_stop_count += 1
+        return {"stopped": True}
 
 
 def three_band_plan():
@@ -214,6 +220,7 @@ class SampleRotationCaptureTests(unittest.TestCase):
         self.assertTrue(view000_rgb_exists)
         self.assertFalse(view240_exists)
         self.assertEqual(hardware.safe_stop_count, 1)
+        self.assertEqual(stage.safe_stop_count, 1)
 
     def test_cancel_does_not_start_next_view_and_records_partial_capture(self):
         camera = FakeCameraManager()
