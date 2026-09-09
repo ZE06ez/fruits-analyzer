@@ -11,6 +11,7 @@ from .dvp2_mono import Dvp2MonoCamera
 from .errors import CameraError
 from .focus_quality import FocusEvaluator
 from .rgb_uvc import RgbUvcCamera
+from .settings_store import CameraSettingsStore, utc_timestamp
 
 
 class CameraManager:
@@ -22,11 +23,33 @@ class CameraManager:
         multispectral_camera: Any | None = None,
         rgb_config: RgbCameraConfig | dict[str, Any] | None = None,
         focus_evaluator: FocusEvaluator | None = None,
+        settings_store: CameraSettingsStore | None = None,
     ) -> None:
-        self.rgb = rgb_camera or RgbUvcCamera(config=rgb_config)
-        self.multispectral = multispectral_camera or Dvp2MonoCamera()
+        self.settings_store = settings_store or CameraSettingsStore()
+        settings_snapshot = self.settings_store.snapshot()
+        saved_rgb = settings_snapshot.get("rgb") or {}
+        saved_multispectral = settings_snapshot.get("multispectral") or {}
+        initial_rgb_config = rgb_config or saved_rgb
+        self.rgb = rgb_camera or RgbUvcCamera(config=initial_rgb_config)
+        self.multispectral = multispectral_camera or Dvp2MonoCamera(
+            serial_number=saved_multispectral.get("serialNumber"),
+            stable_id=saved_multispectral.get("deviceStableId"),
+            device_index=saved_multispectral.get("deviceIndex"),
+            friendly_name=saved_multispectral.get("friendlyName"),
+        )
         self.focus_evaluator = focus_evaluator or FocusEvaluator()
         self._lock = threading.RLock()
+        self._settings_restore_state = {
+            "rgb": self._restore_state("not_attempted", "persistent" if settings_snapshot.get("hasCustom", {}).get("rgb") else "default"),
+            "multispectral": self._restore_state(
+                "not_attempted",
+                "persistent" if settings_snapshot.get("hasCustom", {}).get("multispectral") else "default",
+            ),
+        }
+        self._settings_source = {
+            "rgb": self._settings_restore_state["rgb"]["settingsSource"],
+            "multispectral": self._settings_restore_state["multispectral"]["settingsSource"],
+        }
         self._rgb_preview = {
             "running": False,
             "width": 960,
@@ -76,6 +99,7 @@ class CameraManager:
             return {
                 "rgb": self._status_dict(self.rgb),
                 "multispectral": self._status_dict(self.multispectral),
+                "settings": self.camera_settings(),
                 "preview": {
                     "rgb": dict(self._rgb_preview),
                     "multispectral": dict(self._multispectral_preview),
@@ -134,9 +158,23 @@ class CameraManager:
                 "available": bool(ok),
                 "connected": bool(status.get("detected")),
             })
+            if ok:
+                status = self._restore_multispectral_settings_locked(force=True, reason="probe")
+                if not self._multispectral_preview.get("running"):
+                    self.multispectral.stop_stream()
+                    self.multispectral.close()
+                    status = self._status_dict(self.multispectral)
+                    status.update({
+                        "detected": True,
+                        "available": True,
+                        "connected": True,
+                        "opened": False,
+                        "streaming": False,
+                    })
             return {"passed": bool(ok), "status": status, "preview": self._preview_status()}
 
     def apply_rgb_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        persist = bool((payload or {}).get("persist"))
         config = RgbCameraConfig.from_dict(payload)
         thread: threading.Thread | None = None
         with self._lock:
@@ -152,22 +190,38 @@ class CameraManager:
         with self._lock:
             with self._rgb_capture_lock:
                 result = self.rgb.apply_config(config, restart=restart_required)
+                self._annotate_setting_results(result)
                 if preview_was_running:
                     self.rgb.start_stream()
                     self._reset_rgb_preview_cache()
                     self._rgb_preview["running"] = True
                     self._start_rgb_preview_worker_locked()
             status = result["status"]
+            setting_results = result.get("settingResults") or {}
+            if persist:
+                self.settings_store.update_rgb(payload, status=status, setting_results=setting_results)
+                self._settings_source["rgb"] = "persistent"
+            else:
+                self._settings_source["rgb"] = "manual_current_session"
+            self._settings_restore_state["rgb"] = self._restore_state(
+                "restored" if self._setting_results_accepted(setting_results) else "partial",
+                self._settings_source["rgb"],
+                setting_results=setting_results,
+            )
+            status = self._status_dict(self.rgb)
             return {
                 "restartRequired": restart_required,
                 "previewRestarted": preview_was_running and restart_required,
-                "settingResults": result.get("settingResults") or {},
+                "settingResults": setting_results,
                 "status": status,
                 "summary": self._requested_actual_summary(status),
+                "settings": self.camera_settings(),
+                "persisted": persist,
                 "preview": self._preview_status(),
             }
 
     def apply_multispectral_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        persist = bool((payload or {}).get("persist"))
         setting_results: dict[str, Any] = {}
         with self._lock:
             with self._multispectral_capture_lock:
@@ -188,12 +242,94 @@ class CameraManager:
                         "accepted": True,
                     }
             status = self._status_dict(self.multispectral)
+            if persist:
+                self.settings_store.update_multispectral(payload, status=status, setting_results=setting_results)
+                self._settings_source["multispectral"] = "persistent"
+            else:
+                self._settings_source["multispectral"] = "manual_current_session"
+            self._settings_restore_state["multispectral"] = self._restore_state(
+                "restored" if self._setting_results_accepted(setting_results) else "partial",
+                self._settings_source["multispectral"],
+                setting_results=setting_results,
+            )
+            status = self._status_dict(self.multispectral)
             return {
                 "settingResults": setting_results,
                 "status": status,
                 "summary": self._multispectral_requested_actual_summary(status, setting_results),
+                "settings": self.camera_settings(),
+                "persisted": persist,
                 "preview": self._preview_status(),
             }
+
+    def camera_settings(self) -> dict[str, Any]:
+        snapshot = self.settings_store.snapshot()
+        snapshot["restoreState"] = {
+            "rgb": dict(self._settings_restore_state["rgb"]),
+            "multispectral": dict(self._settings_restore_state["multispectral"]),
+        }
+        return snapshot
+
+    def save_camera_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = payload or {}
+        with self._lock:
+            status = self.status()
+            if payload.get("rgb") is not None:
+                self.settings_store.update_rgb(payload.get("rgb") or {}, status=status.get("rgb") or {})
+                self._settings_source["rgb"] = "persistent"
+            if payload.get("multispectral") is not None:
+                self.settings_store.update_multispectral(
+                    payload.get("multispectral") or {},
+                    status=status.get("multispectral") or {},
+                )
+                self._settings_source["multispectral"] = "persistent"
+            return {"settings": self.camera_settings()}
+
+    def reset_camera_settings(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        section = payload.get("section")
+        apply_defaults = bool(payload.get("apply"))
+        with self._lock:
+            self.settings_store.reset(section)
+            roles = ("rgb", "multispectral") if section in (None, "") else (str(section),)
+            for role in roles:
+                self._settings_source[role] = "default"
+                self._settings_restore_state[role] = self._restore_state("not_attempted", "default")
+        result: dict[str, Any] = {"settings": self.camera_settings(), "applied": {}}
+        if apply_defaults:
+            if section in (None, "", "rgb"):
+                try:
+                    result["applied"]["rgb"] = self.restore_camera_settings({"section": "rgb", "force": True})
+                except CameraError as exc:
+                    result["applied"]["rgb"] = {"ok": False, "error": exc.user_message, "technicalError": exc.technical_message}
+            if section in (None, "", "multispectral"):
+                try:
+                    result["applied"]["multispectral"] = self.restore_camera_settings({"section": "multispectral", "force": True})
+                except CameraError as exc:
+                    result["applied"]["multispectral"] = {"ok": False, "error": exc.user_message, "technicalError": exc.technical_message}
+            result["settings"] = self.camera_settings()
+        return result
+
+    def restore_camera_settings(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        section = payload.get("section")
+        force = bool(payload.get("force", True))
+        with self._lock:
+            restored: dict[str, Any] = {}
+            if section in (None, "", "rgb"):
+                restored["rgb"] = self._restore_rgb_settings_locked(force=force, reason="explicit_restore")
+            if section in (None, "", "multispectral"):
+                restored["multispectral"] = self._restore_multispectral_settings_locked(force=force, reason="explicit_restore")
+            return {"restored": restored, "settings": self.camera_settings(), "preview": self._preview_status()}
+
+    def migrate_legacy_camera_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        legacy = (payload or {}).get("rgb") or payload or {}
+        with self._lock:
+            result = self.settings_store.migrate_legacy_rgb(legacy)
+            if result.get("migrated"):
+                self._settings_source["rgb"] = "persistent"
+                self._settings_restore_state["rgb"] = self._restore_state("not_attempted", "persistent")
+            return {"settings": self.camera_settings(), "migration": result}
 
     def start_rgb_preview(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
@@ -219,6 +355,7 @@ class CameraManager:
                 }
             with self._rgb_capture_lock:
                 self.rgb.start_stream()
+                status = self._restore_rgb_settings_locked(force=True, reason="preview_start")
             self._reset_rgb_preview_cache()
             self._rgb_preview.update({
                 "running": True,
@@ -229,7 +366,6 @@ class CameraManager:
                 "lowLatency": True,
             })
             self._start_rgb_preview_worker_locked()
-            status = self._status_dict(self.rgb)
             return {
                 "status": status,
                 "preview": self._preview_status(),
@@ -289,6 +425,9 @@ class CameraManager:
             was_open = bool(getattr(self.rgb, "is_open", False))
             preview_was_running = bool(self._rgb_preview.get("running") and was_open)
             with self._rgb_capture_lock:
+                if not was_open:
+                    self.rgb.open()
+                    self._restore_rgb_settings_locked(force=True, reason="capture_open")
                 frame = self.rgb.capture_frame()
             status = self._status_dict(self.rgb)
             metadata = {
@@ -298,6 +437,8 @@ class CameraManager:
                 "openedForCapture": not was_open,
                 "requestedSettings": dict(status.get("requested") or {}),
                 "actualSettings": dict(status.get("actual") or {}),
+                "settingsSource": self._settings_source.get("rgb") or "default",
+                "settingsRestoreState": dict(self._settings_restore_state["rgb"]),
                 "device": self._camera_device_metadata(status, frame.metadata),
             }
             if not was_open:
@@ -314,6 +455,9 @@ class CameraManager:
             preview_was_running = bool(self._multispectral_preview.get("running") and was_open)
             try:
                 with self._multispectral_capture_lock:
+                    if not was_open:
+                        self.multispectral.open()
+                        self._restore_multispectral_settings_locked(force=True, reason="capture_open")
                     frame = self.multispectral.capture_frame()
                 status = self._status_dict(self.multispectral)
                 metadata = {
@@ -323,6 +467,8 @@ class CameraManager:
                     "openedForCapture": not was_open,
                     "requestedSettings": dict(status.get("requested") or {}),
                     "actualSettings": dict(status.get("actual") or {}),
+                    "settingsSource": self._settings_source.get("multispectral") or "default",
+                    "settingsRestoreState": dict(self._settings_restore_state["multispectral"]),
                     "pixelFormat": frame.metadata.get("pixelFormat") or status.get("pixelFormat") or "",
                     "dtype": frame.dtype,
                     "shape": tuple(int(value) for value in frame.shape),
@@ -391,6 +537,7 @@ class CameraManager:
                 )
             with self._multispectral_capture_lock:
                 self.multispectral.start_stream()
+                status = self._restore_multispectral_settings_locked(force=True, reason="preview_start")
             self._reset_multispectral_preview_cache()
             self._multispectral_preview.update({
                 "running": True,
@@ -402,7 +549,7 @@ class CameraManager:
             })
             self._start_multispectral_preview_worker_locked()
             return {
-                "status": self._status_dict(self.multispectral),
+                "status": status,
                 "preview": self._preview_status(),
             }
 
@@ -896,6 +1043,19 @@ class CameraManager:
             "connected": bool(rgb_ok or rgb_status.get("connected")),
             "opened": bool(rgb_status.get("opened")),
         })
+        if rgb_ok:
+            rgb_status = self._restore_rgb_settings_locked(force=True, reason="probe")
+            if not self._rgb_preview.get("running"):
+                self.rgb.stop_stream()
+                self.rgb.close()
+                rgb_status = self._status_dict(self.rgb)
+                rgb_status.update({
+                    "detected": True,
+                    "available": True,
+                    "connected": True,
+                    "opened": False,
+                    "streaming": False,
+                })
         return {"status": rgb_status}
 
     def _preview_status(self) -> dict[str, dict[str, Any]]:
@@ -914,14 +1074,207 @@ class CameraManager:
             current.fourcc.upper() != requested.fourcc.upper(),
         ))
 
+    @staticmethod
+    def _restore_state(
+        state: str,
+        settings_source: str,
+        *,
+        reason: str = "",
+        error: str = "",
+        setting_results: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "state": state,
+            "settingsSource": settings_source,
+            "lastRestoredAt": utc_timestamp() if state not in {"not_attempted"} else "",
+            "restoreError": error,
+            "reason": reason,
+            "settingResults": dict(setting_results or {}),
+        }
+
+    @staticmethod
+    def _setting_results_accepted(setting_results: dict[str, Any]) -> bool:
+        relevant = [
+            result
+            for result in (setting_results or {}).values()
+            if not result.get("skipped") and result.get("accepted") is not None
+        ]
+        return bool(relevant) and all(bool(result.get("accepted")) for result in relevant)
+
+    @staticmethod
+    def _annotate_setting_results(result: dict[str, Any]) -> None:
+        status = result.get("status") or {}
+        actual = status.get("actual") or {}
+        for key, setting_result in (result.get("settingResults") or {}).items():
+            if isinstance(setting_result, dict) and key in actual and "actual" not in setting_result:
+                setting_result["actual"] = actual.get(key)
+
+    def _restore_rgb_settings_locked(self, *, force: bool = False, reason: str = "") -> dict[str, Any]:
+        settings = self.settings_store.get_rgb()
+        has_saved = self.settings_store.has_custom("rgb")
+        if not has_saved and not self.settings_store.path.exists():
+            self._settings_source["rgb"] = "default"
+            self._settings_restore_state["rgb"] = self._restore_state("not_attempted", "default", reason=reason)
+            return self._status_dict(self.rgb)
+        if not force and not has_saved:
+            return self._status_dict(self.rgb)
+        if not hasattr(self.rgb, "apply_config"):
+            status = self._status_dict(self.rgb)
+            state = "failed" if has_saved else "not_attempted"
+            self._settings_restore_state["rgb"] = self._restore_state(
+                state,
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error="RGB adapter does not support apply_config" if has_saved else "",
+            )
+            return status
+        status = self._status_dict(self.rgb)
+        if self._device_mismatch("rgb", settings, status):
+            self._settings_restore_state["rgb"] = self._restore_state(
+                "device_mismatch",
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error="CAMERA_SETTINGS_DEVICE_MISMATCH",
+            )
+            print("[camera.settings] rgb restore blocked: CAMERA_SETTINGS_DEVICE_MISMATCH", flush=True)
+            return self._status_dict(self.rgb)
+        try:
+            config = RgbCameraConfig.from_dict(settings)
+            current = getattr(self.rgb, "config", RgbCameraConfig.from_env())
+            result = self.rgb.apply_config(config, restart=self._rgb_restart_required(current, config))
+            self._annotate_setting_results(result)
+            setting_results = result.get("settingResults") or {}
+            self._settings_source["rgb"] = "persistent" if has_saved else "default"
+            state = "restored" if self._setting_results_accepted(setting_results) else "partial"
+            self._settings_restore_state["rgb"] = self._restore_state(
+                state,
+                self._settings_source["rgb"],
+                reason=reason,
+                setting_results=setting_results,
+            )
+            restored_status = self._status_dict(self.rgb)
+            actual = restored_status.get("actual") or {}
+            print(
+                "[camera.settings] rgb restored "
+                f"source={self._settings_source['rgb']} exposure={settings.get('exposure')} actual={actual.get('exposure')}",
+                flush=True,
+            )
+            return restored_status
+        except CameraError as exc:
+            self._settings_restore_state["rgb"] = self._restore_state(
+                "failed",
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error=exc.user_message,
+            )
+            print(f"[camera.settings] rgb restore failed: {exc.technical_message}", flush=True)
+            raise
+
+    def _restore_multispectral_settings_locked(self, *, force: bool = False, reason: str = "") -> dict[str, Any]:
+        settings = self.settings_store.get_multispectral()
+        has_saved = self.settings_store.has_custom("multispectral")
+        if not has_saved and not self.settings_store.path.exists():
+            self._settings_source["multispectral"] = "default"
+            self._settings_restore_state["multispectral"] = self._restore_state("not_attempted", "default", reason=reason)
+            return self._status_dict(self.multispectral)
+        if not force and not has_saved:
+            return self._status_dict(self.multispectral)
+        if not (hasattr(self.multispectral, "set_exposure") and hasattr(self.multispectral, "set_gain")):
+            status = self._status_dict(self.multispectral)
+            state = "failed" if has_saved else "not_attempted"
+            self._settings_restore_state["multispectral"] = self._restore_state(
+                state,
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error="DVP2 adapter does not support exposure/gain setters" if has_saved else "",
+            )
+            return status
+        status = self._status_dict(self.multispectral)
+        if self._device_mismatch("multispectral", settings, status):
+            self._settings_restore_state["multispectral"] = self._restore_state(
+                "device_mismatch",
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error="CAMERA_SETTINGS_DEVICE_MISMATCH",
+            )
+            print("[camera.settings] dvp2 restore blocked: CAMERA_SETTINGS_DEVICE_MISMATCH", flush=True)
+            return self._status_dict(self.multispectral)
+        setting_results: dict[str, Any] = {}
+        try:
+            if settings.get("exposure") is not None:
+                requested = float(settings.get("exposure"))
+                actual = self.multispectral.set_exposure(requested)
+                setting_results["exposure"] = {"requested": requested, "actual": actual, "accepted": True}
+            if settings.get("gain") is not None:
+                requested = float(settings.get("gain"))
+                actual = self.multispectral.set_gain(requested)
+                setting_results["gain"] = {"requested": requested, "actual": actual, "accepted": True}
+            self._settings_source["multispectral"] = "persistent" if has_saved else "default"
+            self._settings_restore_state["multispectral"] = self._restore_state(
+                "restored" if self._setting_results_accepted(setting_results) else "partial",
+                self._settings_source["multispectral"],
+                reason=reason,
+                setting_results=setting_results,
+            )
+            restored_status = self._status_dict(self.multispectral)
+            print(
+                "[camera.settings] dvp2 restored "
+                f"source={self._settings_source['multispectral']} exposure={settings.get('exposure')} gain={settings.get('gain')}",
+                flush=True,
+            )
+            return restored_status
+        except CameraError as exc:
+            self._settings_restore_state["multispectral"] = self._restore_state(
+                "failed",
+                "persistent" if has_saved else "default",
+                reason=reason,
+                error=exc.user_message,
+                setting_results=setting_results,
+            )
+            print(f"[camera.settings] dvp2 restore failed: {exc.technical_message}", flush=True)
+            raise
+
+    def _device_mismatch(self, role: str, settings: dict[str, Any], status: dict[str, Any]) -> bool:
+        actual = status.get("actual") or {}
+        if role == "rgb":
+            saved_id = str(settings.get("deviceStableId") or "").strip()
+            current_id = str(status.get("stableId") or actual.get("stableId") or "").strip()
+            if saved_id and current_id and not saved_id.startswith("opencv-dshow:") and saved_id != current_id:
+                return True
+            return False
+        saved_ids = {
+            str(settings.get("deviceStableId") or "").strip(),
+            str(settings.get("serialNumber") or "").strip(),
+        } - {""}
+        current_ids = {
+            str(status.get("stableId") or "").strip(),
+            str(actual.get("stableId") or "").strip(),
+            str(actual.get("cameraSerial") or "").strip(),
+            str(actual.get("serialNumber") or "").strip(),
+            str(actual.get("userId") or "").strip(),
+        } - {""}
+        if not saved_ids or not current_ids:
+            return False
+        normalized_saved = {self._normalize_device_id(value) for value in saved_ids}
+        normalized_current = {self._normalize_device_id(value) for value in current_ids}
+        return normalized_saved.isdisjoint(normalized_current)
+
+    @staticmethod
+    def _normalize_device_id(value: str) -> str:
+        text = str(value or "").strip().upper()
+        if text.startswith("DSGP"):
+            return text[2:]
+        return text
+
     def _status_dict(self, adapter: Any) -> dict[str, Any]:
         try:
             status = adapter.get_status()
             if isinstance(status, CameraStatus):
-                return status.to_dict()
-            return dict(status)
+                status_dict = status.to_dict()
+            else:
+                status_dict = dict(status)
         except CameraError as exc:
-            return {
+            status_dict = {
                 "role": getattr(adapter, "role", ""),
                 "available": False,
                 "connected": False,
@@ -931,7 +1284,7 @@ class CameraManager:
                 "technicalError": exc.technical_message,
             }
         except Exception as exc:
-            return {
+            status_dict = {
                 "role": getattr(adapter, "role", ""),
                 "available": False,
                 "connected": False,
@@ -940,6 +1293,11 @@ class CameraManager:
                 "error": "相机状态读取失败",
                 "technicalError": str(exc),
             }
+        role = status_dict.get("role") or getattr(adapter, "role", "")
+        if role in self._settings_restore_state:
+            status_dict["settingsRestoreState"] = dict(self._settings_restore_state[role])
+            status_dict["settingsSource"] = self._settings_source.get(role) or "default"
+        return status_dict
 
     @staticmethod
     def _camera_device_metadata(status: dict[str, Any], frame_metadata: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -758,11 +758,16 @@
                   <div class="camera-apply-summary" id="rgbApplySummary">
                     <span>请求值 / 实际值会在应用参数后显示。</span>
                   </div>
+                  <div class="camera-apply-summary" id="rgbSettingsPersistenceSummary">
+                    <span>保存配置 / 恢复状态等待后端读取。</span>
+                  </div>
 
                   <div class="button-row">
                     <button id="applyRgbCameraSettings" type="button">应用到相机</button>
+                    <button id="applySaveRgbCameraSettings" type="button">应用并保存</button>
                     <button id="saveCameraSettings" type="button" class="secondary">保存为默认配置</button>
-                    <button id="resetCameraSettings" type="button" class="secondary">恢复默认</button>
+                    <button id="restoreSavedCameraSettings" type="button" class="secondary">恢复已保存配置</button>
+                    <button id="resetCameraSettings" type="button" class="secondary">恢复默认配置</button>
                   </div>
 
                   <details class="camera-advanced">
@@ -875,9 +880,16 @@
                   <div class="camera-apply-summary" id="multispectralApplySummary">
                     <span>曝光 / 增益应用后会显示 DVP2 回读值。</span>
                   </div>
+                  <div class="camera-apply-summary" id="multispectralSettingsPersistenceSummary">
+                    <span>保存配置 / 恢复状态等待后端读取。</span>
+                  </div>
 
                   <div class="button-row">
                     <button id="applyMultispectralCameraSettings" type="button">应用到相机</button>
+                    <button id="applySaveMultispectralCameraSettings" type="button">应用并保存</button>
+                    <button id="saveMultispectralCameraSettings" type="button" class="secondary">保存为默认配置</button>
+                    <button id="restoreSavedMultispectralCameraSettings" type="button" class="secondary">恢复已保存配置</button>
+                    <button id="resetMultispectralCameraSettings" type="button" class="secondary">恢复默认配置</button>
                   </div>
 
                   <section class="camera-setting-section">

@@ -644,6 +644,15 @@ def create_handler(
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=503)
                 return
+            if path == "/api/camera/settings":
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "settings": device_manager.camera_manager.camera_settings(),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=503)
+                return
             if path == "/api/camera/rgb/preview-frame":
                 try:
                     data, meta = device_manager.camera_manager.rgb_preview_jpeg()
@@ -1011,6 +1020,58 @@ def create_handler(
                         "error": exc.user_message,
                         "technicalError": exc.technical_message,
                     }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
+            if parsed.path == "/api/camera/settings/save":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.save_camera_settings(payload),
+                    })
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
+            if parsed.path == "/api/camera/settings/reset":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.reset_camera_settings(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
+            if parsed.path == "/api/camera/settings/restore":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.restore_camera_settings(payload),
+                    })
+                except CameraError as exc:
+                    self.json_response({
+                        "ok": False,
+                        "error": exc.user_message,
+                        "technicalError": exc.technical_message,
+                    }, status=503)
+                except Exception as exc:
+                    self.json_response({"ok": False, "error": str(exc)}, status=400)
+                return
+            if parsed.path == "/api/camera/settings/migrate-legacy":
+                payload = self.read_json()
+                try:
+                    self.json_response({
+                        "ok": True,
+                        "result": device_manager.camera_manager.migrate_legacy_camera_settings(payload),
+                    })
                 except Exception as exc:
                     self.json_response({"ok": False, "error": str(exc)}, status=400)
                 return

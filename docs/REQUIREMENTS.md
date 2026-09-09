@@ -1,6 +1,6 @@
 # Requirements
 
-更新时间：2026-09-08
+更新时间：2026-09-10
 
 本文档集中记录当前已经确认或待确认的需求。状态含义：
 
@@ -35,16 +35,18 @@
 | 相机服务层应与样品保存目录解耦 | 已实现 | `camera_service` adapter 返回 numpy 帧和状态，不决定 Sample Folder、文件名或 `rgbDirName/multispectralDirName` |
 | RGB 相机帧色彩格式必须明确 | 已实现 | `RgbUvcCamera.capture_frame()` 把 OpenCV BGR 转为 RGB，返回 RGB `uint8` H×W×3 |
 | RGB 相机状态必须区分检测、可用、打开、预览 | 已实现 | `CameraStatus` 暴露 `detected/available/opened/streaming`；probe 成功后释放句柄或停止预览不清空 `detected/available`；重新检测只使用当前配置的 device index，可兼容同 index 的两种 DirectShow 打开形式，不自动 fallback 到内置摄像头 |
-| RGB 相机设置应区分保存配置和应用到真实相机 | 已实现 | 相机设置页提供“应用到相机”和“保存为默认配置”；`/api/camera/rgb/apply-settings` 下发参数并回读 actual 状态 |
+| RGB 相机设置应区分保存配置和应用到真实相机 | 已实现 | 相机设置页提供“应用到相机”“应用并保存”“保存为默认配置”“恢复已保存配置”“恢复默认配置”；`/api/camera/rgb/apply-settings` 下发参数并回读 actual 状态，`persist=true` 时成功后写入后端 `config/camera_settings.json`；后端保存 device identity/index、width/height/fps/fourcc、auto/manual exposure、gain 和 white balance，并记录 requested/actual/settingResults |
+| 相机参数应有后端权威持久化与启动恢复闭环 | 已实现/SOFTWARE IMPLEMENTED | `CameraSettingsStore` 负责 JSON UTF-8 load/save/reset/migrate，缺文件返回 default，损坏文件返回 warning/default，写入使用 atomic replace。`CameraManager` 在 probe、preview/capture open、显式 restore 和 reconnect 时从后端保存的 requested settings 重新下发并回读；`get_status` 不重复 set 参数；restore state 为 `not_attempted/restored/partial/failed/device_mismatch`。旧 `fruitAnalyzer.cameraSettings` 只作为 UI cache/legacy migration，不再是 authoritative source |
 | RGB 预览应与正式采集分离 | 已实现/部分真实 | `/api/camera/rgb/preview/start` 使用同一个 `RgbUvcCamera` 实例启动后台 latest-frame/latest encoded JPEG worker，`/api/camera/rgb/preview-frame` 直接返回最新 960x540 JPEG 预览缓存；`CameraManager.capture_rgb_frame()` 通过同一个 RGB adapter 取正式 RGB 帧，不使用预览 JPEG，不在预览运行时打开第二个 UVC 句柄；响应和 UI 显示 frameId、source age、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 计数和 encoder；P1B-8 True Capture 入口也只读取正式 `CameraFrame` |
 | 正式 scientific capture 文件必须使用 lossless PNG | 已实现/测试覆盖 | 受保护 RGB 单帧、DVP2 raw mono 单帧、多波段 sample sequence、Dark/White reference、Sample MultiView 和 `create_offline_capture_dataset()` 离线验证正式数据均保存 `.png`；正式 metadata 不得引用 `.jpg/.jpeg`；JPEG 只允许用于 `/api/camera/*/preview-frame` 浏览器预览 |
 | 多光谱相机接口必须支持未来 16-bit mono | 已实现/部分实机 | `CameraFrame` 不强制 `uint8`，允许 `uint16` H×W 单通道；DVP2 binding 的 `frame_to_array()` 会按 `dvpFrame.bits` 保留 `uint8` 或 `uint16`，预览 JPEG 才做显示归一化；用户当前实机验证为 `Mono8/uint8`，代码仍保留 `uint16` 边界 |
 | 多光谱相机网页预览应读取真实 DVP2 当前流 | 已实现/需现场复核 | `/api/camera/multispectral/preview/start` 打开并保持同一个 DVP2 实例和 stream，后台 worker 持续读取当前流并生成最新 960x540 JPEG 预览缓存；预览响应包含 source dtype、PixelFormat 和亮度 min/max/mean |
 | 多光谱网页预览应优先低延迟显示最新帧 | 已实现/需现场复核 | P1B-5.4 后 preview 使用后台 latest-frame cache，本轮进一步把 resize/JPEG 编码移入 worker 并维护 latest encoded JPEG cache；HTTP 请求不再排队调用 DVP2 `get_frame()` 或逐请求编码，只返回最新 JPEG cache；允许丢弃旧帧，响应和 UI 显示 frameId、sourceTimestamp/source age、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 计数和 encoder；默认目标 12 FPS，前端限制最多一个 in-flight request |
-| 多光谱曝光/增益应能从网页真实下发并回读 | 已实现/需现场复核 | `/api/camera/multispectral/apply-settings` 调用 `Dvp2MonoCamera.set_exposure()` 和 `set_gain()`，回读实际值；曝光单位为 μs；范围来自 SDK capability，不在前端硬编码 |
+| 多光谱曝光/增益应能从网页真实下发并回读 | 已实现/需现场复核 | `/api/camera/multispectral/apply-settings` 调用 `Dvp2MonoCamera.set_exposure()` 和 `set_gain()`，set 后由 adapter 执行真实 get readback；曝光单位为 μs；范围来自 SDK capability，不在前端硬编码。P1B-8.1 后支持 `persist=true` 保存 DVP2 device identity、exposure 和 gain，并在启动/重连/显式 restore 时重新 set + get；不开放 PixelFormat、trigger、ROI 持久化 |
 | 多光谱 PixelFormat 本阶段只显示不切换 | 已实现 | 当前实际 `pixelFormat/frameDtype` 与 `supportedPixelFormats` 分开；只验证 `Mono8`，不开放格式切换 UI |
 | DVP2 正式单帧保存必须保留 raw mono 位深 | 已实现/需实机复核 | `CameraManager.capture_multispectral_frame()` 返回 DVP2 `CameraFrame.data`，`CaptureCoordinator.run_multispectral_capture()` 只接受二维 MONO `uint8/uint16`，保存 PNG 前后读回验证尺寸、单通道和 dtype；不使用 960x540 预览 JPEG，不做 `astype(uint8)`、`/256` 或显示归一化 |
 | DVP2 low-latency preview 不得影响 scientific capture | 已实现 | latest-frame/latest encoded JPEG cache 仅用于 `/api/camera/multispectral/preview-frame`；P1B-4 单帧和 P1B-5 多波段 sequence 仍通过 `capture_multispectral_frame()` 直接获取 raw `CameraFrame`，不读取 preview JPEG，不用 cache 冒充正式采集，不改变 uint8/uint16 raw PNG 保存和滤光轮同步 |
+| 正式采集 metadata 应记录相机参数来源与恢复状态 | 已实现 | `CameraManager.capture_rgb_frame()` 和 `capture_multispectral_frame()` metadata 记录 `requestedSettings`、`actualSettings`、`settingsSource` 和 `settingsRestoreState`；True Capture readiness 对 saved device mismatch 返回 `CAMERA_SETTINGS_DEVICE_MISMATCH` blocker，对 restore failed 返回 warning；没有保存自定义参数时 `settingsSource=default` 不阻断采集 |
 | DVP2 单帧未同步滤光轮时不得伪造波长 | 已实现 | P1B-4 metadata 固定记录 `wavelengthNm=null`、`bandAssignment=unassigned`、`filterWheelSynchronized=false`，`bands` 仍为空，不写假滤光轮位置 |
 | DVP2 多波段 sequence 必须由滤光轮确认后采集 | 已实现/需实机验收 | P1B-5 `CaptureCoordinator.run_multispectral_sequence()` 会先 HOME，再按 enabled band 读取目标轮位、相对移动、查询确认位置、等待稳定、应用该 band 的 exposure/gain，之后才保存 DVP2 raw PNG；位置未知或不匹配会失败并 `safe_stop()`，不保存未同步 band |
 | 多波段 metadata 必须记录真实 band plan 和部分完成状态 | 已实现 | P1B-5 metadata 写入 `bands`、`multispectralSequence`、enabled/disabled/completed/pending/failed bands、filter config source/version、developmentConfig、settlingMs、`partialCapture`、`cancelled` 和每帧 `wavelengthNm`/`bandAssignment`/`filterWheelSynchronized=true` |

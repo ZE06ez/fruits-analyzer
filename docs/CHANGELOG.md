@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-10 P1B-8.1 Camera Settings Persistence & Restore
+
+- 修改内容：新增 `camera_service/settings_store.py` 和后端权威 `config/camera_settings.json` 配置结构，支持 JSON UTF-8 load/save/reset/migrate legacy，缺文件返回 default，损坏 JSON 返回 warning/default，保存使用 atomic replace。字段白名单限制为 RGB device identity/index、width/height/fps/fourcc、auto/manual exposure、gain、white balance 和现有几何缓存，以及 DVP2 device identity、exposure、gain；不开放 DVP2 PixelFormat/trigger/ROI 持久化。
+- 修改内容：`CameraManager` 区分 Apply、Apply & Save、Save Default、Restore Saved、Restore Default。`/api/camera/rgb/apply-settings` 和 `/api/camera/multispectral/apply-settings` 支持 `persist=true`，仅在成功下发并回读后写入 store；DVP2 exposure/gain 继续 set 后 get readback；RGB DirectShow 每项参数记录 requested/actual/accepted/supported，不伪造 unsupported 成功。
+- 修改内容：新增 `GET /api/camera/settings`、`POST /api/camera/settings/save|reset|restore|migrate-legacy`。restore state 记录 `not_attempted/restored/partial/failed/device_mismatch`、`lastRestoredAt`、`restoreError` 和 per-setting results；恢复触发于 probe、preview/capture open、explicit restore 和 reconnect，而不是每次 status 查询。probe 恢复后仍释放相机句柄，保留 `detected/available` 语义。
+- 修改内容：主 UI 相机设置页启动时优先读取后端配置；仅当后端配置不存在且旧 `fruitAnalyzer.cameraSettings` 存在时迁移旧 RGB localStorage。按钮新增/调整为“应用到相机”“应用并保存”“保存为默认配置”“恢复已保存配置”“恢复默认配置”，并显示 saved requested、current actual 和 restore state。
+- 修改内容：正式 RGB/DVP2 capture metadata 增加 `settingsSource` 和 `settingsRestoreState`。True Capture readiness 对 saved device identity mismatch 返回 `CAMERA_SETTINGS_DEVICE_MISMATCH` blocker，对 restore failed 返回 warning；无保存配置时 `settingsSource=default` 不构成 blocker。
+- 修改文件：`host_software/static_ui_prototype_bin/camera_service/settings_store.py`、`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/camera_service/__init__.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/tests/test_camera_settings_persistence.py`、`host_software/static_ui_prototype_bin/tests/test_backend_device_api.py`、`PROJECT_STATUS.md`、`docs/PROJECT_CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/REQUIREMENTS.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不修改 STM32 firmware、滤光轮 mapping、SampleStage、preview scientific PNG 边界、DVP2 raw saver、Dark/White、多波段、True Capture 编排或模型训练。相机参数持久化是上位机本地软件配置，不表示写入 RGB/DVP2 EEPROM/UserSet；真实硬件 acceptance 仍需现场验收。
+
 ## 2026-09-08 P1B-8 True Capture Integration
 
 - 修改内容：新增 `TrueCapturePlan` 与 `CaptureCoordinator.run_true_capture()`，把已有 Dark/White reference、RGB 正式 PNG、DVP2 raw mono PNG、多波段 sequence 和 Sample MultiView 软件路径编排为 True Hardware Capture 入口。单视角模式强制 `sample_rotation.enabled=false`，不要求真实 SampleStage；多视角模式继续由 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 阻断。
