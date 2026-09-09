@@ -430,6 +430,34 @@ class ModelStudioServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelStudioError, "default model cannot be permanently deleted"):
             self.service.delete_model_permanently(default_id, confirm=default_id)
 
+    def test_model_batch_delete_reuses_single_delete_rules(self):
+        candidate_id = self._insert_fake_model("batch_candidate", status="Candidate")
+        published_id = self._insert_fake_model("batch_published", status="Published")
+        default_id = self._insert_fake_model("batch_default", status="Default")
+
+        result = self.service.delete_models_permanently_batch([candidate_id, published_id, default_id, candidate_id])
+
+        self.assertEqual({item["modelId"] for item in result["deleted"]}, {candidate_id, published_id})
+        self.assertEqual([item["modelId"] for item in result["blocked"]], [default_id])
+        self.assertFalse(result["failed"])
+        for model_id in (candidate_id, published_id):
+            with self.assertRaises(ModelStudioError):
+                self.service.get_model(model_id)
+        self.assertEqual(self.service.get_model(default_id)["model_id"], default_id)
+
+    def test_set_default_model_switches_previous_default_in_same_scope(self):
+        first = self._insert_fake_model("scope_default_a", status="Published")
+        second = self._insert_fake_model("scope_default_b", status="Published")
+
+        self.service.set_default_model(first)
+        self.service.set_default_model(second)
+
+        self.assertFalse(self.service.get_model(first)["isDefault"])
+        self.assertEqual(self.service.get_model(first)["status"], "Published")
+        self.assertTrue(self.service.get_model(second)["isDefault"])
+        visible = self.service.list_published_models(fruit_type="blueberry", variety="Duke", target="ssc")
+        self.assertEqual(len([model for model in visible if model["isDefault"]]), 1)
+
     def test_archive_model_keeps_files_and_hides_from_station_catalog(self):
         published_id = self._insert_fake_model("archive_keeps_files", status="Published")
         published_dir = Path(self.service.get_model(published_id)["model_dir"])

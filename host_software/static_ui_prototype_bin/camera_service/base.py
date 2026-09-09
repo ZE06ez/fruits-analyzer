@@ -56,6 +56,7 @@ class CameraStatus:
     pixel_format: str = ""
     color_space: str = ""
     frame_dtype: str = ""
+    status_code: str = ""
     error: str = ""
     technical_error: str = ""
     sdk_path: str = ""
@@ -88,6 +89,7 @@ class CameraStatus:
             "pixelFormat": self.pixel_format,
             "colorSpace": self.color_space,
             "frameDtype": self.frame_dtype,
+            "statusCode": self.status_code,
             "error": self.error,
             "technicalError": self.technical_error,
             "sdkPath": self.sdk_path,

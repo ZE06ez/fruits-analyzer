@@ -1362,6 +1362,11 @@ def create_handler(
                 return
             if parsed.path == "/api/shutdown":
                 try:
+                    if getattr(device_manager, "camera_manager", None) is not None:
+                        device_manager.camera_manager.release_all()
+                except Exception:
+                    pass
+                try:
                     device_manager.disconnect()
                 except Exception:
                     pass
@@ -1662,6 +1667,10 @@ def create_handler(
                         confirm=payload.get("confirm") or payload.get("confirmation") or "",
                     )})
                     return
+                if path == "models/delete-batch":
+                    model_ids = payload.get("modelIds") or payload.get("model_ids") or []
+                    self.json_response({"ok": True, "result": studio.delete_models_permanently_batch(model_ids)})
+                    return
                 self.json_response({"ok": False, "error": "Unknown Model Studio API."}, status=404)
             except Exception as exc:
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
@@ -1690,8 +1699,6 @@ def create_handler(
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
 
         def handle_new_sample(self) -> None:
-            if self.require_device_preparation() is None:
-                return
             payload = self.read_json()
             try:
                 image_dirs = image_directory_names_from_payload(payload)
@@ -2382,6 +2389,7 @@ def create_handler(
             self.end_headers()
             self.wfile.write(data)
 
+    Handler.device_manager = device_manager
     return Handler
 
 
@@ -2835,6 +2843,7 @@ def start_backend(static_dir: Path, outputs_dir: Path, app_dir: Path, port: int 
     handler = create_handler(static_dir, outputs_dir, app_dir, store, session)
     server = ThreadingHTTPServer(("127.0.0.1", selected_port), handler)
     setattr(server, "should_exit", False)
+    setattr(server, "device_manager", getattr(handler, "device_manager", None))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, selected_port

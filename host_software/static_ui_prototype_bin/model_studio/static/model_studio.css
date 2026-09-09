@@ -465,6 +465,61 @@ h3 {
   padding: 15px;
 }
 
+.bulk-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  border-radius: 8px;
+  background: rgba(75, 29, 39, 0.34);
+}
+
+.select-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  color: #cbd8e8;
+}
+
+.select-card input,
+.bulk-bar input {
+  width: auto;
+  margin: 0;
+}
+
+.readonly-confirm-value {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.readonly-confirm-value span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.readonly-confirm-value code {
+  overflow-wrap: anywhere;
+  color: #f8fbff;
+}
+
+.menu-note {
+  display: block;
+  padding: 7px 10px;
+  color: var(--good);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .panel-head {
   margin-bottom: 12px;
   padding-bottom: 9px;

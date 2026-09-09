@@ -240,6 +240,7 @@ UI
 - 预处理支持 RAW / SNV / MSC。
 - 训练数据不足时必须失败，不能造假标签或伪造模型结果。
 - Production/Default 模型必须人工发布；系统不能自动替换正式模型。
+- 同一 fruit type + variety + target 只能有一个 Default；Model Studio 可从 Published/Production 模型切换 Default，旧 Default 自动保留为 Published，不删除。
 - 支持不同水果/品种使用不同模型，并允许 `generic` 品种兜底。
 - 本次拍摄目录可以自动进入分析流程。
 - 同时允许用户手动选择其他数据目录。
@@ -252,7 +253,7 @@ UI
 
 代码和文档中确认的主要缺口：
 
-- 真实采集闭环仍需现场验收：STM32 串口、滤光轮、推杆/门控、急停、风扇和 LED3 已有控制层、P1B-7.5A.1 current-firmware profile 绑定和 P1B-7.5A.2 Web 调试入口/fresh STATUS 运动验证；RGB adapter 已完成当前电脑实机验证，并接入相机设置页 latest-frame 预览/参数应用和正式 PNG 保存；DVP2 adapter 已完成真实 SDK 打开/取帧边界、用户实机 manual test 通过，已接入相机设置页 low-latency latest encoded JPEG 预览/曝光/增益回读、raw mono PNG 保存、滤光轮同步多波段 sample sequence、Dark/White calibration sequence 和 Sample MultiView orchestration 软件路径；P1B-8 已放行单视角 `/api/capture/start` 软件入口，但真实 STM32 Web 控制现场 smoke、暗白物理校正验收、样品台真实旋转、多视角硬件采集、温度和扩展报警仍未完成。
+- 真实采集闭环仍需现场验收：STM32 串口、滤光轮、推杆/门控、急停、风扇和 LED3 已有控制层、P1B-7.5A.1 current-firmware profile 绑定和 P1B-7.5A.2 Web 调试入口/fresh STATUS 运动验证；RGB adapter 已完成当前电脑实机验证，并接入相机设置页 latest-frame 预览/参数应用和正式 PNG 保存；DVP2 adapter 已完成真实 SDK 打开/取帧边界、用户实机 manual test 通过，已接入相机设置页 low-latency latest encoded JPEG 预览/曝光/增益回读、raw mono PNG 保存、滤光轮同步多波段 sample sequence、Dark/White calibration sequence 和 Sample MultiView orchestration 软件路径；P1B-8 已放行单视角 `/api/capture/start` 软件入口，但真实 STM32 Web 控制现场 smoke、暗白物理校正验收、样品台真实旋转、多视角硬件采集、温度和扩展报警仍未完成。Windows launcher 现在有单实例 mutex，RGB/DVP2 另有跨进程设备 ownership mutex；设备被占用时应报告 busy 而不是未检测到。
 - P1B hardware acceptance checklist 已建立，但尚未填写现场测试证据；这份文档是放行门槛，不是 PASS 证据本身。
 - 样品旋转平台已有角度计划、UI、metadata、离线模拟文件、P1B-7 `SampleStage` 软件抽象和 P1B-7.5B status/API/UI 调试边界；仓库内未找到独立样品台控制器协议，仍缺少真实控制板身份、通信方式、HOME、位置回读、稳定确认和报警/超时 contract 的硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
@@ -260,7 +261,7 @@ UI
 - `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 明确抛出 `NotImplementedError`。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
-- Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete 已实现，仍需真实用户数据场景下做人工 UI 验收。
+- Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。
 - `model_studio/database/model_studio.sqlite` 当前为空/待初始化，没有真实数据集和模型记录。
 - 主程序检测结果没有正式历史记录数据库，仅 UI 状态和文本报告。
 - 报告导出是前端 TXT，不是正式 PDF/数据库记录。

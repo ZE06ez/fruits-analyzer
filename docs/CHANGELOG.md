@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-10 P1B-8.1 Follow-up: Sample Gate, Model Batch Delete, Single Instance
+
+- 修改内容：`/api/new-sample` 和主 UI “新建样品”不再依赖设备准备状态，只校验样品名称、果种/品种和保存根目录；True Hardware Capture 仍由 `/api/capture/readiness` 和 `/api/capture/start` 严格 gate，并显示所有阻塞原因。existing CalibrationSet 模式要求填写当前样品目录下存在的 `calibrationId`，不再提示可留空。
+- 修改内容：Model Studio 永久删除确认框将 Model ID 改为只读 code 文本，确认输入框必须手动输入并按 `trim()` 后精确匹配；Models 页面新增当前列表多选、全选和批量永久删除。新增 `POST /api/model-studio/models/delete-batch`，后端逐个复用单模型永久删除规则，返回 deleted/blocked/failed。
+- 修改内容：确认 Default 模型切换已有后端 `set_default_model()` 与 `/api/model-studio/models/default`，本轮补强 UI 入口和刷新：Published/Production 可设为 Default，Candidate/Validated 显示“请先发布模型”，当前 Default 明确标识。后端继续保证同一 fruitType + variety + target 只有一个 Default，旧 Default 自动回到 Published。
+- 修改内容：新增 Windows named mutex 单实例保护 `Local\FruitTasteAnalyzer.SingleInstance`，首次 launcher 写 `%LOCALAPPDATA%\FruitTasteAnalyzer\runtime.json`，第二次启动只读取端口并打开已有 Web UI，不启动第二个 backend、不初始化 STM32、不访问 RGB/DVP2。RGB/DVP2 adapter 另加按 stable identity 的跨进程相机 ownership mutex，并把设备占用状态区分为 `BUSY_BY_OTHER_PROCESS` 而不是“未检测到”。
+- 修改内容：`CameraManager.release_all()` 统一停止 RGB/DVP2 preview worker、stop stream、close adapter 并释放跨进程设备锁；launcher、backend shutdown 和异常退出路径尽量调用统一释放。
+- 修改文件：`host_software/static_ui_prototype_bin/process_lock.py`、`host_software/static_ui_prototype_bin/launcher.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/camera_service/base.py`、`host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`、`host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`、`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/model_studio/service.py`、`host_software/static_ui_prototype_bin/model_studio/static/*`、相关测试与项目文档。
+- 是否影响原有功能：不放宽 True Capture readiness，不绕过 Default/Production/reference 删除保护，不强制关闭已有实例相机，不修改 STM32 firmware、DVP2 SDK binding、滤光轮或 SampleStage 真实硬件边界。
+
 ## 2026-09-10 P1B-8.1 RGB Strict-Lossless Scientific Capture Gate
 
 - 修改内容：新增 `camera_service/rgb_scientific.py`，集中定义 RGB scientific transport policy。`MJPG/MJPEG/JPEG/H264/H265` 判定为 lossy，`YUY2/YUYV/UYVY` 记录为 `uncompressed_but_chroma_subsampled` 但 strict lossless=false，只有 RAW Bayer/RGB24/BGR24 等已确认完整未压缩 pixel transport 才允许作为 RGB scientific source。

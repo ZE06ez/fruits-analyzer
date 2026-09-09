@@ -107,6 +107,45 @@ class CameraManager:
                 },
             }
 
+    def release_all(self) -> None:
+        """Best-effort release of all preview workers, streams, handles, and device locks."""
+
+        rgb_thread: threading.Thread | None
+        multispectral_thread: threading.Thread | None
+        with self._lock:
+            self._rgb_preview["running"] = False
+            self._multispectral_preview["running"] = False
+            self._rgb_preview_stop_event.set()
+            self._multispectral_preview_stop_event.set()
+            rgb_thread = self._rgb_preview_thread
+            multispectral_thread = self._multispectral_preview_thread
+        for thread in (rgb_thread, multispectral_thread):
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
+        with self._lock:
+            with self._rgb_capture_lock:
+                try:
+                    self.rgb.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    self.rgb.close()
+                except Exception:
+                    pass
+            with self._multispectral_capture_lock:
+                try:
+                    self.multispectral.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    self.multispectral.close()
+                except Exception:
+                    pass
+            self._rgb_preview_thread = None
+            self._multispectral_preview_thread = None
+            self._reset_rgb_preview_cache()
+            self._reset_multispectral_preview_cache()
+
     def checks(self, *, probe_rgb: bool = False) -> dict[str, dict[str, Any]]:
         with self._lock:
             rgb_status = self._status_dict(self.rgb)

@@ -8,6 +8,8 @@ const studio = {
   jobTimer: null,
   labelDirty: false,
   selectedSample: null,
+  selectedModelIds: new Set(),
+  currentModelIds: [],
   prepStep: "create",
   latestQuality: null,
 };
@@ -407,7 +409,7 @@ function datasetDeleteSummary(refs) {
   `;
 }
 
-function confirmPermanentDelete({ title, dangerText, confirmLabel, confirmValue, summaryHtml, disabled = false, blockReason = "" }) {
+function confirmPermanentDelete({ title, dangerText, confirmLabel, confirmValue, confirmValueLabel = "Model ID", summaryHtml, disabled = false, blockReason = "" }) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "modal-backdrop";
@@ -420,8 +422,9 @@ function confirmPermanentDelete({ title, dangerText, confirmLabel, confirmValue,
         <p class="danger-copy">${escapeHtml(dangerText)}</p>
         ${blockReason ? `<p class="block-reason">${escapeHtml(blockReason)}</p>` : ""}
         <div class="modal-body">${summaryHtml || ""}</div>
+        <div class="readonly-confirm-value"><span>${escapeHtml(confirmValueLabel)}</span><code>${escapeHtml(confirmValue)}</code></div>
         <label class="block-label">${escapeHtml(confirmLabel)}
-          <input id="deleteConfirmInput" autocomplete="off" placeholder="${escapeHtml(confirmValue)}" ${disabled ? "disabled" : ""} />
+          <input id="deleteConfirmInput" autocomplete="off" placeholder="${escapeHtml(confirmLabel)}" ${disabled ? "disabled" : ""} />
         </label>
         <div class="modal-actions">
           <button type="button" class="ghost-button" data-cancel-delete>取消</button>
@@ -441,7 +444,7 @@ function confirmPermanentDelete({ title, dangerText, confirmLabel, confirmValue,
       if (event.target === overlay) cleanup(false);
     });
     input?.addEventListener("input", () => {
-      confirmButton.disabled = disabled || input.value !== confirmValue;
+      confirmButton.disabled = disabled || input.value.trim() !== confirmValue;
     });
     confirmButton.addEventListener("click", () => cleanup(true));
     input?.focus();
@@ -845,11 +848,16 @@ async function loadModels() {
     status: $("#modelStatusFilter")?.value || "",
   });
   const payload = await api(`/api/model-studio/models?${params.toString()}`);
+  studio.currentModelIds = (payload.models || []).map((model) => model.model_id);
+  for (const modelId of [...studio.selectedModelIds]) {
+    if (!studio.currentModelIds.includes(modelId)) studio.selectedModelIds.delete(modelId);
+  }
   $("#modelRows").innerHTML = (payload.models || []).map((model) => {
     const warnings = (model.qualityWarnings || []).map((item) => `<span class="badge warn">${item}</span>`).join("");
     return `
     <article class="registry-card" data-model-card="${model.model_id}">
       <div class="registry-card-head">
+        <label class="select-card"><input type="checkbox" data-model-select="${model.model_id}" ${studio.selectedModelIds.has(model.model_id) ? "checked" : ""} /> 选择</label>
         <div>
           <h4>${escapeHtml(model.display_name || model.model_name)}</h4>
           <small title="${escapeHtml(model.model_id)}">${escapeHtml(model.model_id)}</small>
@@ -884,15 +892,41 @@ async function loadModels() {
   document.querySelectorAll("[data-model-action]").forEach((button) => {
     button.addEventListener("click", () => runModelAction(button.dataset.modelAction, button.dataset.modelId).catch((error) => toast(error.message)));
   });
+  document.querySelectorAll("[data-model-select]").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) studio.selectedModelIds.add(input.dataset.modelSelect);
+      else studio.selectedModelIds.delete(input.dataset.modelSelect);
+      renderModelBulkBar();
+    });
+  });
+  renderModelBulkBar();
+}
+
+function renderModelBulkBar() {
+  const bar = $("#modelBulkBar");
+  if (!bar) return;
+  const count = studio.selectedModelIds.size;
+  bar.hidden = count <= 0 && studio.currentModelIds.length <= 0;
+  text("modelBulkCount", `已选择 ${count} 个`);
+  const selectAll = $("#selectAllModels");
+  if (selectAll) {
+    const allCurrentSelected = studio.currentModelIds.length > 0 && studio.currentModelIds.every((id) => studio.selectedModelIds.has(id));
+    selectAll.checked = allCurrentSelected;
+    selectAll.indeterminate = !allCurrentSelected && studio.currentModelIds.some((id) => studio.selectedModelIds.has(id));
+  }
+  const deleteButton = $("#deleteSelectedModels");
+  if (deleteButton) deleteButton.disabled = count <= 0;
 }
 
 function modelMoreActions(model) {
   const actions = [];
   if (model.status === "Candidate") {
     actions.push(menuButton(model, "validate", "Validate"));
+    actions.push(menuButton(model, "default", "Set Default", "", true, "请先发布模型。"));
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   } else if (model.status === "Validated") {
     actions.push(menuButton(model, "publish", "Publish"));
+    actions.push(menuButton(model, "default", "Set Default", "", true, "请先发布模型。"));
     actions.push(menuButton(model, "archive", "Archive"));
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   } else if (model.status === "Published" || model.status === "Production") {
@@ -902,6 +936,7 @@ function modelMoreActions(model) {
     actions.push('<span class="menu-separator"></span>');
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   } else if (isDefaultModel(model)) {
+    actions.push('<span class="menu-note">当前默认</span>');
     actions.push(menuButton(model, "export", "Export"));
     actions.push(menuButton(model, "archive", "Archive", "", true, "当前模型是默认模型，请先将另一个兼容模型设为默认。"));
     actions.push('<span class="menu-separator"></span>');
@@ -910,6 +945,7 @@ function modelMoreActions(model) {
     actions.push(menuButton(model, "export", "Export"));
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   } else {
+    actions.push(menuButton(model, "default", "Set Default", "", true, "请先发布模型。"));
     actions.push(menuButton(model, "archive", "Archive"));
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   }
@@ -931,6 +967,9 @@ async function runModelAction(action, modelId) {
     toast($("#publishAsDefault")?.checked ? "模型已发布并设为默认" : "模型已发布");
   }
   if (action === "default") {
+    const model = (await api(`/api/model-studio/models/${encodeURIComponent(modelId)}`)).model;
+    const label = `${model.display_name || model.model_name} 设置为 ${model.fruit_type || "--"} / ${model.variety || "generic"} / ${String(model.target || "").toUpperCase()} 的默认模型？`;
+    if (!window.confirm(label)) return;
     await api("/api/model-studio/models/default", { method: "POST", body: JSON.stringify({ modelId }) });
     toast("默认模型已更新");
   }
@@ -976,6 +1015,49 @@ async function deleteModelPermanently(modelId) {
   if (!confirmed) return;
   await api("/api/model-studio/models/delete", { method: "POST", body: JSON.stringify({ modelId, confirm: model.model_id }) });
   toast("模型已永久删除");
+}
+
+async function deleteSelectedModelsPermanently() {
+  const modelIds = [...studio.selectedModelIds];
+  if (!modelIds.length) return;
+  const models = await Promise.all(modelIds.map((id) => api(`/api/model-studio/models/${encodeURIComponent(id)}`).then((payload) => payload.model).catch(() => ({ model_id: id, status: "Unknown" }))));
+  const blockedPreview = models
+    .filter((model) => isDefaultModel(model))
+    .map((model) => ({ modelId: model.model_id, reason: "Default 模型不能直接删除，请先将另一个兼容模型设为 Default。" }));
+  const deletablePreview = models.filter((model) => !isDefaultModel(model));
+  const confirmed = await confirmPermanentDelete({
+    title: "批量永久删除 Models",
+    dangerText: "后端会逐个执行与单模型删除一致的确认、Default 和引用保护；不可绕过生产依赖保护。",
+    confirmLabel: "请输入 DELETE 以确认批量删除",
+    confirmValue: "DELETE",
+    confirmValueLabel: "确认文本",
+    summaryHtml: `
+      <dl class="modal-summary">
+        <dt>总选择数量</dt><dd>${models.length}</dd>
+        <dt>预估可删除</dt><dd>${deletablePreview.length}</dd>
+        <dt>预估被阻止</dt><dd>${blockedPreview.length}</dd>
+      </dl>
+      <div class="dependency-block"><strong>选择列表</strong><table><thead><tr><th>Model ID</th><th>Status</th><th>预检</th></tr></thead><tbody>${models.map((model) => `
+        <tr><td>${escapeHtml(model.model_id)}</td><td>${escapeHtml(isDefaultModel(model) ? "Default" : model.status || "--")}</td><td>${isDefaultModel(model) ? "Blocked: Default" : "Will ask backend"}</td></tr>
+      `).join("")}</tbody></table></div>
+    `,
+  });
+  if (!confirmed) return;
+  const payload = await api("/api/model-studio/models/delete-batch", {
+    method: "POST",
+    body: JSON.stringify({ modelIds }),
+  });
+  const result = payload.result || {};
+  studio.selectedModelIds.clear();
+  await loadModels();
+  window.alert([
+    `批量删除完成`,
+    `Deleted: ${(result.deleted || []).length}`,
+    `Blocked: ${(result.blocked || []).length}`,
+    ...(result.blocked || []).map((item) => `BLOCKED ${item.modelId}: ${item.reason}`),
+    `Failed: ${(result.failed || []).length}`,
+    ...(result.failed || []).map((item) => `FAILED ${item.modelId}: ${item.reason}`),
+  ].join("\n"));
 }
 
 async function showModelDetail(modelId) {
@@ -1085,6 +1167,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById(id)?.addEventListener("input", () => loadModels().catch((error) => toast(error.message)));
     document.getElementById(id)?.addEventListener("change", () => loadModels().catch((error) => toast(error.message)));
   });
+  $("#selectAllModels")?.addEventListener("change", (event) => {
+    if (event.target.checked) studio.currentModelIds.forEach((id) => studio.selectedModelIds.add(id));
+    else studio.currentModelIds.forEach((id) => studio.selectedModelIds.delete(id));
+    document.querySelectorAll("[data-model-select]").forEach((input) => {
+      input.checked = studio.selectedModelIds.has(input.dataset.modelSelect);
+    });
+    renderModelBulkBar();
+  });
+  $("#deleteSelectedModels")?.addEventListener("click", () => deleteSelectedModelsPermanently().catch((error) => toast(error.message)));
   document.querySelectorAll("[data-prep-step]").forEach((button) => {
     button.addEventListener("click", () => setPrepStep(button.dataset.prepStep));
   });

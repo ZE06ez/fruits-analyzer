@@ -1397,6 +1397,32 @@ class ModelStudioService:
         self.log("model.delete", "model", model_id, "Model permanently deleted")
         return {"modelId": model_id, "deleted": True, "deletedPaths": [str(path) for path in paths]}
 
+    def delete_models_permanently_batch(self, model_ids: list[str]) -> dict:
+        seen: set[str] = set()
+        requested = []
+        for model_id in model_ids or []:
+            model_id = str(model_id or "").strip()
+            if model_id and model_id not in seen:
+                seen.add(model_id)
+                requested.append(model_id)
+        deleted = []
+        blocked = []
+        failed = []
+        for model_id in requested:
+            try:
+                result = self.delete_model_permanently(model_id, confirm=model_id)
+                deleted.append(result)
+            except ModelStudioError as exc:
+                blocked.append({"modelId": model_id, "reason": str(exc)})
+            except Exception as exc:
+                failed.append({"modelId": model_id, "reason": str(exc)})
+        return {
+            "requested": requested,
+            "deleted": deleted,
+            "blocked": blocked,
+            "failed": failed,
+        }
+
     def set_default_model(self, model_id: str) -> dict:
         with self._lock:
             with self.connect() as conn:

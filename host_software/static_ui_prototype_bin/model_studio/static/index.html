@@ -398,6 +398,11 @@
           <select id="modelTargetFilter"><option value="">Target</option><option value="ssc">SSC</option><option value="ta">TA</option><option value="ph">pH</option></select>
           <select id="modelStatusFilter"><option value="">All Status</option><option>Candidate</option><option>Validated</option><option>Published</option><option>Default</option><option>Archived</option></select>
         </div>
+        <div id="modelBulkBar" class="bulk-bar" hidden>
+          <label><input id="selectAllModels" type="checkbox" /> 全选当前列表</label>
+          <span id="modelBulkCount">已选择 0 个</span>
+          <button id="deleteSelectedModels" class="danger-button" type="button">批量永久删除</button>
+        </div>
         <div class="form-grid">
           <label>模型显示名称<input id="publishDisplayName" placeholder="Blueberry Duke SSC Final" /></label>
           <label>显示版本<input id="publishVersion" placeholder="v1.0.0" /></label>

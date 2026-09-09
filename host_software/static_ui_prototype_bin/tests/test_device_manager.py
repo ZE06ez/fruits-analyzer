@@ -406,7 +406,8 @@ class DeviceManagerTests(unittest.TestCase):
         readiness = manager.capture_readiness(payload)
 
         self.assertFalse(readiness["ready"])
-        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("SAMPLE_STAGE_NOT_READY", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", [item.get("detailCode") for item in readiness["blockingReasons"]])
         with self.assertRaises(CameraIntegrationRequired):
             manager.start_capture("S-DM-MV", payload=payload)
 
@@ -433,7 +434,8 @@ class DeviceManagerTests(unittest.TestCase):
         })
 
         self.assertFalse(readiness["ready"])
-        self.assertIn("RGB_SCIENTIFIC_TRANSPORT_LOSSY", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("CAMERA_NOT_READY", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("RGB_SCIENTIFIC_TRANSPORT_LOSSY", [item.get("detailCode") for item in readiness["blockingReasons"]])
         self.assertFalse(readiness["capabilities"]["rgbScientificStrictLossless"])
 
     def test_emergency_stop_and_fault_clear_update_state(self):

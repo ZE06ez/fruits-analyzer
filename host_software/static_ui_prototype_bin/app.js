@@ -1598,10 +1598,11 @@ function updateDevicePreparationControls() {
   const hint = ready ? "离线验证可用；真实采集仍需正式保存流程与采集协调器。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
   $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
   $("#startWorkflow") && ($("#startWorkflow").title = hint);
-  $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
-  $("#createSampleInline") && ($("#createSampleInline").title = hint);
-  $("#createNewSample") && ($("#createNewSample").disabled = !ready);
-  $("#createNewSample") && ($("#createNewSample").title = hint);
+  const createHint = "新建样品只需要样品名称、种类/品种和保存位置；硬件 readiness 会在真实采集前单独检查。";
+  $("#createSampleInline") && ($("#createSampleInline").disabled = false);
+  $("#createSampleInline") && ($("#createSampleInline").title = createHint);
+  $("#createNewSample") && ($("#createNewSample").disabled = false);
+  $("#createNewSample") && ($("#createNewSample").title = createHint);
   $("#enterAnalysisFromCapture") && ($("#enterAnalysisFromCapture").disabled = !ready || !state.analysisDataDir);
   document.querySelectorAll("[data-step]").forEach((button) => {
     button.disabled = !ready;
@@ -2187,6 +2188,7 @@ async function runUnifiedDeviceCheck() {
     setText("statusNote", "设备检查完成：STM32、RGB、DVP2 已按独立硬件域分别检查；真实采集不可用。");
     addLog("一键设备检查完成：STM32 离线不会阻断 RGB/DVP2 检查；相机预览与参数能力不等于真实采集就绪。");
     await syncDevicePreparation();
+    await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
   } catch (error) {
     const checks = checksFromHardwareStatus(state.hardwareStatus);
     checks.controller = {
@@ -3158,6 +3160,7 @@ async function confirmCalibrationCheck() {
   renderCalibrationStatus();
   addLog("采集前标定检查已人工确认通过；不代表完整几何或尺寸标定完成。");
   await syncDevicePreparation();
+  await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
 }
 
 function collectTrueCapturePayload() {
@@ -3189,8 +3192,8 @@ function renderTrueCaptureReadiness(readiness = state.trueCaptureReadiness) {
   state.trueCaptureReadiness = readiness || state.trueCaptureReadiness;
   const ready = Boolean(state.trueCaptureReadiness?.ready);
   const reasons = state.trueCaptureReadiness?.blockingReasons || [];
-  const firstReason = reasons[0]?.code || reasons[0]?.message || "";
-  setText("trueCaptureReadiness", ready ? "就绪" : firstReason ? `未就绪: ${firstReason}` : "未就绪");
+  const reasonText = reasons.map((item) => item.code || item.message).filter(Boolean).join(" / ");
+  setText("trueCaptureReadiness", ready ? "就绪" : reasonText ? `未就绪: ${reasonText}` : "未就绪");
   const hint = ready
     ? "当前 capture plan 满足软件 readiness；硬件验收仍需按 checklist 记录。"
     : (reasons.map((item) => item.message || item.code).filter(Boolean).join("；") || "等待样品、目录和硬件状态。");
@@ -3233,6 +3236,11 @@ async function startTrueCapture() {
   if (!requireActiveSample()) return;
   const payload = collectTrueCapturePayload();
   if (!payload) return;
+  const readiness = await refreshTrueCaptureReadiness();
+  if (!readiness?.ready) {
+    addLog("True Capture readiness 未通过，请先处理阻塞原因。", "WARN");
+    return;
+  }
   state.trueCaptureRunning = true;
   state.captureStarted = true;
   lockRotationSettings();
@@ -3679,7 +3687,6 @@ async function loadNewSampleCatalog() {
 }
 
 async function createNewSample() {
-  if (!requireDevicePreparation()) return;
   const sampleName = $("#captureSampleName")?.value.trim() || $("#newSampleName")?.value.trim() || "";
   if (!sampleName) {
     setText("newSampleHint", "样品名称必须填写。");
@@ -3771,6 +3778,7 @@ async function chooseSaveRoot() {
       setPathDisplay("#saveRootDir", selected);
       setText("sampleCreateStatus", "保存位置和图像目录已选择");
       addLog(`样品保存位置已选择: ${selected}；RGB=${state.rgbDirName}，多光谱=${state.multispectralDirName}`);
+      await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
     }
   } catch (error) {
     if (error.payload?.cancelled) {
@@ -4713,7 +4721,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
   $("#trueCaptureMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#trueCalibrationMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
-  $("#trueCalibrationId")?.addEventListener("input", () => renderTrueCaptureReadiness(state.trueCaptureReadiness));
+  $("#trueCalibrationId")?.addEventListener("input", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#operatorConfirmedReferences")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#startTrueCapture")?.addEventListener("click", () => startTrueCapture().catch((error) => addLog(error.message, "ERROR")));
   $("#cancelTrueCapture")?.addEventListener("click", () => cancelTrueCapture().catch((error) => addLog(error.message, "ERROR")));

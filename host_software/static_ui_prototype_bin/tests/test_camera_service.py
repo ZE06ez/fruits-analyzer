@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+import camera_service.dvp2_mono as dvp2_mono_module
+import camera_service.rgb_uvc as rgb_uvc_module
 from camera_service import (
     CameraCaptureError,
     CameraError,
@@ -46,6 +48,18 @@ class FakeCv2:
         if code != FakeCv2.COLOR_BGR2RGB:
             raise ValueError("unexpected conversion")
         return frame[:, :, ::-1].copy()
+
+
+class FakeMutex:
+    def __init__(self, acquired: bool = True) -> None:
+        self.acquire_result = acquired
+        self.released = False
+
+    def acquire(self) -> bool:
+        return self.acquire_result
+
+    def release(self) -> None:
+        self.released = True
 
 
 class FakeCv2DirectShowEncoded(FakeCv2):
@@ -516,6 +530,27 @@ class CameraServiceTests(unittest.TestCase):
         self.assertFalse(camera.is_open)
         self.assertTrue(capture.released)
 
+    def test_rgb_busy_by_other_process_is_distinct_from_not_detected(self):
+        original_mutex = rgb_uvc_module.camera_device_mutex
+        try:
+            rgb_uvc_module.camera_device_mutex = lambda role, identity: FakeMutex(False)
+            camera = RgbUvcCamera(
+                config={"deviceStableId": "USB\\VID_FAKE&PID_FAKE\\SERIAL1", "deviceIndex": 1},
+                cv2_module=FakeCv2,
+                capture_factory=lambda index: FakeCapture(),
+            )
+
+            with self.assertRaises(CameraOpenError):
+                camera.open()
+
+            status = camera.get_status().to_dict()
+            self.assertTrue(status["detected"])
+            self.assertFalse(status["available"])
+            self.assertEqual(status["statusCode"], "BUSY_BY_OTHER_PROCESS")
+            self.assertIn("另一个 FruitTasteAnalyzer", status["error"])
+        finally:
+            rgb_uvc_module.camera_device_mutex = original_mutex
+
     def test_rgb_exposure_unsupported_when_driver_rejects_property(self):
         camera = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(set_ok=False))
 
@@ -656,6 +691,26 @@ class CameraServiceTests(unittest.TestCase):
             self.assertFalse(status["available"])
             self.assertIn("BasedCam3", status["error"])
 
+    def test_dvp2_busy_by_other_process_is_distinct_from_not_detected(self):
+        original_mutex = dvp2_mono_module.camera_device_mutex
+        try:
+            dvp2_mono_module.camera_device_mutex = lambda role, identity: FakeMutex(False)
+            with tempfile.TemporaryDirectory(prefix="dvp2_busy_") as tmp:
+                (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+                binding = FakeDvp2Binding()
+                camera = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+
+                with self.assertRaises(CameraOpenError):
+                    camera.open()
+
+                status = camera.get_status().to_dict()
+                self.assertTrue(status["detected"])
+                self.assertFalse(status["available"])
+                self.assertEqual(status["statusCode"], "BUSY_BY_OTHER_PROCESS")
+                self.assertIn("另一个 FruitTasteAnalyzer", status["error"])
+        finally:
+            dvp2_mono_module.camera_device_mutex = original_mutex
+
     def test_find_dvp2_sdk_uses_configured_directory(self):
         with tempfile.TemporaryDirectory(prefix="dvp2_find_") as tmp:
             dll = Path(tmp) / "DVPCamera64.dll"
@@ -680,6 +735,24 @@ class CameraServiceTests(unittest.TestCase):
             self.assertEqual(status["multispectral"]["transport"], "GigE/DVP2")
             self.assertEqual(checks["rgbCamera"]["status"], "passed")
             self.assertEqual(checks["multispectralCamera"]["status"], "sdk_missing")
+
+    def test_camera_manager_release_all_closes_cameras(self):
+        rgb_capture = FakeCapture()
+        rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: rgb_capture)
+        with tempfile.TemporaryDirectory(prefix="dvp2_release_") as tmp:
+            (Path(tmp) / "DVPCamera64.dll").write_bytes(b"stub")
+            binding = FakeDvp2Binding()
+            multi = Dvp2MonoCamera(sdk_dir=tmp, binding_factory=lambda path: binding)
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=multi)
+
+            rgb.open()
+            multi.open()
+            manager.release_all()
+
+            self.assertFalse(rgb.is_open)
+            self.assertFalse(multi.is_open)
+            self.assertTrue(rgb_capture.released)
+            self.assertEqual(binding.close_count, 1)
 
     def test_camera_manager_applies_dynamic_rgb_settings_without_restart(self):
         capture = FakeCapture()
