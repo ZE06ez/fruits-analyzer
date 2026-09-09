@@ -9,10 +9,17 @@
 3. `docs/ARCHITECTURE.md`
 4. `docs/CHANGELOG.md`
 
+修改主程序 UI 前还必须读：
+
+5. `docs/UI_ARCHITECTURE.md`
+6. `docs/UI_DESIGN_SYSTEM.md`
+
 开发规则：
 
 - 修改代码前先确认当前真实实现，不要只根据旧聊天或旧 README 判断。
 - 不允许为了新功能随意推翻现有 UI；优先在现有界面和流程上小范围演进。
+- 主程序 UI 必须保持 Operator Workflow 与 Engineer Workflow 分离；禁止把工程调试功能重新堆回普通检测流程。
+- 禁止无理由修改软件已有 Dark Slate + Purple/Fuchsia/Cyan 品牌配色体系。
 - 优先最小范围修改，避免无关重构和格式 churn。
 - 文件夹/文件路径输入优先使用系统原生选择器和只读路径显示，避免要求普通用户手动输入完整 Windows 路径。
 - 不允许把 mock、离线模拟、占位按钮写成真实功能。

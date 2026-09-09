@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-10 UI-0/UI-1 Main Workstation IA + Instrument Visual Refinement
+
+- 修改内容：主检测软件左侧导航从底层 Task Tree 收敛为五个一级工作区：检测工作台、样品与记录、设备与维护、模型训练、系统设置；Model Studio 继续作为独立 `/model-studio` 工作空间，不合并回主检测页。
+- 修改内容：新增 Operator Workbench 总览卡，显示当前样品、STM32/RGB/多光谱/Calibration 就绪状态、样品->设备->采集->分析->结果流程，以及基于现有 state 派生的下一步 Primary Action。该按钮只转发到现有 UI 入口，不绕过 readiness、disabled 或后端 gate。
+- 修改内容：调整主界面默认入口为“检测工作台”；设备维护、光源/滤光轮、系统设置等页面默认隐藏全局相机预览，相机检查、相机维护和采集页面保留预览区域。
+- 修改内容：新增 `docs/UI_ARCHITECTURE.md` 和 `docs/UI_DESIGN_SYSTEM.md`，固化 Operator/Engineer 分层、Workspace 边界、Surface/Button/Input/Status/Navigation/Modal/Motion 视觉契约；同步 `AGENTS.md` 要求后续主程序 UI 修改先阅读这两份文档。
+- 修改内容：在不更换原有 Dark Slate + Purple/Fuchsia/Cyan 配色体系的前提下，为主界面新增兼容 design token：surface、border、shadow、radius、spacing、control height 和 transition；统一 Primary/Secondary/Ghost/Danger/Disabled/Focus 状态，降低卡片阴影和导航 active 饱和度。
+- 修改文件：`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/styles.css`、`host_software/static_ui_prototype_bin/app.js`、`docs/UI_ARCHITECTURE.md`、`docs/UI_DESIGN_SYSTEM.md`、`AGENTS.md`、相关项目文档。
+- 是否影响原有功能：不修改后端 API、Camera Adapter、DVP2、STM32 protocol、CaptureCoordinator、scientific PNG gate、Model Studio 数据集/训练/发布语义或模型预测逻辑；不把 offline/demo、preview JPEG 或未验收硬件标记为真实能力。
+
 ## 2026-09-10 P1B-8.1 Follow-up: Sample Gate, Model Batch Delete, Single Instance
 
 - 修改内容：`/api/new-sample` 和主 UI “新建样品”不再依赖设备准备状态，只校验样品名称、果种/品种和保存根目录；True Hardware Capture 仍由 `/api/capture/readiness` 和 `/api/capture/start` 严格 gate，并显示所有阻塞原因。existing CalibrationSet 模式要求填写当前样品目录下存在的 `calibrationId`，不再提示可留空。

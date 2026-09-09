@@ -104,6 +104,8 @@
 | 已选择模型但尚未预测时不应显示“未接入” | 已实现 | 主工作台加载兼容模型后立即显示真实 display_name、version、algorithm、preprocessing，并标记“已选择，等待预测” |
 | 本地样品目录缺少 fruit_type / variety metadata 时必须提示 Sample Scope | 已实现 | `/api/sample-folder` 对有效但缺 scope 的目录返回 `requiresSampleScope` 和可选 fruit/variety 来源；用户选择后写入当前会话并重新加载兼容模型，不做中英文 alias 猜测 |
 | 保留当前 UI，不为新功能推倒重做 | 已确认 | 本次上下文整理明确为设计约束 |
+| 主检测软件应区分 Operator Workflow 与 Engineer Workflow | 已实现/持续约束 | UI-0/UI-1 后左侧一级导航整理为检测工作台、样品与记录、设备与维护、模型训练、系统设置；普通检测工作台显示当前样品、系统就绪、流程步骤和下一步 Primary Action，工程调试集中到设备与维护 |
+| 主检测软件必须保持现有品牌配色体系 | 已实现/持续约束 | `docs/UI_DESIGN_SYSTEM.md` 固化 Dark Slate + Purple/Fuchsia/Cyan 颜色体系；本轮只调整 surface、border、shadow、radius、spacing、button/input/status 状态，不换主题 |
 | 后续重要架构/需求/功能修改要同步文档 | 已确认 | 见 `AGENTS.md` |
 
 ## 待确认需求

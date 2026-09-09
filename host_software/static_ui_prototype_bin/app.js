@@ -161,33 +161,33 @@ const DEFAULT_ROTATION_SETTINGS = {
 };
 
 const titles = {
-  motor: "设备准备",
-  light: "光源自检",
-  camera: "相机自检",
+  motor: "设备与维护",
+  light: "光源与滤光轮",
+  camera: "相机检查",
   "reserved-1": "预留功能",
   "reserved-2": "预留功能",
-  capture: "样品采集",
-  shape: "形态分析",
+  capture: "检测工作台",
+  shape: "智能分析",
   sugar: "糖度预测",
   acid: "酸度与 pH 分析",
-  taste: "口感评级",
-  "camera-settings": "相机设置",
-  "light-settings": "光源设置",
+  taste: "检测结果",
+  "camera-settings": "相机维护",
+  "light-settings": "系统设置",
   "reserved-3": "算法参数",
   "reserved-4": "通信设置",
 };
 
 const moduleLayoutModes = {
-  motor: "capture",
-  light: "capture",
+  motor: "analysis",
+  light: "analysis",
   camera: "capture",
   capture: "capture",
   "camera-settings": "capture",
-  "light-settings": "capture",
-  "reserved-1": "capture",
-  "reserved-2": "capture",
-  "reserved-3": "capture",
-  "reserved-4": "capture",
+  "light-settings": "analysis",
+  "reserved-1": "analysis",
+  "reserved-2": "analysis",
+  "reserved-3": "analysis",
+  "reserved-4": "analysis",
   shape: "analysis",
   sugar: "analysis",
   acid: "analysis",
@@ -1578,11 +1578,119 @@ function deriveSystemStatus() {
 function renderSystemStatus() {
   const status = deriveSystemStatus();
   const node = $("#systemStatus");
-  if (!node) return status;
-  node.textContent = `当前状态 · ${status.label}`;
-  node.dataset.status = status.tone;
-  node.title = status.detail || status.label;
+  if (node) {
+    node.textContent = `当前状态 · ${status.label}`;
+    node.dataset.status = status.tone;
+    node.title = status.detail || status.label;
+  }
+  renderOperatorOverview(status);
   return status;
+}
+
+function setOverviewStatus(id, status, text = null) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.dataset.status = status;
+  if (text !== null) node.textContent = text;
+}
+
+function cameraReadiness(camera) {
+  if (!camera) return "waiting";
+  if (camera.available || camera.opened || camera.streaming) return "ready";
+  if (camera.detected) return "warning";
+  if (camera.error || camera.lastError) return "error";
+  return "waiting";
+}
+
+function renderOperatorOverview(status = deriveSystemStatus()) {
+  setText("operatorSampleName", state.sampleName || "未创建样品");
+  setText(
+    "operatorSampleMeta",
+    state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请选择样品信息并创建目录"
+  );
+  setText("operatorTaskLabel", status.label || "等待");
+  const taskLabel = $("#operatorTaskLabel");
+  if (taskLabel) {
+    taskLabel.dataset.status = status.tone || "waiting";
+    taskLabel.classList.toggle("ready", ["ready", "complete"].includes(status.tone));
+  }
+  setText("operatorTaskDetail", status.detail || "等待下一步操作。");
+
+  setOverviewStatus("operatorStm32Ready", state.hardwareStatus.connected || state.devicePrep.connect ? "ready" : "waiting");
+  setOverviewStatus("operatorRgbReady", cameraReadiness(state.cameraStatus.rgb));
+  setOverviewStatus("operatorSpectralReady", cameraReadiness(state.cameraStatus.multispectral));
+  setOverviewStatus("operatorCalibrationReady", state.calibrationStatus === "passed" ? "ready" : "warning");
+
+  setOverviewStatus("workflowSample", hasActiveSample() ? "ready" : "running");
+  setOverviewStatus("workflowDevice", isDevicePreparationReady() ? "ready" : state.devicePrep.connect ? "warning" : "waiting");
+  setOverviewStatus(
+    "workflowCapture",
+    state.trueCaptureRunning || state.captureCompleting ? "running" : state.currentCaptureValid || state.analysisDataDir ? "ready" : hasActiveSample() ? "running" : "waiting"
+  );
+  setOverviewStatus(
+    "workflowAnalysis",
+    state.systemTask === "shape" || state.systemTask === "ssc" || state.systemTask === "acid" ? "running" : state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph) ? "ready" : "waiting"
+  );
+  setOverviewStatus("workflowResult", state.grade ? "ready" : "waiting");
+
+  const action = $("#operatorPrimaryAction");
+  if (!action) return;
+  if (!hasActiveSample()) {
+    action.textContent = "新建样品";
+    action.dataset.nextAction = "sample";
+    action.disabled = false;
+  } else if (!isDevicePreparationReady()) {
+    action.textContent = "开始设备检查";
+    action.dataset.nextAction = "device";
+    action.disabled = Boolean(state.deviceCheckRunning);
+  } else if (!state.currentCaptureValid && !state.analysisDataDir) {
+    action.textContent = "开始采集";
+    action.dataset.nextAction = "capture";
+    action.disabled = false;
+  } else if (!state.shapeDone && state.analysisDataDir) {
+    action.textContent = "开始分析";
+    action.dataset.nextAction = "analysis";
+    action.disabled = false;
+  } else if (!state.grade) {
+    action.textContent = "查看检测结果";
+    action.dataset.nextAction = "result";
+    action.disabled = false;
+  } else {
+    action.textContent = "生成报告";
+    action.dataset.nextAction = "report";
+    action.disabled = false;
+  }
+}
+
+function runOperatorPrimaryAction() {
+  const action = $("#operatorPrimaryAction")?.dataset.nextAction || "sample";
+  if (action === "sample") {
+    switchView("capture", "sample");
+    $("#captureSampleName")?.focus();
+    return;
+  }
+  if (action === "device") {
+    switchView("motor", "connect");
+    $("#startDeviceCheck")?.click();
+    return;
+  }
+  if (action === "capture") {
+    switchView("capture", "sample");
+    const start = $("#startTrueCapture");
+    if (start && !start.disabled) start.click();
+    return;
+  }
+  if (action === "analysis") {
+    switchView("shape", "load-rgbd");
+    const run = $("#runShapeAnalysis");
+    if (run && !run.disabled) run.click();
+    return;
+  }
+  if (action === "report") {
+    $("#exportReport")?.click();
+    return;
+  }
+  switchView("taste", "summary");
 }
 
 function requireDevicePreparation(message = "请先完成当前离线设备准备检查：连接、电机和光源。相机真实采集与完整标定将在真实采集流程中单独检查。") {
@@ -4539,7 +4647,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.querySelectorAll(".task-step").forEach((button) => {
     button.dataset.status = button.dataset.status || "idle";
-    button.addEventListener("click", () => switchView(button.dataset.view, button.dataset.stepKey));
+    if (button.dataset.view) {
+      button.addEventListener("click", () => switchView(button.dataset.view, button.dataset.stepKey));
+    }
   });
 
   document.querySelectorAll("[data-test]").forEach((button) => {
@@ -4697,6 +4807,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll("[data-camera-settings-tab]").forEach((button) => {
     button.addEventListener("click", () => setCameraSettingsTab(button.dataset.cameraSettingsTab));
   });
+  $("#operatorPrimaryAction")?.addEventListener("click", runOperatorPrimaryAction);
   ["#cameraAutoExposureEnabled", "#cameraGainAuto", "#cameraAutoWhiteBalanceEnabled"].forEach((selector) => {
     $(selector)?.addEventListener("change", updateCameraParameterControlState);
   });
@@ -4752,6 +4863,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("#modelStudioButton")?.addEventListener("click", openModelStudio);
+  $("#modelStudioNavButton")?.addEventListener("click", openModelStudio);
   $("#exitButton")?.addEventListener("click", shutdownApp);
 
   window.setInterval(updateClock, 1000);

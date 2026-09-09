@@ -75,7 +75,9 @@ UI
 关键文件：
 
 - `host_software/static_ui_prototype_bin/index.html`：主检测工作站 UI。
-- `host_software/static_ui_prototype_bin/app.js`：前端状态机、全局系统状态派生、采集/分析布局切换、样品流程、模型普通/高级展示、分析调用、结果渲染。
+- `host_software/static_ui_prototype_bin/app.js`：前端状态机、全局系统状态派生、Operator Workbench 总览派生、采集/分析布局切换、样品流程、模型普通/高级展示、分析调用、结果渲染。
+- `docs/UI_ARCHITECTURE.md`：主检测软件 Operator/Engineer 工作区边界、一级导航和 Progressive Disclosure 约束。
+- `docs/UI_DESIGN_SYSTEM.md`：主检测软件 Dark Slate + Purple/Fuchsia/Cyan 视觉系统和控件状态契约。
 - `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
 - `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 串口服务，115200 8N1；保留旧两字节兼容 `send_command()`，并提供 raw `write_bytes()`/`read_bytes()` 给 current-firmware protocol adapter。
 - `host_software/static_ui_prototype_bin/stm32_protocol.py`：P1B-7.5A.1 AA55 current-firmware protocol 边界；包含 `CURRENT_STM32_FIRMWARE_PROFILE`、`CURRENT_FILTER_WHEEL_MAPPING`、`Stm32ProtocolProfile`、CRC16-CCITT-FALSE、AA55 codec、stream parser、STATUS/INFO decode 和 `FilterWheelMapping`。
@@ -194,6 +196,7 @@ UI
 | 样品多角度旋转拍摄计划 | DONE/MOCK | `rotation_plan.py` 计算视角、实际间隔、闭合 View 和 Home 状态；当前无真实样品台电机 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 选择父目录，再用 `/api/inspect-image-folders` 扫描一级子目录；用户确认 RGB/多光谱目录后由 `/api/sample-folder` 检查 |
 | 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
+| 主程序信息架构与仪器级视觉系统 | DONE/PARTIAL | UI-0/UI-1 后左侧导航收敛为检测工作台、样品与记录、设备与维护、模型训练、系统设置五个一级工作区；新增 Operator Workbench 总览卡，基于现有 state 显示当前样品、系统就绪、流程步骤和下一步 Primary Action；视觉层新增兼容 design token 与 Primary/Secondary/Ghost/Danger/Disabled/Focus 规则。底层后端、相机、STM32、采集、模型逻辑未改变 |
 | 全局系统状态 | DONE | `app.js deriveSystemStatus()` 基于设备、样品、离线验证、形态任务、SSC/TA/pH 分析和预测结果派生顶栏状态；不会显示假的真实采集状态 |
 | 一键设备检查 | DONE/PARTIAL | 设备准备页“开始设备检查”调用 `/api/device/check`，STM32、RGB、DVP2 独立检查；STM32 未连接或缺 pyserial 不阻断 RGB/DVP2；RGB 通过 `CameraManager`/`RgbUvcCamera` 按当前配置 probe，可在实机上显示 3840x2160 @25fps；probe 后释放句柄不会清空 `detected/available`；多光谱状态来自 DVP2 adapter，已接入 probe/预览/参数能力，但不代表完整真实采集已就绪；标定需人工确认 |
 | 模型普通/高级模式 | DONE | 样品采集页新增检测模型摘要，默认隐藏 model_id 等高级选择；更换模型后显示原有手动下拉框，继续复用 Default/generic/model_missing 逻辑 |
@@ -225,6 +228,7 @@ UI
 这些决策已经由代码、测试或项目要求体现，后续不要随意推翻：
 
 - 不推倒现有 UI 重做；在当前三栏工作站界面基础上优化。
+- 主程序 UI 后续修改必须遵循 `docs/UI_ARCHITECTURE.md` 和 `docs/UI_DESIGN_SYSTEM.md`；保持 Operator Workflow 与 Engineer Workflow 分离，不把工程调试入口重新堆回普通检测流程，不无理由改变现有 Dark Slate + Purple/Fuchsia/Cyan 配色体系。
 - 主程序继续以 Python 上位机为核心。
 - 当前前端是静态 HTML/CSS/JS，后端是 Python 本地 HTTPServer；历史文档中的 Vue/FastAPI/Electron 是早期建议，不是当前实现。
 - RGB 相机第一阶段走 OpenCV `cv2.CAP_DSHOW`/Windows DirectShow/UVC，CameraService 返回 RGB `uint8` numpy 帧，不直接决定样品目录或文件名。当前电脑实机验证默认配置为 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，但该 index 是配置层默认值，不是跨电脑稳定身份。
