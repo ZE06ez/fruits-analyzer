@@ -12,6 +12,7 @@ from .errors import (
     CameraSettingUnsupported,
     CameraUnavailableError,
 )
+from .rgb_scientific import classify_rgb_scientific_transport
 
 
 class RgbUvcCamera:
@@ -263,6 +264,58 @@ class RgbUvcCamera:
             "status": self.get_status().to_dict(),
             "settingResults": dict(self._setting_results),
         }
+
+    def probe_scientific_modes(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        original = self.config
+        for candidate in candidates:
+            requested = RgbCameraConfig.from_dict({**original.to_dict(), **candidate})
+            row: dict[str, Any] = {
+                "requestedFourcc": requested.fourcc,
+                "requestedWidth": requested.width,
+                "requestedHeight": requested.height,
+                "requestedFps": requested.fps,
+                "frameRead": False,
+                "strictLossless": False,
+            }
+            try:
+                self.apply_config(requested, restart=True)
+                status = self.get_status().to_dict()
+                frame = self.capture_frame()
+                actual = status.get("actual") or {}
+                policy = classify_rgb_scientific_transport(
+                    requested_fourcc=requested.fourcc,
+                    actual_fourcc=actual.get("fourcc"),
+                    color_space=frame.color_space,
+                    dtype=frame.dtype,
+                )
+                row.update({
+                    "actualFourcc": actual.get("fourcc") or "",
+                    "actualWidth": actual.get("width"),
+                    "actualHeight": actual.get("height"),
+                    "actualFps": actual.get("fps"),
+                    "frameRead": True,
+                    "frameShape": tuple(int(value) for value in frame.shape),
+                    "frameDtype": frame.dtype,
+                    "colorSpace": frame.color_space,
+                    **policy,
+                    "strictLossless": bool(policy.get("scientificStrictLossless")),
+                })
+            except Exception as exc:
+                row["error"] = str(exc)
+            finally:
+                self.close()
+            rows.append(row)
+            if not row.get("frameRead") and "open failed" in str(row.get("error") or "").lower():
+                break
+        try:
+            self.apply_config(original, restart=True)
+        except Exception:
+            self.close()
+            self.configure(original)
+        finally:
+            self.close()
+        return rows
 
     def probe_available(self) -> bool:
         self._log(f"RGB probe start: device_index={self.device_index}")

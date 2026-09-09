@@ -12,6 +12,7 @@ from camera_service import (
     CameraError,
     CameraFrame,
     CameraManager,
+    CameraSettingsStore,
     CameraOpenError,
     CameraSdkUnavailableError,
     CameraSettingUnsupported,
@@ -780,7 +781,9 @@ class CameraServiceTests(unittest.TestCase):
         capture = FakeCapture(frame=np.zeros((12, 16, 3), dtype=np.uint8))
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: capture)
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
-            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 3840, "height": 2160, "fps": 5, "fourcc": "RGB3"}})
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
 
             frame, meta = manager.capture_rgb_frame()
 
@@ -789,10 +792,12 @@ class CameraServiceTests(unittest.TestCase):
             self.assertTrue(capture.released)
             self.assertTrue(meta["openedForCapture"])
             self.assertFalse(meta["previewWasRunning"])
+            self.assertEqual(meta["actualFourcc"], "RGB3")
+            self.assertTrue(meta["scientificStrictLossless"])
             self.assertEqual(meta["device"]["deviceIndex"], 1)
             self.assertEqual(meta["requestedSettings"]["width"], 3840)
 
-    def test_camera_manager_capture_rgb_frame_reuses_running_preview_handle(self):
+    def test_camera_manager_capture_rgb_frame_pauses_preview_for_scientific_handle(self):
         captures: list[FakeCapture] = []
 
         def factory(index):
@@ -802,7 +807,9 @@ class CameraServiceTests(unittest.TestCase):
 
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=factory)
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
-            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 3840, "height": 2160, "fps": 5, "fourcc": "RGB3"}})
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
             try:
                 manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
 
@@ -811,11 +818,12 @@ class CameraServiceTests(unittest.TestCase):
                 manager.stop_rgb_preview()
 
             self.assertEqual(frame.shape, (10, 11, 3))
-            self.assertEqual(len(captures), 1)
+            self.assertGreaterEqual(len(captures), 2)
             self.assertFalse(rgb.is_open)
-            self.assertTrue(captures[0].released)
+            self.assertTrue(any(capture.released for capture in captures))
             self.assertTrue(meta["previewWasRunning"])
-            self.assertFalse(meta["openedForCapture"])
+            self.assertTrue(meta["openedForCapture"])
+            self.assertTrue(meta["scientificStrictLossless"])
 
     def test_camera_manager_rgb_preview_reports_unavailable_camera(self):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(opened=False))

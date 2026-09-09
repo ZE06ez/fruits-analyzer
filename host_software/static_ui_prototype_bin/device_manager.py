@@ -464,6 +464,29 @@ class DeviceManager:
             rgb_ready = (not plan.rgb_enabled) or bool(rgb_status.get("available"))
             if plan.rgb_enabled and not rgb_ready:
                 blocking.append({"code": "RGB_NOT_AVAILABLE", "message": rgb_status.get("error") or "RGB 相机不可用"})
+            rgb_scientific = {}
+            if plan.rgb_enabled:
+                if hasattr(self.camera_manager, "rgb_scientific_status"):
+                    try:
+                        rgb_scientific = self.camera_manager.rgb_scientific_status()
+                    except Exception as exc:
+                        rgb_scientific = {
+                            "scientificStrictLossless": False,
+                            "reason": str(exc),
+                            "sourceCompression": "unknown",
+                        }
+                else:
+                    rgb_scientific = rgb_status.get("scientificTransport") or {}
+                if rgb_scientific and not rgb_scientific.get("scientificStrictLossless"):
+                    code = (
+                        "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
+                        if rgb_scientific.get("sourceCompression") == "lossy"
+                        else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
+                    )
+                    blocking.append({
+                        "code": code,
+                        "message": "RGB 正式科学采集链路未通过 strict lossless transport 验证",
+                    })
             rgb_restore = rgb_status.get("settingsRestoreState") or {}
             if plan.rgb_enabled and rgb_restore.get("state") == "device_mismatch":
                 blocking.append({"code": "CAMERA_SETTINGS_DEVICE_MISMATCH", "message": "RGB 已保存相机参数与当前设备身份不一致"})
@@ -530,6 +553,8 @@ class DeviceManager:
                 "singleViewReady": single_view_ready,
                 "multiViewReady": multi_view_ready,
                 "rgbReady": rgb_ready,
+                "rgbScientificStrictLossless": bool(rgb_scientific.get("scientificStrictLossless")) if rgb_scientific else None,
+                "rgbScientificTransport": rgb_scientific,
                 "multispectralReady": multispectral_ready,
                 "calibrationReady": calibration_ready,
                 "filterWheelReady": filter_wheel_ready,

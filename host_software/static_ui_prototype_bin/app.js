@@ -736,7 +736,7 @@ function renderCameraSettingsStatus() {
       ? "已检测 / 预览已停止"
       : (rgb.error || "未检测到 RGB 相机");
   setText("rgbCameraStatusText", rgbStatusText);
-  setText("rgbCameraTransportText", rgb.transport || "UVC / DirectShow");
+  setText("rgbCameraTransportText", `Preview Transport: ${rgb.transport || "UVC / DirectShow"}`);
   const rgbCandidate = matchedCandidateForRole("RGB_CAMERA");
   const rgbMeta = rgbCandidate?.metadata || {};
   setText("cameraRgbVidPid", rgbMeta.vid && rgbMeta.pid ? `VID_${rgbMeta.vid} / PID_${rgbMeta.pid}` : "未提供");
@@ -751,9 +751,25 @@ function renderCameraSettingsStatus() {
   setText("rgbCameraActualResolutionText", formatCameraResolution(actual.width || rgb.resolution?.width || requested.width, actual.height || rgb.resolution?.height || requested.height));
   setText("rgbCameraActualFpsText", Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")} FPS` : `${requested.fps || 25} FPS`);
   setText("rgbCameraActualFourccText", actual.fourcc || requested.fourcc || "MJPG");
+  const scientificTransport = rgb.scientificTransport || {};
+  const scientificProfile = rgb.scientificProfile || {};
+  const scientificActual = scientificTransport.actualFourcc || scientificProfile.fourcc || "unavailable";
+  setText("rgbScientificTransportText", `Scientific Transport: ${scientificActual}`);
+  const scientificPass = scientificTransport.scientificStrictLossless === true;
+  const scientificKnown = scientificTransport.scientificStrictLossless !== undefined && scientificTransport.scientificStrictLossless !== null;
+  setText(
+    "rgbScientificLosslessText",
+    scientificPass
+      ? "Scientific Lossless: PASS"
+      : scientificKnown
+        ? "Scientific Lossless: FAIL"
+        : "Scientific Lossless: NOT VERIFIED"
+  );
   const capabilityText = {
     requested,
     actual,
+    scientificProfile,
+    scientificTransport,
     capabilities: rgb.capabilities || {},
     technicalError: rgb.technicalError || "",
   };
@@ -828,9 +844,14 @@ function renderCameraPersistenceSummary(role = null, saved = null, restoreState 
     const stateInfo = restoreState || state.cameraStatus?.[targetRole]?.settingsRestoreState || state.cameraSettings?.restoreState?.[targetRole] || {};
     node.dataset.status = stateInfo.state === "failed" || stateInfo.state === "device_mismatch" ? "error" : stateInfo.state === "partial" ? "warning" : "";
     if (targetRole === "rgb") {
+      const scientific = state.cameraStatus?.rgb?.scientificTransport || {};
+      const scientificLine = scientific.scientificStrictLossless === true
+        ? `Scientific：${escapeHtml(scientific.actualFourcc || scientific.sourcePixelFormat || "--")} / PASS`
+        : `Scientific：${escapeHtml(scientific.actualFourcc || scientific.sourcePixelFormat || "--")} / FAIL；当前 RGB 相机正式采集链路存在有损传输，禁止用于科学采集。`;
       node.innerHTML = [
         `<span>保存：${escapeHtml(savedSettings.width || "--")} x ${escapeHtml(savedSettings.height || "--")} @ ${escapeHtml(savedSettings.fps ?? "--")} FPS ${escapeHtml(savedSettings.fourcc || "--")}</span>`,
         `<span>曝光：${escapeHtml(savedSettings.autoExposureEnabled ? "Auto" : savedSettings.exposure ?? "--")}；增益：${escapeHtml(savedSettings.gainAuto ? "默认" : savedSettings.gain ?? "--")}；白平衡：${escapeHtml(savedSettings.autoWhiteBalanceEnabled ? "Auto" : savedSettings.whiteBalance ?? "--")}</span>`,
+        `<span>${scientificLine}</span>`,
         `<span>恢复：${escapeHtml(formatRestoreState(stateInfo))}</span>`,
       ].join("");
     } else {

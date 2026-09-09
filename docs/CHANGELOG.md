@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-10 P1B-8.1 RGB Strict-Lossless Scientific Capture Gate
+
+- 修改内容：新增 `camera_service/rgb_scientific.py`，集中定义 RGB scientific transport policy。`MJPG/MJPEG/JPEG/H264/H265` 判定为 lossy，`YUY2/YUYV/UYVY` 记录为 `uncompressed_but_chroma_subsampled` 但 strict lossless=false，只有 RAW Bayer/RGB24/BGR24 等已确认完整未压缩 pixel transport 才允许作为 RGB scientific source。
+- 修改内容：`CameraManager.capture_rgb_frame()` 不再把 preview MJPG 句柄直接用于正式 scientific capture；若 preview 正在运行，会先暂停/释放 preview handle，再按独立 `scientificProfile` 打开相机、读取 actual FOURCC、验证 `scientificStrictLossless=true` 后才返回帧供 Coordinator 保存 PNG。actual 回读为 MJPG 或 unknown 时分别返回 `RGB_SCIENTIFIC_TRANSPORT_LOSSY` / `RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE`，不会保存 PNG。
+- 修改内容：正式 RGB metadata 增加 `requestedFourcc`、`actualFourcc`、`sourcePixelFormat`、`sourceCompression`、`scientificStrictLossless`、`outputFormat=PNG`、`outputLossless=true`；`CaptureCoordinator` 增加第二层 guard，禁止 lossy source 进入 PNG 保存。
+- 修改内容：`DeviceManager.capture_readiness()` 增加 RGB strict-lossless gate；即使 RGB preview 可用，只要 scientific transport 未通过，True Capture readiness 仍 BLOCK。主 UI RGB 相机摘要新增 Preview Transport、Scientific Transport、Scientific Lossless，并在 FAIL 时显示禁止用于科学采集的提示。
+- 修改内容：`manual_camera_test.py` 新增 `--rgb-lossless-probe`，可对真实 RGB 相机候选 FOURCC/分辨率/FPS 做一次性 capability probe 并输出简洁表格；若设备一开始无法打开，会停止后续重复候选。当前环境本轮运行时 `device_index=1` DirectShow 打开失败，未找到 strict-lossless mode。
+- 修改文件：`host_software/static_ui_prototype_bin/camera_service/rgb_scientific.py`、`host_software/static_ui_prototype_bin/camera_service/config.py`、`host_software/static_ui_prototype_bin/camera_service/settings_store.py`、`host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`、`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/camera_service/__init__.py`、`host_software/static_ui_prototype_bin/capture_coordinator.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/manual_camera_test.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/styles.css`、相关测试与项目文档。
+- 是否影响原有功能：Preview MJPG 仍只用于浏览器预览；正式 scientific RGB capture 不再允许 `MJPG -> decode -> PNG`。不修改 DVP2 Mono8 scientific path、STM32、Filter Wheel、SampleStage、Dark/White、多波段或 Model Studio。
+
 ## 2026-09-10 P1B-8.1 Camera Settings Persistence & Restore
 
 - 修改内容：新增 `camera_service/settings_store.py` 和后端权威 `config/camera_settings.json` 配置结构，支持 JSON UTF-8 load/save/reset/migrate legacy，缺文件返回 default，损坏 JSON 返回 warning/default，保存使用 atomic replace。字段白名单限制为 RGB device identity/index、width/height/fps/fourcc、auto/manual exposure、gain、white balance 和现有几何缓存，以及 DVP2 device identity、exposure、gain；不开放 DVP2 PixelFormat/trigger/ROI 持久化。

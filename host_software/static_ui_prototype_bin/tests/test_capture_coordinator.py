@@ -58,8 +58,15 @@ class FakeCameraManager:
             "previewWasRunning": False,
             "openedForCapture": True,
             "device": {"deviceIndex": 1, "transport": "UVC/DirectShow", "backend": "opencv"},
-            "requestedSettings": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
-            "actualSettings": {"width": 3840, "height": 2160, "fps": 25.0, "fourcc": "MJPG"},
+            "requestedSettings": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 5, "fourcc": "RGB3"},
+            "actualSettings": {"width": 3840, "height": 2160, "fps": 5.0, "fourcc": "RGB3"},
+            "requestedFourcc": "RGB3",
+            "actualFourcc": "RGB3",
+            "sourcePixelFormat": "RGB3",
+            "sourceCompression": "none",
+            "scientificStrictLossless": True,
+            "outputFormat": "PNG",
+            "outputLossless": True,
             "status": {"available": True, "streaming": False},
         }
         self.multispectral_capture_metadata = multispectral_capture_metadata or {
@@ -548,7 +555,44 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(frame_meta["pixelOrder"], "RGB")
             self.assertEqual(frame_meta["sourcePixelOrder"], "BGR")
             self.assertEqual(frame_meta["device"]["deviceIndex"], 1)
+            self.assertEqual(frame_meta["requestedFourcc"], "RGB3")
+            self.assertEqual(frame_meta["actualFourcc"], "RGB3")
+            self.assertTrue(frame_meta["scientificStrictLossless"])
+            self.assertEqual(frame_meta["outputFormat"], "PNG")
+            self.assertTrue(frame_meta["outputLossless"])
             self.assert_no_jpeg_metadata_references(result["metadata"])
+
+    def test_rgb_capture_refuses_lossy_transport_before_png_save(self):
+        lossy_meta = {
+            "previewWasRunning": False,
+            "openedForCapture": True,
+            "device": {"deviceIndex": 1, "transport": "UVC/DirectShow", "backend": "opencv"},
+            "requestedSettings": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "actualSettings": {"width": 3840, "height": 2160, "fps": 25.0, "fourcc": "MJPG"},
+            "requestedFourcc": "MJPG",
+            "actualFourcc": "MJPG",
+            "sourcePixelFormat": "MJPG",
+            "sourceCompression": "lossy",
+            "scientificStrictLossless": False,
+            "outputFormat": "PNG",
+            "outputLossless": True,
+            "status": {"available": True, "streaming": False},
+        }
+        camera = FakeCameraManager(capture_metadata=lossy_meta)
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="capture_rgb_lossy_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                capture_id_factory=lambda: "cap-rgb-lossy",
+            )
+
+            result = coordinator.run_rgb_capture(sample_id="S-RGB", output_dir=tmp)
+
+            self.assertEqual(result["state"], "failed")
+            self.assertEqual(result["error"]["code"], "RGB_SCIENTIFIC_TRANSPORT_LOSSY")
+            self.assertFalse((Path(tmp) / "rgb" / "rgb_view_000.png").exists())
+            self.assertEqual(hardware.safe_stop_count, 1)
 
     def test_rgb_capture_rejects_empty_frame_and_safe_stops(self):
         camera = FakeCameraManager(frame=CameraFrame(

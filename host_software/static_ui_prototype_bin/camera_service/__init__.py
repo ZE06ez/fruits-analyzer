@@ -12,6 +12,7 @@ from .errors import (
 )
 from .focus_quality import FocusEvaluator, FocusMetrics, FocusResult, FocusRoi, FocusThresholdConfig
 from .manager import CameraManager
+from .rgb_scientific import classify_rgb_scientific_transport
 from .rgb_uvc import RgbUvcCamera
 from .settings_store import CameraSettingsStore, default_camera_settings_path
 
@@ -31,6 +32,7 @@ __all__ = [
     "Dvp2MonoCamera",
     "RgbUvcCamera",
     "RgbCameraConfig",
+    "classify_rgb_scientific_transport",
     "find_dvp2_sdk",
     "FocusEvaluator",
     "FocusMetrics",

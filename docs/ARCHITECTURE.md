@@ -118,6 +118,12 @@ POST /api/camera/multispectral/apply-settings    body may include persist=true
 
 restore state 固定为 `not_attempted/restored/partial/failed/device_mismatch`，并带 `lastRestoredAt`、`restoreError`、`settingsSource` 和 per-setting results。DVP2 restore 后必须通过 `set_exposure()`/`set_gain()` 的真实 get readback 更新 actual；RGB DirectShow 参数按单项 accepted/unsupported/actual 记录，非关键项 unsupported 不会伪造成功。设备身份 mismatch 返回 `CAMERA_SETTINGS_DEVICE_MISMATCH`，True Capture readiness 对 mismatch 作为 blocker，对普通 restore failure 作为 warning；无保存配置时使用 `settingsSource=default`，不构成 blocker。
 
+### RGB Strict Scientific Capture
+
+P1B-8.1 起 RGB preview profile 与 RGB scientific profile 分开。Preview 可继续使用 MJPG 并输出浏览器 JPEG cache；正式 scientific capture 通过 `CameraManager.capture_rgb_frame()` 暂停/释放 preview handle，按 `CameraSettingsStore.rgb.scientificProfile` 或当前配置打开独立 scientific mode，读取 actual FOURCC 后调用 `rgb_scientific.classify_rgb_scientific_transport()`。`MJPG/MJPEG/JPEG/H264/H265` 直接判为 lossy，`YUY2/YUYV/UYVY` 判为 `uncompressed_but_chroma_subsampled` 且 strict lossless=false，RAW Bayer/RGB24/BGR24 等已确认完整未压缩 transport 才可通过。失败时在 PNG 保存前抛出 `RGB_SCIENTIFIC_TRANSPORT_LOSSY` 或 `RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE`；`CaptureCoordinator` 也会读取 capture metadata 做第二层 guard。
+
+RGB frame metadata 增加 `requestedFourcc`、`actualFourcc`、`sourcePixelFormat`、`sourceCompression`、`scientificStrictLossless`、`outputFormat=PNG` 和 `outputLossless=true`。`DeviceManager.capture_readiness()` 调用 `CameraManager.rgb_scientific_status()`，即使 preview PASS，只要 scientific transport 未通过，True Capture readiness 仍 BLOCK。
+
 ### 设备准备
 
 ```text
