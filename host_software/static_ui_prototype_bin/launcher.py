@@ -63,6 +63,22 @@ def read_existing_runtime_url() -> str:
     return ""
 
 
+def show_already_running_message() -> None:
+    message = "FruitTasteAnalyzer 已经在运行。"
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, message, "FruitTasteAnalyzer", 0x40)
+            return
+    except Exception:
+        pass
+    try:
+        print(message)
+    except Exception:
+        pass
+
+
 def prepare_runtime_site() -> Path:
     if not hasattr(sys, "_MEIPASS"):
         return resource_path(".")
@@ -88,16 +104,13 @@ def main() -> None:
     server = None
     mutex = None
     try:
-        log_startup("launcher start")
         from process_lock import app_single_instance_mutex
 
         mutex = app_single_instance_mutex()
         if not mutex.acquire():
-            url = read_existing_runtime_url()
-            log_startup(f"second instance detected; opening existing url={url or '<unknown>'}")
-            if url:
-                webbrowser.open(url, new=1)
+            show_already_running_message()
             return
+        log_startup("launcher start")
         site_dir = prepare_runtime_site()
         output_dir = runtime_site_dir().parent / "outputs"
         log_startup(f"site_dir={site_dir}")

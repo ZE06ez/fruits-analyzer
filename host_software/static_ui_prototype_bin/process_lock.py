@@ -28,9 +28,10 @@ def sanitize_mutex_name(value: str) -> str:
 class NamedMutex:
     """Small Windows named mutex wrapper with a no-op fallback for tests."""
 
-    def __init__(self, name: str, *, enabled: bool = True) -> None:
+    def __init__(self, name: str, *, enabled: bool = True, initial_owner: bool = True) -> None:
         self.name = name
         self.enabled = bool(enabled and os.name == "nt")
+        self.initial_owner = bool(initial_owner)
         self.handle: Any | None = None
         self.acquired = False
         self._reentrant = False
@@ -46,7 +47,7 @@ class NamedMutex:
                 self._reentrant = True
                 return True
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.CreateMutexW(None, True, self.name)
+        handle = kernel32.CreateMutexW(None, self.initial_owner, self.name)
         if not handle:
             raise OSError(ctypes.get_last_error(), f"CreateMutexW failed for {self.name}")
         self.handle = handle
@@ -76,7 +77,7 @@ class NamedMutex:
             return
         if self.handle:
             kernel32 = ctypes.windll.kernel32
-            if self.acquired:
+            if self.acquired and self.initial_owner:
                 kernel32.ReleaseMutex(self.handle)
             kernel32.CloseHandle(self.handle)
         if self.acquired:
@@ -98,7 +99,7 @@ class NamedMutex:
 
 
 def app_single_instance_mutex() -> NamedMutex:
-    return NamedMutex(r"Local\FruitTasteAnalyzer.SingleInstance")
+    return NamedMutex(r"Local\FruitTasteAnalyzer.SingleInstance", initial_owner=False)
 
 
 def camera_device_mutex(role: str, identity: str) -> NamedMutex:

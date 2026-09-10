@@ -12,12 +12,20 @@
 - 修改文件：`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/styles.css`、`host_software/static_ui_prototype_bin/app.js`、`docs/UI_ARCHITECTURE.md`、`docs/UI_DESIGN_SYSTEM.md`、`AGENTS.md`、相关项目文档。
 - 是否影响原有功能：不修改后端 API、Camera Adapter、DVP2、STM32 protocol、CaptureCoordinator、scientific PNG gate、Model Studio 数据集/训练/发布语义或模型预测逻辑；不把 offline/demo、preview JPEG 或未验收硬件标记为真实能力。
 
+## 2026-09-11 Strict Windows Single Instance
+
+- 修改内容：`launcher.py` 的单实例检查前移到 `main()` 最前段，在 `prepare_runtime_site()`、`start_backend()`、`webbrowser.open()` 和任何 backend/硬件初始化前创建 `Local\FruitTasteAnalyzer.SingleInstance` Named Mutex。
+- 修改内容：第二个及以后实例发现 mutex 已存在时只弹出/打印“FruitTasteAnalyzer 已经在运行。”并立即退出；不再读取 runtime port 打开已有 Web UI，不启动第二个 backend，不访问 STM32/RGB/DVP2。
+- 修改内容：`process_lock.NamedMutex` 支持 `CreateMutexW(None, False, name)` 语义，首实例保存 handle 到 launcher 生命周期结束，并在 `finally` 中 `CloseHandle`；异常退出尽量清理，强制结束时由 Windows 自动释放 named object，不依赖 lock 文件作为主判断。
+- 修改文件：`host_software/static_ui_prototype_bin/launcher.py`、`host_software/static_ui_prototype_bin/process_lock.py`、`host_software/static_ui_prototype_bin/tests/test_launcher_single_instance.py`、项目文档。
+- 是否影响原有功能：不修改主 UI、后端 API、相机 adapter、STM32 协议、Model Studio 或真实采集 gate；`FruitTasteAnalyzer.spec` 正式 exe 入口仍是 `launcher.py`。
+
 ## 2026-09-10 P1B-8.1 Follow-up: Sample Gate, Model Batch Delete, Single Instance
 
 - 修改内容：`/api/new-sample` 和主 UI “新建样品”不再依赖设备准备状态，只校验样品名称、果种/品种和保存根目录；True Hardware Capture 仍由 `/api/capture/readiness` 和 `/api/capture/start` 严格 gate，并显示所有阻塞原因。existing CalibrationSet 模式要求填写当前样品目录下存在的 `calibrationId`，不再提示可留空。
 - 修改内容：Model Studio 永久删除确认框将 Model ID 改为只读 code 文本，确认输入框必须手动输入并按 `trim()` 后精确匹配；Models 页面新增当前列表多选、全选和批量永久删除。新增 `POST /api/model-studio/models/delete-batch`，后端逐个复用单模型永久删除规则，返回 deleted/blocked/failed。
 - 修改内容：确认 Default 模型切换已有后端 `set_default_model()` 与 `/api/model-studio/models/default`，本轮补强 UI 入口和刷新：Published/Production 可设为 Default，Candidate/Validated 显示“请先发布模型”，当前 Default 明确标识。后端继续保证同一 fruitType + variety + target 只有一个 Default，旧 Default 自动回到 Published。
-- 修改内容：新增 Windows named mutex 单实例保护 `Local\FruitTasteAnalyzer.SingleInstance`，首次 launcher 写 `%LOCALAPPDATA%\FruitTasteAnalyzer\runtime.json`，第二次启动只读取端口并打开已有 Web UI，不启动第二个 backend、不初始化 STM32、不访问 RGB/DVP2。RGB/DVP2 adapter 另加按 stable identity 的跨进程相机 ownership mutex，并把设备占用状态区分为 `BUSY_BY_OTHER_PROCESS` 而不是“未检测到”。
+- 修改内容：新增 Windows named mutex 单实例保护 `Local\FruitTasteAnalyzer.SingleInstance`，首次 launcher 写 `%LOCALAPPDATA%\FruitTasteAnalyzer\runtime.json`，后续实例不启动第二个 backend、不初始化 STM32、不访问 RGB/DVP2。RGB/DVP2 adapter 另加按 stable identity 的跨进程相机 ownership mutex，并把设备占用状态区分为 `BUSY_BY_OTHER_PROCESS` 而不是“未检测到”。
 - 修改内容：`CameraManager.release_all()` 统一停止 RGB/DVP2 preview worker、stop stream、close adapter 并释放跨进程设备锁；launcher、backend shutdown 和异常退出路径尽量调用统一释放。
 - 修改文件：`host_software/static_ui_prototype_bin/process_lock.py`、`host_software/static_ui_prototype_bin/launcher.py`、`host_software/static_ui_prototype_bin/backend_server.py`、`host_software/static_ui_prototype_bin/device_manager.py`、`host_software/static_ui_prototype_bin/camera_service/base.py`、`host_software/static_ui_prototype_bin/camera_service/rgb_uvc.py`、`host_software/static_ui_prototype_bin/camera_service/dvp2_mono.py`、`host_software/static_ui_prototype_bin/camera_service/manager.py`、`host_software/static_ui_prototype_bin/index.html`、`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/model_studio/service.py`、`host_software/static_ui_prototype_bin/model_studio/static/*`、相关测试与项目文档。
 - 是否影响原有功能：不放宽 True Capture readiness，不绕过 Default/Production/reference 删除保护，不强制关闭已有实例相机，不修改 STM32 firmware、DVP2 SDK binding、滤光轮或 SampleStage 真实硬件边界。

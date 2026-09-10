@@ -54,7 +54,7 @@ P1B-8.1 追加 RGB strict scientific policy：正式 RGB scientific capture 不�
 
 - 前端：静态 `index.html` + `styles.css` + `app.js`。
 - 后端：`backend_server.py` 使用 Python 标准库 `ThreadingHTTPServer` 提供静态资源和 JSON API。
-- 桌面入口：`launcher.py` 启动本地后端并打开浏览器；`FruitTasteAnalyzer.spec` 用 PyInstaller 打包。
+- 桌面入口：`launcher.py` 启动本地后端并打开浏览器；`FruitTasteAnalyzer.spec` 用 PyInstaller 打包，正式 exe 入口为 `launcher.py`。P1B-8.1 后 launcher 在任何 backend/browser/hardware 初始化前创建 `Local\FruitTasteAnalyzer.SingleInstance` Windows Named Mutex；后续实例只提示“FruitTasteAnalyzer 已经在运行。”并退出，不再打开已有浏览器窗口。
 - 模型训练中心：`model_studio/`，同一个后端下的 `/model-studio` 静态页面和 `/api/model-studio/*` API。
 - 算法：`pointcloud_service.py`、`pipeline_v2.py`、`quality_algorithm/`、`training/`、`quality_prediction.py`。
 
