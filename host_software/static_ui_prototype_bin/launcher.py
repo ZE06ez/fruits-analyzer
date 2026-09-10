@@ -24,6 +24,10 @@ def startup_log_path() -> Path:
     return runtime_site_dir().parent / "startup.log"
 
 
+def runtime_json_path() -> Path:
+    return runtime_site_dir().parent / "runtime.json"
+
+
 def log_startup(message: str) -> None:
     try:
         path = startup_log_path()
@@ -33,6 +37,30 @@ def log_startup(message: str) -> None:
             handle.write(f"[{stamp}] {message}\n")
     except Exception:
         pass
+
+
+def write_runtime_info(port: int) -> None:
+    try:
+        import json
+
+        path = runtime_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"pid": os.getpid(), "port": int(port), "url": f"http://127.0.0.1:{port}/"}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log_startup(f"runtime info write failed: {exc}")
+
+
+def read_existing_runtime_url() -> str:
+    try:
+        import json
+
+        payload = json.loads(runtime_json_path().read_text(encoding="utf-8"))
+        port = int(payload.get("port") or 0)
+        if port > 0:
+            return f"http://127.0.0.1:{port}/"
+    except Exception:
+        return ""
+    return ""
 
 
 def prepare_runtime_site() -> Path:
@@ -58,8 +86,18 @@ def prepare_runtime_site() -> Path:
 
 def main() -> None:
     server = None
+    mutex = None
     try:
         log_startup("launcher start")
+        from process_lock import app_single_instance_mutex
+
+        mutex = app_single_instance_mutex()
+        if not mutex.acquire():
+            url = read_existing_runtime_url()
+            log_startup(f"second instance detected; opening existing url={url or '<unknown>'}")
+            if url:
+                webbrowser.open(url, new=1)
+            return
         site_dir = prepare_runtime_site()
         output_dir = runtime_site_dir().parent / "outputs"
         log_startup(f"site_dir={site_dir}")
@@ -69,6 +107,7 @@ def main() -> None:
         log_startup("start backend")
         server, port = start_backend(site_dir, output_dir, site_dir)
         url = f"http://127.0.0.1:{port}/"
+        write_runtime_info(port)
         log_startup(f"backend listening at {url}")
         webbrowser.open(url, new=1)
         log_startup("browser open requested")
@@ -85,6 +124,14 @@ def main() -> None:
         log_startup(traceback.format_exc())
         raise
     finally:
+        if server is not None:
+            try:
+                if getattr(server, "device_manager", None) is not None:
+                    server.device_manager.camera_manager.release_all()
+            except Exception:
+                pass
+        if mutex is not None:
+            mutex.release()
         log_startup("launcher exit")
 
 

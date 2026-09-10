@@ -40,6 +40,7 @@ def default_camera_settings_document() -> dict[str, Any]:
             "lastActual": {},
             "settingResults": {},
             "settingsSource": "default",
+            "scientificProfile": {},
         },
         "multispectral": {
             "deviceStableId": f"DS{DEFAULT_DVP2_SERIAL}",
@@ -241,6 +242,7 @@ class CameraSettingsStore:
             "lastActual": dict(merged.get("lastActual") or {}),
             "settingResults": dict(merged.get("settingResults") or {}),
             "settingsSource": cls._string(merged.get("settingsSource") or "default") or "default",
+            "scientificProfile": cls.normalize_rgb_scientific_profile(merged.get("scientificProfile") or merged),
         }
         for key in ("fx", "fy", "cx", "cy"):
             value = cls._optional_float(merged.get(key))
@@ -250,6 +252,24 @@ class CameraSettingsStore:
             if merged.get(key):
                 rgb[key] = cls._string(merged.get(key))
         return rgb
+
+    @classmethod
+    def normalize_rgb_scientific_profile(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        payload = payload or {}
+        profile: dict[str, Any] = {}
+        width = payload.get("scientificWidth", payload.get("width"))
+        height = payload.get("scientificHeight", payload.get("height"))
+        fps = payload.get("scientificFps", payload.get("fps"))
+        fourcc = payload.get("scientificFourcc", payload.get("fourcc"))
+        if width not in (None, ""):
+            profile["width"] = int(width)
+        if height not in (None, ""):
+            profile["height"] = int(height)
+        if fps not in (None, ""):
+            profile["fps"] = float(fps)
+        if fourcc not in (None, ""):
+            profile["fourcc"] = str(fourcc).upper()[:4]
+        return profile
 
     @classmethod
     def normalize_multispectral(cls, payload: dict[str, Any]) -> dict[str, Any]:

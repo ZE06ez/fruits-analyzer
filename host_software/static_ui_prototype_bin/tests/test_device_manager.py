@@ -156,6 +156,20 @@ class ConfigurableFakeRgb:
         self.config = type("Config", (), {"to_dict": lambda self: dict(payload)})()
 
 
+class LossyScientificCameraManager(ReadyCameraManager):
+    def rgb_scientific_status(self):
+        return {
+            "requestedFourcc": "MJPG",
+            "actualFourcc": "MJPG",
+            "sourcePixelFormat": "MJPG",
+            "sourceCompression": "lossy",
+            "scientificStrictLossless": False,
+            "reason": "lossy_transport",
+            "outputFormat": "PNG",
+            "outputLossless": True,
+        }
+
+
 class BindingCameraManager(FakeCameraManager):
     def __init__(self):
         super().__init__()
@@ -392,9 +406,37 @@ class DeviceManagerTests(unittest.TestCase):
         readiness = manager.capture_readiness(payload)
 
         self.assertFalse(readiness["ready"])
-        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("SAMPLE_STAGE_NOT_READY", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("SAMPLE_STAGE_PROTOCOL_UNKNOWN", [item.get("detailCode") for item in readiness["blockingReasons"]])
         with self.assertRaises(CameraIntegrationRequired):
             manager.start_capture("S-DM-MV", payload=payload)
+
+    def test_true_capture_readiness_blocks_lossy_rgb_scientific_transport(self):
+        hardware = ReadyHardwareController()
+        hardware.wheel_position = 0
+        serial = FakeSerialService()
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=lambda _transport: hardware,
+            camera_manager=LossyScientificCameraManager(),
+            stm32_protocol_profile=None,
+        )
+        manager.connect("COM3")
+
+        readiness = manager.capture_readiness({
+            "sampleId": "S-DM-RGB-LOSSY",
+            "outputDir": str(Path(tempfile.gettempdir()) / "dm_rgb_lossy"),
+            "captureMode": "single_view",
+            "calibrationMode": "none",
+            "requireCalibration": False,
+            "settlingMs": 0,
+            "bandPlan": [{"bandId": "A520", "wheelPosition": 1, "wavelengthNm": 520}],
+        })
+
+        self.assertFalse(readiness["ready"])
+        self.assertIn("CAMERA_NOT_READY", [item["code"] for item in readiness["blockingReasons"]])
+        self.assertIn("RGB_SCIENTIFIC_TRANSPORT_LOSSY", [item.get("detailCode") for item in readiness["blockingReasons"]])
+        self.assertFalse(readiness["capabilities"]["rgbScientificStrictLossless"])
 
     def test_emergency_stop_and_fault_clear_update_state(self):
         manager, _ = self.make_manager()

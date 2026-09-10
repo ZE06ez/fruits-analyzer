@@ -154,6 +154,52 @@ def run_rgb_preview_benchmark(
             print(f"preview stop warning: {exc}")
 
 
+def run_rgb_lossless_probe(config: RgbCameraConfig) -> int:
+    print("RGB strict-lossless scientific transport probe")
+    print("This opens the real RGB camera once per candidate mode and records actual FOURCC readback.")
+    print("MJPG/JPEG/H264/H265 are FAIL. YUY2/YUYV/UYVY are uncompressed but 4:2:2 and FAIL under this project's strict policy.")
+    print()
+    candidates = []
+    seen = set()
+    for width, height in ((config.width, config.height), (1920, 1080), (1280, 720)):
+        for fps in (5.0, 10.0, config.fps):
+            for fourcc in ("RGB3", "BGR3", "DIB ", "RAW ", "BA81", "BGGR", "GBRG", "GRBG", "RGGB", "YUY2", "MJPG"):
+                key = (int(width), int(height), float(fps), fourcc)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append({"width": width, "height": height, "fps": fps, "fourcc": fourcc})
+    camera = RgbUvcCamera(config=config)
+    rows = camera.probe_scientific_modes(candidates)
+    print(f"{'Mode':<28} {'Actual':<26} {'Frame':<8} {'Strict Lossless'}")
+    print("-" * 84)
+    strict_modes = []
+    for row in rows:
+        mode = f"{row['requestedFourcc']} {row['requestedWidth']}x{row['requestedHeight']}@{row['requestedFps']:g}"
+        actual = f"{row.get('actualFourcc') or '--'} {row.get('actualWidth') or '--'}x{row.get('actualHeight') or '--'}@{row.get('actualFps') or '--'}"
+        frame = "PASS" if row.get("frameRead") else "FAIL"
+        if row.get("scientificStrictLossless"):
+            strict = "PASS"
+            strict_modes.append(row)
+        elif row.get("sourceCompression") == "uncompressed_but_chroma_subsampled":
+            strict = "FAIL(strict 4:2:2)"
+        else:
+            strict = f"FAIL({row.get('reason') or row.get('error') or 'unavailable'})"
+        print(f"{mode:<28} {actual:<26} {frame:<8} {strict}")
+    print()
+    if strict_modes:
+        best = strict_modes[0]
+        print(
+            "strict_lossless_mode: "
+            f"{best.get('actualFourcc') or best.get('requestedFourcc')} "
+            f"{best.get('actualWidth')}x{best.get('actualHeight')}@{best.get('actualFps')}"
+        )
+        return 0
+    print("strict_lossless_mode: NONE")
+    print("CURRENT_RGB_CAMERA_NOT_SUITABLE_FOR_STRICT_LOSSLESS_CAPTURE unless a vendor/native API exposes RAW Bayer or RGB24/BGR24.")
+    return 3
+
+
 def run_multispectral_test(
     *,
     sdk_dir: str | None,
@@ -980,6 +1026,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Manual camera verification; not used by unittest.")
     parser.add_argument("--rgb", action="store_true", help="Test RGB UVC camera through OpenCV DirectShow.")
     parser.add_argument("--rgb-preview-benchmark", action="store_true", help="Benchmark old synchronous RGB preview vs latest-frame preview with the real RGB camera.")
+    parser.add_argument("--rgb-lossless-probe", action="store_true", help="Probe real RGB camera modes for strict-lossless scientific capture transport.")
     parser.add_argument("--rgb-capture-once", action="store_true", help="Run protected CaptureCoordinator -> CameraManager -> RgbUvcCamera single-frame PNG validation.")
     parser.add_argument("--multispectral", action="store_true", help="Test DO3THINK DVP2 GigE monochrome camera.")
     parser.add_argument("--multispectral-capture-once", action="store_true", help="Run protected CaptureCoordinator -> CameraManager -> DVP2 single-frame raw PNG validation.")
@@ -1052,6 +1099,20 @@ def main() -> int:
             target_fps=args.preview_fps,
             duration_seconds=args.benchmark_seconds,
         )
+    if args.rgb_lossless_probe:
+        config = RgbCameraConfig(
+            device_index=args.device_index,
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            fourcc=args.fourcc,
+            exposure=args.exposure,
+            gain=args.gain,
+            white_balance=args.white_balance,
+            auto_exposure=args.auto_exposure,
+            auto_white_balance=args.auto_white_balance,
+        )
+        return run_rgb_lossless_probe(config)
     if args.rgb_capture_once:
         config = RgbCameraConfig(
             device_index=args.device_index,

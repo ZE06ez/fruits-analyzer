@@ -4,7 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from camera_service import CameraFrame, CameraManager, CameraSettingsStore, RgbCameraConfig, RgbUvcCamera
+from camera_service import (
+    CameraCaptureError,
+    CameraFrame,
+    CameraManager,
+    CameraSettingsStore,
+    RgbCameraConfig,
+    RgbUvcCamera,
+    classify_rgb_scientific_transport,
+)
 from tests.test_camera_service import FakeCapture, FakeCv2
 
 
@@ -12,11 +20,13 @@ class RestoreRgbAdapter:
     role = "rgb"
     transport = "UVC/DirectShow"
 
-    def __init__(self, stable_id: str = "RGB-A") -> None:
+    def __init__(self, stable_id: str = "RGB-A", actual_fourcc: str | None = None) -> None:
         self.config = RgbCameraConfig()
         self.stable_id = stable_id
+        self.actual_fourcc = actual_fourcc
         self.is_open = False
         self.apply_calls: list[dict] = []
+        self.capture_count = 0
 
     def probe_available(self) -> bool:
         self.is_open = True
@@ -30,6 +40,9 @@ class RestoreRgbAdapter:
 
     def stop_stream(self) -> None:
         pass
+
+    def start_stream(self) -> None:
+        self.is_open = True
 
     def get_status(self) -> dict:
         requested = self.config.to_dict()
@@ -48,7 +61,7 @@ class RestoreRgbAdapter:
                 "width": requested["width"],
                 "height": requested["height"],
                 "fps": requested["fps"],
-                "fourcc": requested["fourcc"],
+                "fourcc": self.actual_fourcc or requested["fourcc"],
                 "exposure": requested["exposure"],
                 "gain": requested["gain"],
                 "whiteBalance": requested["whiteBalance"],
@@ -71,6 +84,14 @@ class RestoreRgbAdapter:
                 "exposure": {"requested": self.config.exposure, "actual": self.config.exposure, "accepted": True},
             },
         }
+
+    def capture_frame(self) -> CameraFrame:
+        self.capture_count += 1
+        self.is_open = True
+        import numpy as np
+
+        data = np.zeros((2, 3, 3), dtype=np.uint8)
+        return CameraFrame(data=data, color_space="RGB", dtype="uint8", shape=data.shape, metadata={"sourceColorSpace": "BGR", "deviceIndex": 1})
 
 
 class RestoreDvp2Adapter:
@@ -138,6 +159,20 @@ class RestoreDvp2Adapter:
 
         data = np.zeros((2, 2), dtype=np.uint8)
         return CameraFrame(data=data, color_space="MONO", dtype="uint8", shape=data.shape)
+
+
+class RgbScientificTransportPolicyTests(unittest.TestCase):
+    def test_requested_lossless_fourcc_does_not_pass_without_actual_readback(self) -> None:
+        policy = classify_rgb_scientific_transport(
+            requested_fourcc="RGB3",
+            actual_fourcc="",
+            color_space="RGB",
+            dtype="uint8",
+        )
+
+        self.assertFalse(policy["scientificStrictLossless"])
+        self.assertEqual(policy["sourceCompression"], "unknown")
+        self.assertEqual(policy["reason"], "actual_transport_not_read")
 
 
 class CameraSettingsPersistenceTests(unittest.TestCase):
@@ -274,6 +309,65 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
             self.assertEqual(metadata["settingsSource"], "persistent")
             self.assertEqual(metadata["settingsRestoreState"]["state"], "restored")
             self.assertEqual(metadata["actualSettings"]["exposure"], 11000.0)
+
+    def test_rgb_scientific_capture_blocks_mjpg_even_when_png_would_be_possible(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_lossy_") as tmp:
+            store = self.store(tmp)
+            store.update_rgb({"deviceStableId": "RGB-A", "fourcc": "MJPG"})
+            manager = CameraManager(rgb_camera=RestoreRgbAdapter(stable_id="RGB-A"), multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            with self.assertRaises(CameraCaptureError) as context:
+                manager.capture_rgb_frame()
+
+            self.assertIn("RGB_SCIENTIFIC_TRANSPORT_LOSSY", context.exception.technical_message)
+
+    def test_rgb_scientific_capture_passes_verified_rgb24_profile(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_lossless_") as tmp:
+            store = self.store(tmp)
+            store.update_rgb({
+                "deviceStableId": "RGB-A",
+                "fourcc": "MJPG",
+                "scientificProfile": {"width": 3840, "height": 2160, "fps": 5, "fourcc": "RGB3"},
+            })
+            rgb = RestoreRgbAdapter(stable_id="RGB-A")
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            frame, metadata = manager.capture_rgb_frame()
+
+            self.assertEqual(frame.color_space, "RGB")
+            self.assertEqual(metadata["requestedFourcc"], "RGB3")
+            self.assertEqual(metadata["actualFourcc"], "RGB3")
+            self.assertEqual(metadata["sourceCompression"], "none")
+            self.assertTrue(metadata["scientificStrictLossless"])
+            self.assertEqual(metadata["outputFormat"], "PNG")
+            self.assertTrue(metadata["outputLossless"])
+
+    def test_rgb_scientific_capture_fails_when_actual_falls_back_to_mjpg(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_fallback_") as tmp:
+            store = self.store(tmp)
+            store.update_rgb({
+                "deviceStableId": "RGB-A",
+                "scientificProfile": {"width": 3840, "height": 2160, "fps": 5, "fourcc": "RGB3"},
+            })
+            rgb = RestoreRgbAdapter(stable_id="RGB-A", actual_fourcc="MJPG")
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            with self.assertRaises(CameraCaptureError) as context:
+                manager.capture_rgb_frame()
+
+            self.assertIn("actual=MJPG", context.exception.technical_message)
+
+    def test_rgb_preview_mjpg_remains_allowed_separate_from_scientific_capture(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_preview_") as tmp:
+            store = self.store(tmp)
+            rgb = RestoreRgbAdapter(stable_id="RGB-A")
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            result = manager.start_rgb_preview({"width": 320, "height": 180, "fps": 5})
+            manager.stop_rgb_preview()
+
+            self.assertTrue(result["preview"]["rgb"]["running"])
+            self.assertEqual(result["status"]["actual"]["fourcc"], "MJPG")
 
 
 if __name__ == "__main__":

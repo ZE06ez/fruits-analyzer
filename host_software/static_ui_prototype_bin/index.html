@@ -35,8 +35,38 @@
 
     <main class="workspace">
       <aside class="sidebar">
-        <section class="side-card connect-card">
-          <h2>连接控制 / Process Control</h2>
+        <section class="side-card operator-overview-card">
+          <div class="overview-head">
+            <div>
+              <p class="eyebrow">Operator Workbench</p>
+              <h2>检测工作台</h2>
+            </div>
+            <span class="status-chip" id="operatorTaskLabel">等待</span>
+          </div>
+          <div class="current-sample-strip">
+            <span>当前样品</span>
+            <strong id="operatorSampleName">未创建样品</strong>
+            <small id="operatorSampleMeta">请选择样品信息并创建目录</small>
+          </div>
+          <div class="readiness-list" aria-label="系统就绪状态">
+            <span id="operatorStm32Ready" data-status="waiting">STM32</span>
+            <span id="operatorRgbReady" data-status="waiting">RGB</span>
+            <span id="operatorSpectralReady" data-status="waiting">多光谱</span>
+            <span id="operatorCalibrationReady" data-status="waiting">Calibration</span>
+          </div>
+          <div class="workflow-strip" aria-label="检测流程">
+            <span id="workflowSample" data-status="waiting">样品</span>
+            <span id="workflowDevice" data-status="waiting">设备</span>
+            <span id="workflowCapture" data-status="waiting">采集</span>
+            <span id="workflowAnalysis" data-status="waiting">分析</span>
+            <span id="workflowResult" data-status="waiting">结果</span>
+          </div>
+          <p class="hint" id="operatorTaskDetail">请先创建样品或检查设备状态。</p>
+          <button class="primary-action" id="operatorPrimaryAction" type="button">新建样品</button>
+        </section>
+
+        <section class="side-card connect-card maintenance-card">
+          <h2>维护快捷连接</h2>
           <label for="serialPort">STM32F407 串口</label>
           <div class="inline-field">
             <select id="serialPort">
@@ -61,51 +91,40 @@
           <p class="hint" id="deviceConnectionHint">未连接 STM32 时仍可按离线调试流程验证软件界面。</p>
         </section>
 
-        <nav class="task-tree" aria-label="任务流程树">
+        <nav class="task-tree" aria-label="主工作区导航">
           <details open>
-            <summary>设备准备</summary>
-            <button class="task-step active" data-view="motor" data-step-key="connect"><span></span>连接设备</button>
-            <button class="task-step" data-view="motor" data-step-key="motor"><span></span>电机自检</button>
-            <button class="task-step" data-view="light" data-step-key="light"><span></span>光源自检</button>
-            <button class="task-step" data-view="camera" data-step-key="camera"><span></span>相机自检</button>
-            <button class="task-step" data-view="camera-settings" data-step-key="calibration"><span></span>标定检查</button>
+            <summary>检测工作台</summary>
+            <button class="task-step active" data-view="capture" data-step-key="sample"><span></span>样品与采集</button>
+            <button class="task-step" data-view="shape" data-step-key="load-rgbd"><span></span>智能分析</button>
+            <button class="task-step" data-view="taste" data-step-key="summary"><span></span>检测结果</button>
           </details>
           <details open>
-            <summary>样品采集</summary>
-            <button class="task-step" data-view="capture" data-step-key="sample"><span></span>创建样品</button>
-            <button class="task-step" data-view="capture" data-step-key="dark"><span></span>暗场采集</button>
-            <button class="task-step" data-view="capture" data-step-key="white"><span></span>白板校准</button>
-            <button class="task-step" data-view="capture" data-step-key="rgb"><span></span>RGB 图像采集</button>
-            <button class="task-step" data-view="capture" data-step-key="spectral"><span></span>多光谱采集</button>
-            <button class="task-step" data-view="capture" data-step-key="integrity"><span></span>数据完整性检查</button>
+            <summary>样品与记录</summary>
+            <button class="task-step" data-view="shape" data-step-key="image-review"><span></span>样品图片</button>
+            <button class="task-step" data-view="shape" data-step-key="confirm"><span></span>数据完整性</button>
+            <button class="task-step" data-view="taste" data-step-key="export"><span></span>报告输出</button>
           </details>
           <details open>
-            <summary>形态分析</summary>
-            <button class="task-step" data-view="shape" data-step-key="load-rgbd"><span></span>选择样品文件夹</button>
+            <summary>设备与维护</summary>
+            <button class="task-step" data-view="motor" data-step-key="connect"><span></span>设备总览</button>
+            <button class="task-step" data-view="camera-settings" data-step-key="camera-settings"><span></span>相机维护</button>
+            <button class="task-step" data-view="light" data-step-key="light"><span></span>光源与滤光轮</button>
+            <button class="task-step" data-view="motor" data-step-key="motor"><span></span>工程调试</button>
+          </details>
+          <details open>
+            <summary>模型训练</summary>
+            <button class="task-step" id="modelStudioNavButton" type="button"><span></span>打开 Model Studio</button>
+          </details>
+          <details>
+            <summary>分析详情</summary>
             <button class="task-step" data-view="shape" data-step-key="preprocess"><span></span>数据预处理</button>
-            <button class="task-step" data-view="shape" data-step-key="image-review"><span></span>图片浏览</button>
-            <button class="task-step" data-view="shape" data-step-key="filter"><span></span>样品区域提取</button>
-            <button class="task-step" data-view="shape" data-step-key="surface-texture"><span></span>果粉与纹理分析</button>
-            <button class="task-step" data-view="shape" data-step-key="measure"><span></span>二维形态测量</button>
-            <button class="task-step" data-view="shape" data-step-key="volume"><span></span>三维建模预留</button>
-            <button class="task-step" data-view="shape" data-step-key="confirm"><span></span>结果确认</button>
-          </details>
-          <details open>
-            <summary>糖酸分析</summary>
+            <button class="task-step" data-view="shape" data-step-key="filter"><span></span>ROI 与特征</button>
             <button class="task-step" data-view="sugar" data-step-key="sugar"><span></span>糖度预测</button>
             <button class="task-step" data-view="acid" data-step-key="acid"><span></span>酸度与 pH 分析</button>
             <button class="task-step" data-view="taste" data-step-key="ratio"><span></span>糖酸比计算</button>
-            <button class="task-step" data-view="taste" data-step-key="rating"><span></span>口感评级</button>
-          </details>
-          <details>
-            <summary>报告输出</summary>
-            <button class="task-step" data-view="taste" data-step-key="summary"><span></span>结果汇总</button>
-            <button class="task-step" data-view="taste" data-step-key="preview-report"><span></span>报告预览</button>
-            <button class="task-step" data-view="taste" data-step-key="export"><span></span>导出报告</button>
           </details>
           <details>
             <summary>系统设置</summary>
-            <button class="task-step" data-view="camera-settings" data-step-key="camera-settings"><span></span>相机设置</button>
             <button class="task-step" data-view="light-settings" data-step-key="light-settings"><span></span>光源设置</button>
             <button class="task-step" data-view="reserved-3" data-step-key="algorithm-settings"><span></span>算法参数</button>
             <button class="task-step" data-view="reserved-4" data-step-key="communication"><span></span>通信设置</button>
@@ -113,7 +132,7 @@
         </nav>
 
         <section class="side-card run-card">
-          <h2>流程快捷操作</h2>
+          <h2>安全与流程</h2>
           <button class="primary-action" id="startWorkflow">开始检测流程</button>
           <button class="stop-action" id="emergencyStop">紧急停止</button>
         </section>
@@ -123,7 +142,7 @@
         <section class="stage-header">
           <div>
             <p class="eyebrow">当前模块 / Current Module</p>
-            <h2 id="viewTitle">电机检测</h2>
+            <h2 id="viewTitle">检测工作台</h2>
           </div>
           <div class="mode-badge" id="runMode">STM32联调 / 相机待接入</div>
         </section>
@@ -144,7 +163,7 @@
         </section>
 
         <section class="view-panel">
-          <article class="view-page active" data-page="motor">
+          <article class="view-page" data-page="motor">
             <div class="panel-title">
               <h3>电机检测 / Motor Check</h3>
               <span>STM32 基础控制</span>
@@ -286,7 +305,7 @@
             </div>
           </article>
 
-          <article class="view-page" data-page="capture">
+          <article class="view-page active" data-page="capture">
             <div class="panel-title">
               <h3>样品采集 / Sample Acquisition</h3>
               <span>暗场、白板、彩色图、多波段</span>
@@ -427,7 +446,7 @@
                   </select>
                 </label>
                 <label>Calibration ID
-                  <input id="trueCalibrationId" placeholder="capture_new 可留空自动生成" />
+                  <input id="trueCalibrationId" placeholder="使用已有 CalibrationSet 时必须填写有效 ID" />
                 </label>
                 <label class="toggle-line">
                   <input id="operatorConfirmedReferences" type="checkbox" />
@@ -518,6 +537,7 @@
                 <input id="colorDir" value="rgb" placeholder="例如 rgb、color、image" readonly />
                 <label for="multispectralDir">多光谱图像目录名</label>
                 <input id="multispectralDir" value="multispectral" placeholder="例如 multispectral、spectral" readonly />
+                <input id="depthDir" type="hidden" value="multispectral" />
                 <div class="data-check-card" id="dataCheckCard" data-status="empty">
                   <strong id="dataCheckTitle">暂无数据目录</strong>
                   <span id="dataCheckSummary">请选择本次拍摄或其他文件夹。</span>
@@ -674,12 +694,14 @@
                   </div>
                   <p id="rgbCameraStatusText">等待检测</p>
                 </div>
-                <div class="camera-summary-metrics">
-                  <span id="rgbCameraTransportText">UVC / DirectShow</span>
-                  <span id="rgbCameraActualResolutionText">3840 x 2160</span>
-                  <span id="rgbCameraActualFpsText">25 FPS</span>
-                  <span id="rgbCameraActualFourccText">MJPG</span>
-                </div>
+                  <div class="camera-summary-metrics">
+                    <span id="rgbCameraTransportText">Preview Transport: UVC / DirectShow</span>
+                    <span id="rgbCameraActualResolutionText">3840 x 2160</span>
+                    <span id="rgbCameraActualFpsText">25 FPS</span>
+                    <span id="rgbCameraActualFourccText">MJPG</span>
+                    <span id="rgbScientificTransportText">Scientific Transport: NOT VERIFIED</span>
+                    <span id="rgbScientificLosslessText">Scientific Lossless: NOT VERIFIED</span>
+                  </div>
                 <div class="button-row compact">
                   <button id="testRgbCamera" type="button">重新检测</button>
                   <button id="startRgbPreview" type="button">打开预览</button>

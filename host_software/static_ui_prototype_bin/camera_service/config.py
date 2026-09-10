@@ -23,6 +23,10 @@ class RgbCameraConfig:
     white_balance: float | None = None
     auto_exposure: float | None = None
     auto_white_balance: float | None = None
+    scientific_width: int | None = None
+    scientific_height: int | None = None
+    scientific_fps: float | None = None
+    scientific_fourcc: str | None = None
     max_probe_index: int = 4
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +41,10 @@ class RgbCameraConfig:
             "whiteBalance": self.white_balance,
             "autoExposure": self.auto_exposure,
             "autoWhiteBalance": self.auto_white_balance,
+            "scientificWidth": self.scientific_width,
+            "scientificHeight": self.scientific_height,
+            "scientificFps": self.scientific_fps,
+            "scientificFourcc": self.scientific_fourcc,
             "maxProbeIndex": self.max_probe_index,
         }
 
@@ -54,6 +62,10 @@ class RgbCameraConfig:
             white_balance=_optional_float(payload.get("whiteBalance", payload.get("white_balance"))),
             auto_exposure=_optional_float(payload.get("autoExposure", payload.get("auto_exposure"))),
             auto_white_balance=_optional_float(payload.get("autoWhiteBalance", payload.get("auto_white_balance"))),
+            scientific_width=_optional_int(payload.get("scientificWidth", payload.get("scientific_width"))),
+            scientific_height=_optional_int(payload.get("scientificHeight", payload.get("scientific_height"))),
+            scientific_fps=_optional_float(payload.get("scientificFps", payload.get("scientific_fps"))),
+            scientific_fourcc=_optional_fourcc(payload.get("scientificFourcc", payload.get("scientific_fourcc"))),
             max_probe_index=int(payload.get("maxProbeIndex", payload.get("max_probe_index", cls.max_probe_index))),
         )
 
@@ -70,6 +82,10 @@ class RgbCameraConfig:
             "whiteBalance": os.environ.get("FRUIT_RGB_CAMERA_WHITE_BALANCE"),
             "autoExposure": os.environ.get("FRUIT_RGB_CAMERA_AUTO_EXPOSURE"),
             "autoWhiteBalance": os.environ.get("FRUIT_RGB_CAMERA_AUTO_WHITE_BALANCE"),
+            "scientificWidth": os.environ.get("FRUIT_RGB_CAMERA_SCIENTIFIC_WIDTH"),
+            "scientificHeight": os.environ.get("FRUIT_RGB_CAMERA_SCIENTIFIC_HEIGHT"),
+            "scientificFps": os.environ.get("FRUIT_RGB_CAMERA_SCIENTIFIC_FPS"),
+            "scientificFourcc": os.environ.get("FRUIT_RGB_CAMERA_SCIENTIFIC_FOURCC"),
             "maxProbeIndex": os.environ.get("FRUIT_RGB_CAMERA_MAX_PROBE_INDEX"),
         }
         return cls.from_dict({key: value for key, value in payload.items() if value not in (None, "")})
@@ -81,3 +97,15 @@ def _optional_float(value: Any) -> float | None:
     if isinstance(value, str) and value.strip().lower() in {"auto", "default", "自动"}:
         return None
     return float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _optional_fourcc(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value).upper()[:4]

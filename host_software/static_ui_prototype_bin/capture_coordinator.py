@@ -1708,6 +1708,19 @@ class CaptureCoordinator:
             raise
         except Exception as exc:
             raise CaptureCoordinatorError("RGB 正式取帧失败", step=step, code="rgb_capture_failed", cause=exc) from exc
+        if capture_meta.get("scientificStrictLossless") is False:
+            reason = str(capture_meta.get("reason") or capture_meta.get("sourceCompression") or "lossless_unavailable")
+            code = (
+                "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
+                if capture_meta.get("sourceCompression") == "lossy"
+                else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
+            )
+            raise CaptureCoordinatorError(
+                "当前 RGB 相机正式采集链路存在有损或未验证传输，禁止用于科学采集。",
+                step=step,
+                code=code,
+                cause=RuntimeError(reason),
+            )
         array_info = self._validate_rgb_frame(frame, step=step)
         self._check_cancel(step)
 
@@ -2591,6 +2604,13 @@ class CaptureCoordinator:
             "device": capture_meta.get("device") or {},
             "requestedSettings": requested,
             "actualSettings": actual,
+            "requestedFourcc": capture_meta.get("requestedFourcc") or requested.get("fourcc") or "",
+            "actualFourcc": capture_meta.get("actualFourcc") or actual.get("fourcc") or "",
+            "sourcePixelFormat": capture_meta.get("sourcePixelFormat") or actual.get("fourcc") or "",
+            "sourceCompression": capture_meta.get("sourceCompression") or "",
+            "scientificStrictLossless": bool(capture_meta.get("scientificStrictLossless")),
+            "outputFormat": capture_meta.get("outputFormat") or "PNG",
+            "outputLossless": capture_meta.get("outputLossless") is not False,
             "previewWasRunning": bool(capture_meta.get("previewWasRunning")),
             "openedForCapture": bool(capture_meta.get("openedForCapture")),
         }

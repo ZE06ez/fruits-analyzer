@@ -463,7 +463,35 @@ class DeviceManager:
 
             rgb_ready = (not plan.rgb_enabled) or bool(rgb_status.get("available"))
             if plan.rgb_enabled and not rgb_ready:
-                blocking.append({"code": "RGB_NOT_AVAILABLE", "message": rgb_status.get("error") or "RGB 相机不可用"})
+                blocking.append({
+                    "code": "CAMERA_NOT_READY",
+                    "detailCode": "RGB_NOT_AVAILABLE",
+                    "message": rgb_status.get("error") or "RGB 相机不可用",
+                })
+            rgb_scientific = {}
+            if plan.rgb_enabled:
+                if hasattr(self.camera_manager, "rgb_scientific_status"):
+                    try:
+                        rgb_scientific = self.camera_manager.rgb_scientific_status()
+                    except Exception as exc:
+                        rgb_scientific = {
+                            "scientificStrictLossless": False,
+                            "reason": str(exc),
+                            "sourceCompression": "unknown",
+                        }
+                else:
+                    rgb_scientific = rgb_status.get("scientificTransport") or {}
+                if rgb_scientific and not rgb_scientific.get("scientificStrictLossless"):
+                    code = (
+                        "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
+                        if rgb_scientific.get("sourceCompression") == "lossy"
+                        else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
+                    )
+                    blocking.append({
+                        "code": "CAMERA_NOT_READY",
+                        "detailCode": code,
+                        "message": "RGB 正式科学采集链路未通过 strict lossless transport 验证",
+                    })
             rgb_restore = rgb_status.get("settingsRestoreState") or {}
             if plan.rgb_enabled and rgb_restore.get("state") == "device_mismatch":
                 blocking.append({"code": "CAMERA_SETTINGS_DEVICE_MISMATCH", "message": "RGB 已保存相机参数与当前设备身份不一致"})
@@ -472,7 +500,11 @@ class DeviceManager:
 
             multispectral_ready = (not plan.multispectral_enabled) or bool(multispectral_status.get("available"))
             if plan.multispectral_enabled and not multispectral_ready:
-                blocking.append({"code": "DVP2_NOT_AVAILABLE", "message": multispectral_status.get("error") or "DVP2 多光谱相机不可用"})
+                blocking.append({
+                    "code": "CAMERA_NOT_READY",
+                    "detailCode": "DVP2_NOT_AVAILABLE",
+                    "message": multispectral_status.get("error") or "DVP2 多光谱相机不可用",
+                })
             multispectral_restore = multispectral_status.get("settingsRestoreState") or {}
             if plan.multispectral_enabled and multispectral_restore.get("state") == "device_mismatch":
                 blocking.append({"code": "CAMERA_SETTINGS_DEVICE_MISMATCH", "message": "DVP2 已保存相机参数与当前设备身份不一致"})
@@ -491,7 +523,8 @@ class DeviceManager:
             )
             if sample_stage_required and not sample_stage_ready:
                 blocking.append({
-                    "code": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN,
+                    "code": "SAMPLE_STAGE_NOT_READY",
+                    "detailCode": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN,
                     "message": "真实多视角采集需要独立样品旋转台，当前协议未知",
                 })
 
@@ -500,15 +533,26 @@ class DeviceManager:
                 if plan.calibration_mode == "existing":
                     calibration_ready = bool(plan.calibration_id)
                     if not calibration_ready:
-                        blocking.append({"code": "CALIBRATION_ID_REQUIRED", "message": "使用已有校正时必须提供 calibrationId"})
+                        blocking.append({
+                            "code": "CALIBRATION_REQUIRED",
+                            "detailCode": "CALIBRATION_ID_REQUIRED",
+                            "message": "使用已有 CalibrationSet 时必须填写有效 calibrationId",
+                        })
+                    elif not self._calibration_set_exists(plan.output_dir, str(plan.calibration_id)):
+                        calibration_ready = False
+                        blocking.append({
+                            "code": "CALIBRATION_REQUIRED",
+                            "detailCode": "CALIBRATION_ID_NOT_FOUND",
+                            "message": "未在当前样品目录找到指定 CalibrationSet",
+                        })
                 elif plan.calibration_mode == "capture_new":
                     calibration_ready = bool(plan.capture_dark and plan.capture_white)
                     if not calibration_ready:
-                        blocking.append({"code": "CALIBRATION_CAPTURE_REQUIRED", "message": "重新校正必须采集 Dark 和 White"})
+                        blocking.append({"code": "CALIBRATION_REQUIRED", "detailCode": "CALIBRATION_CAPTURE_REQUIRED", "message": "重新校正必须采集 Dark 和 White"})
                     if not plan.operator_confirmed_dark:
-                        blocking.append({"code": "DARK_OPERATOR_CONFIRMATION_REQUIRED", "message": "请确认暗场遮光状态"})
+                        blocking.append({"code": "CALIBRATION_REQUIRED", "detailCode": "DARK_OPERATOR_CONFIRMATION_REQUIRED", "message": "请确认暗场遮光状态"})
                     if not plan.operator_confirmed_white:
-                        blocking.append({"code": "WHITE_OPERATOR_CONFIRMATION_REQUIRED", "message": "请放置白板并确认"})
+                        blocking.append({"code": "CALIBRATION_REQUIRED", "detailCode": "WHITE_OPERATOR_CONFIRMATION_REQUIRED", "message": "请放置白板并确认"})
 
             warnings.append({
                 "code": "HARDWARE_ACCEPTANCE_NOT_PASSED",
@@ -530,6 +574,8 @@ class DeviceManager:
                 "singleViewReady": single_view_ready,
                 "multiViewReady": multi_view_ready,
                 "rgbReady": rgb_ready,
+                "rgbScientificStrictLossless": bool(rgb_scientific.get("scientificStrictLossless")) if rgb_scientific else None,
+                "rgbScientificTransport": rgb_scientific,
                 "multispectralReady": multispectral_ready,
                 "calibrationReady": calibration_ready,
                 "filterWheelReady": filter_wheel_ready,
@@ -552,10 +598,23 @@ class DeviceManager:
                 "multiView": {
                     "ready": multi_view_ready,
                     "blockingReasons": blocking if plan.capture_mode == "multi_view" else [
-                        {"code": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN, "message": "样品台协议未知"}
+                        {"code": "SAMPLE_STAGE_NOT_READY", "detailCode": sample_stage.get("lastError") or SAMPLE_STAGE_PROTOCOL_UNKNOWN, "message": "样品台协议未知"}
                     ] if not sample_stage_ready else [],
                 },
             }
+
+    @staticmethod
+    def _calibration_set_exists(output_dir: Any, calibration_id: str) -> bool:
+        if not output_dir or not calibration_id:
+            return False
+        from pathlib import Path
+
+        root = Path(str(output_dir))
+        candidates = [
+            root / "calibration" / f"calibration_set_{calibration_id}.json",
+            root / "calibration" / f"{calibration_id}.json",
+        ]
+        return any(path.exists() and path.is_file() for path in candidates)
 
     def start_capture(self, sample_id: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start formal true capture through CaptureCoordinator protected paths."""

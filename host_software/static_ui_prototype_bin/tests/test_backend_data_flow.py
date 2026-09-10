@@ -173,7 +173,7 @@ class BackendDataFlowTests(unittest.TestCase):
         is_default: int = 0,
         display_name: str = "",
     ) -> None:
-        model_dir = self.app_dir / "model_artifacts" / model_id
+        model_dir = self.studio.model_dir / "test_inserted" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         with self.studio.connect() as conn:
             conn.execute(
@@ -212,11 +212,13 @@ class BackendDataFlowTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
         with self.assertRaises(urllib.error.HTTPError):
-            self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
-        self.prepare_device()
-        with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry"})
-        first = self.create_sample("蓝莓实验A-第5颗")
+        first = self.post_json("/api/new-sample", {
+            "sampleName": "蓝莓实验A-第5颗",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
         first_dir = Path(first["currentCaptureDir"])
         self.assertTrue(first_dir.exists())
         self.assertTrue((first_dir / "rgb").is_dir())
@@ -230,6 +232,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(metadata["image_directories"], {"rgb": "rgb", "multispectral": "multispectral"})
         self.assertEqual(first["rgbDirName"], "rgb")
         self.assertEqual(first["multispectralDirName"], "multispectral")
+        self.prepare_device()
         self.post_json("/api/complete-capture", {})
         status_after_capture = self.get_json("/api/status")
         self.assertTrue(status_after_capture["currentCaptureDir"])
@@ -241,6 +244,29 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertNotEqual(Path(second["currentCaptureDir"]), first_dir)
         self.assertTrue(Path(second["currentCaptureDir"]).exists())
         self.assertFalse(second["analysisDataDir"])
+
+    def test_true_capture_not_ready_still_blocks_after_sample_creation_without_hardware(self):
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "NoHardwareFirst",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+
+        readiness = self.get_json("/api/capture/readiness", {
+            "captureMode": "single_view",
+            "calibrationMode": "existing",
+            "calibrationId": "",
+            "requireCalibration": "true",
+        })["readiness"]
+
+        self.assertTrue(sample["hasSample"])
+        self.assertFalse(readiness["ready"])
+        codes = {item["code"] for item in readiness["blockingReasons"]}
+        self.assertIn("STM32_NOT_READY", codes)
+        self.assertIn("CAMERA_NOT_READY", codes)
+        self.assertIn("FILTER_WHEEL_NOT_READY", codes)
+        self.assertIn("CALIBRATION_REQUIRED", codes)
 
     def test_custom_capture_image_directory_names_are_saved_and_read(self):
         self.prepare_device()
@@ -620,6 +646,26 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertNotIn(model_id, [item["model_id"] for item in after["ssc"]])
         registry = self.get_json("/api/model-studio/models")
         self.assertNotIn(model_id, [item["model_id"] for item in registry["models"]])
+
+    def test_model_studio_model_batch_delete_route_blocks_default_and_deletes_allowed(self):
+        candidate_id = "api_batch_candidate"
+        published_id = "api_batch_published"
+        default_id = "api_batch_default"
+        self.insert_model(candidate_id, status="Candidate")
+        self.insert_model(published_id, status="Published")
+        self.insert_model(default_id, status="Default", is_default=1)
+
+        result = self.post_json("/api/model-studio/models/delete-batch", {
+            "modelIds": [candidate_id, published_id, default_id],
+        })["result"]
+
+        self.assertEqual({item["modelId"] for item in result["deleted"]}, {candidate_id, published_id})
+        self.assertEqual([item["modelId"] for item in result["blocked"]], [default_id])
+        registry = self.get_json("/api/model-studio/models", {"status": "all"})["models"]
+        remaining_ids = [item["model_id"] for item in registry]
+        self.assertNotIn(candidate_id, remaining_ids)
+        self.assertNotIn(published_id, remaining_ids)
+        self.assertIn(default_id, remaining_ids)
 
     def test_manual_directory_validation_rejects_same_missing_and_parent_escape(self):
         self.create_sample("手动目录非法01")

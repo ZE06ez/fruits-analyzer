@@ -161,33 +161,33 @@ const DEFAULT_ROTATION_SETTINGS = {
 };
 
 const titles = {
-  motor: "设备准备",
-  light: "光源自检",
-  camera: "相机自检",
+  motor: "设备与维护",
+  light: "光源与滤光轮",
+  camera: "相机检查",
   "reserved-1": "预留功能",
   "reserved-2": "预留功能",
-  capture: "样品采集",
-  shape: "形态分析",
+  capture: "检测工作台",
+  shape: "智能分析",
   sugar: "糖度预测",
   acid: "酸度与 pH 分析",
-  taste: "口感评级",
-  "camera-settings": "相机设置",
-  "light-settings": "光源设置",
+  taste: "检测结果",
+  "camera-settings": "相机维护",
+  "light-settings": "系统设置",
   "reserved-3": "算法参数",
   "reserved-4": "通信设置",
 };
 
 const moduleLayoutModes = {
-  motor: "capture",
-  light: "capture",
+  motor: "analysis",
+  light: "analysis",
   camera: "capture",
   capture: "capture",
   "camera-settings": "capture",
-  "light-settings": "capture",
-  "reserved-1": "capture",
-  "reserved-2": "capture",
-  "reserved-3": "capture",
-  "reserved-4": "capture",
+  "light-settings": "analysis",
+  "reserved-1": "analysis",
+  "reserved-2": "analysis",
+  "reserved-3": "analysis",
+  "reserved-4": "analysis",
   shape: "analysis",
   sugar: "analysis",
   acid: "analysis",
@@ -736,7 +736,7 @@ function renderCameraSettingsStatus() {
       ? "已检测 / 预览已停止"
       : (rgb.error || "未检测到 RGB 相机");
   setText("rgbCameraStatusText", rgbStatusText);
-  setText("rgbCameraTransportText", rgb.transport || "UVC / DirectShow");
+  setText("rgbCameraTransportText", `Preview Transport: ${rgb.transport || "UVC / DirectShow"}`);
   const rgbCandidate = matchedCandidateForRole("RGB_CAMERA");
   const rgbMeta = rgbCandidate?.metadata || {};
   setText("cameraRgbVidPid", rgbMeta.vid && rgbMeta.pid ? `VID_${rgbMeta.vid} / PID_${rgbMeta.pid}` : "未提供");
@@ -751,9 +751,25 @@ function renderCameraSettingsStatus() {
   setText("rgbCameraActualResolutionText", formatCameraResolution(actual.width || rgb.resolution?.width || requested.width, actual.height || rgb.resolution?.height || requested.height));
   setText("rgbCameraActualFpsText", Number.isFinite(Number(actual.fps)) ? `${Number(actual.fps).toFixed(1).replace(".0", "")} FPS` : `${requested.fps || 25} FPS`);
   setText("rgbCameraActualFourccText", actual.fourcc || requested.fourcc || "MJPG");
+  const scientificTransport = rgb.scientificTransport || {};
+  const scientificProfile = rgb.scientificProfile || {};
+  const scientificActual = scientificTransport.actualFourcc || scientificProfile.fourcc || "unavailable";
+  setText("rgbScientificTransportText", `Scientific Transport: ${scientificActual}`);
+  const scientificPass = scientificTransport.scientificStrictLossless === true;
+  const scientificKnown = scientificTransport.scientificStrictLossless !== undefined && scientificTransport.scientificStrictLossless !== null;
+  setText(
+    "rgbScientificLosslessText",
+    scientificPass
+      ? "Scientific Lossless: PASS"
+      : scientificKnown
+        ? "Scientific Lossless: FAIL"
+        : "Scientific Lossless: NOT VERIFIED"
+  );
   const capabilityText = {
     requested,
     actual,
+    scientificProfile,
+    scientificTransport,
     capabilities: rgb.capabilities || {},
     technicalError: rgb.technicalError || "",
   };
@@ -828,9 +844,14 @@ function renderCameraPersistenceSummary(role = null, saved = null, restoreState 
     const stateInfo = restoreState || state.cameraStatus?.[targetRole]?.settingsRestoreState || state.cameraSettings?.restoreState?.[targetRole] || {};
     node.dataset.status = stateInfo.state === "failed" || stateInfo.state === "device_mismatch" ? "error" : stateInfo.state === "partial" ? "warning" : "";
     if (targetRole === "rgb") {
+      const scientific = state.cameraStatus?.rgb?.scientificTransport || {};
+      const scientificLine = scientific.scientificStrictLossless === true
+        ? `Scientific：${escapeHtml(scientific.actualFourcc || scientific.sourcePixelFormat || "--")} / PASS`
+        : `Scientific：${escapeHtml(scientific.actualFourcc || scientific.sourcePixelFormat || "--")} / FAIL；当前 RGB 相机正式采集链路存在有损传输，禁止用于科学采集。`;
       node.innerHTML = [
         `<span>保存：${escapeHtml(savedSettings.width || "--")} x ${escapeHtml(savedSettings.height || "--")} @ ${escapeHtml(savedSettings.fps ?? "--")} FPS ${escapeHtml(savedSettings.fourcc || "--")}</span>`,
         `<span>曝光：${escapeHtml(savedSettings.autoExposureEnabled ? "Auto" : savedSettings.exposure ?? "--")}；增益：${escapeHtml(savedSettings.gainAuto ? "默认" : savedSettings.gain ?? "--")}；白平衡：${escapeHtml(savedSettings.autoWhiteBalanceEnabled ? "Auto" : savedSettings.whiteBalance ?? "--")}</span>`,
+        `<span>${scientificLine}</span>`,
         `<span>恢复：${escapeHtml(formatRestoreState(stateInfo))}</span>`,
       ].join("");
     } else {
@@ -1557,11 +1578,119 @@ function deriveSystemStatus() {
 function renderSystemStatus() {
   const status = deriveSystemStatus();
   const node = $("#systemStatus");
-  if (!node) return status;
-  node.textContent = `当前状态 · ${status.label}`;
-  node.dataset.status = status.tone;
-  node.title = status.detail || status.label;
+  if (node) {
+    node.textContent = `当前状态 · ${status.label}`;
+    node.dataset.status = status.tone;
+    node.title = status.detail || status.label;
+  }
+  renderOperatorOverview(status);
   return status;
+}
+
+function setOverviewStatus(id, status, text = null) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.dataset.status = status;
+  if (text !== null) node.textContent = text;
+}
+
+function cameraReadiness(camera) {
+  if (!camera) return "waiting";
+  if (camera.available || camera.opened || camera.streaming) return "ready";
+  if (camera.detected) return "warning";
+  if (camera.error || camera.lastError) return "error";
+  return "waiting";
+}
+
+function renderOperatorOverview(status = deriveSystemStatus()) {
+  setText("operatorSampleName", state.sampleName || "未创建样品");
+  setText(
+    "operatorSampleMeta",
+    state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请选择样品信息并创建目录"
+  );
+  setText("operatorTaskLabel", status.label || "等待");
+  const taskLabel = $("#operatorTaskLabel");
+  if (taskLabel) {
+    taskLabel.dataset.status = status.tone || "waiting";
+    taskLabel.classList.toggle("ready", ["ready", "complete"].includes(status.tone));
+  }
+  setText("operatorTaskDetail", status.detail || "等待下一步操作。");
+
+  setOverviewStatus("operatorStm32Ready", state.hardwareStatus.connected || state.devicePrep.connect ? "ready" : "waiting");
+  setOverviewStatus("operatorRgbReady", cameraReadiness(state.cameraStatus.rgb));
+  setOverviewStatus("operatorSpectralReady", cameraReadiness(state.cameraStatus.multispectral));
+  setOverviewStatus("operatorCalibrationReady", state.calibrationStatus === "passed" ? "ready" : "warning");
+
+  setOverviewStatus("workflowSample", hasActiveSample() ? "ready" : "running");
+  setOverviewStatus("workflowDevice", isDevicePreparationReady() ? "ready" : state.devicePrep.connect ? "warning" : "waiting");
+  setOverviewStatus(
+    "workflowCapture",
+    state.trueCaptureRunning || state.captureCompleting ? "running" : state.currentCaptureValid || state.analysisDataDir ? "ready" : hasActiveSample() ? "running" : "waiting"
+  );
+  setOverviewStatus(
+    "workflowAnalysis",
+    state.systemTask === "shape" || state.systemTask === "ssc" || state.systemTask === "acid" ? "running" : state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph) ? "ready" : "waiting"
+  );
+  setOverviewStatus("workflowResult", state.grade ? "ready" : "waiting");
+
+  const action = $("#operatorPrimaryAction");
+  if (!action) return;
+  if (!hasActiveSample()) {
+    action.textContent = "新建样品";
+    action.dataset.nextAction = "sample";
+    action.disabled = false;
+  } else if (!isDevicePreparationReady()) {
+    action.textContent = "开始设备检查";
+    action.dataset.nextAction = "device";
+    action.disabled = Boolean(state.deviceCheckRunning);
+  } else if (!state.currentCaptureValid && !state.analysisDataDir) {
+    action.textContent = "开始采集";
+    action.dataset.nextAction = "capture";
+    action.disabled = false;
+  } else if (!state.shapeDone && state.analysisDataDir) {
+    action.textContent = "开始分析";
+    action.dataset.nextAction = "analysis";
+    action.disabled = false;
+  } else if (!state.grade) {
+    action.textContent = "查看检测结果";
+    action.dataset.nextAction = "result";
+    action.disabled = false;
+  } else {
+    action.textContent = "生成报告";
+    action.dataset.nextAction = "report";
+    action.disabled = false;
+  }
+}
+
+function runOperatorPrimaryAction() {
+  const action = $("#operatorPrimaryAction")?.dataset.nextAction || "sample";
+  if (action === "sample") {
+    switchView("capture", "sample");
+    $("#captureSampleName")?.focus();
+    return;
+  }
+  if (action === "device") {
+    switchView("motor", "connect");
+    $("#startDeviceCheck")?.click();
+    return;
+  }
+  if (action === "capture") {
+    switchView("capture", "sample");
+    const start = $("#startTrueCapture");
+    if (start && !start.disabled) start.click();
+    return;
+  }
+  if (action === "analysis") {
+    switchView("shape", "load-rgbd");
+    const run = $("#runShapeAnalysis");
+    if (run && !run.disabled) run.click();
+    return;
+  }
+  if (action === "report") {
+    $("#exportReport")?.click();
+    return;
+  }
+  switchView("taste", "summary");
 }
 
 function requireDevicePreparation(message = "请先完成当前离线设备准备检查：连接、电机和光源。相机真实采集与完整标定将在真实采集流程中单独检查。") {
@@ -1577,10 +1706,11 @@ function updateDevicePreparationControls() {
   const hint = ready ? "离线验证可用；真实采集仍需正式保存流程与采集协调器。" : "请先完成设备检查：控制器、风扇、滤光轮和光源控制。";
   $("#startWorkflow") && ($("#startWorkflow").disabled = !ready);
   $("#startWorkflow") && ($("#startWorkflow").title = hint);
-  $("#createSampleInline") && ($("#createSampleInline").disabled = !ready);
-  $("#createSampleInline") && ($("#createSampleInline").title = hint);
-  $("#createNewSample") && ($("#createNewSample").disabled = !ready);
-  $("#createNewSample") && ($("#createNewSample").title = hint);
+  const createHint = "新建样品只需要样品名称、种类/品种和保存位置；硬件 readiness 会在真实采集前单独检查。";
+  $("#createSampleInline") && ($("#createSampleInline").disabled = false);
+  $("#createSampleInline") && ($("#createSampleInline").title = createHint);
+  $("#createNewSample") && ($("#createNewSample").disabled = false);
+  $("#createNewSample") && ($("#createNewSample").title = createHint);
   $("#enterAnalysisFromCapture") && ($("#enterAnalysisFromCapture").disabled = !ready || !state.analysisDataDir);
   document.querySelectorAll("[data-step]").forEach((button) => {
     button.disabled = !ready;
@@ -2166,6 +2296,7 @@ async function runUnifiedDeviceCheck() {
     setText("statusNote", "设备检查完成：STM32、RGB、DVP2 已按独立硬件域分别检查；真实采集不可用。");
     addLog("一键设备检查完成：STM32 离线不会阻断 RGB/DVP2 检查；相机预览与参数能力不等于真实采集就绪。");
     await syncDevicePreparation();
+    await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
   } catch (error) {
     const checks = checksFromHardwareStatus(state.hardwareStatus);
     checks.controller = {
@@ -3137,6 +3268,7 @@ async function confirmCalibrationCheck() {
   renderCalibrationStatus();
   addLog("采集前标定检查已人工确认通过；不代表完整几何或尺寸标定完成。");
   await syncDevicePreparation();
+  await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
 }
 
 function collectTrueCapturePayload() {
@@ -3168,8 +3300,8 @@ function renderTrueCaptureReadiness(readiness = state.trueCaptureReadiness) {
   state.trueCaptureReadiness = readiness || state.trueCaptureReadiness;
   const ready = Boolean(state.trueCaptureReadiness?.ready);
   const reasons = state.trueCaptureReadiness?.blockingReasons || [];
-  const firstReason = reasons[0]?.code || reasons[0]?.message || "";
-  setText("trueCaptureReadiness", ready ? "就绪" : firstReason ? `未就绪: ${firstReason}` : "未就绪");
+  const reasonText = reasons.map((item) => item.code || item.message).filter(Boolean).join(" / ");
+  setText("trueCaptureReadiness", ready ? "就绪" : reasonText ? `未就绪: ${reasonText}` : "未就绪");
   const hint = ready
     ? "当前 capture plan 满足软件 readiness；硬件验收仍需按 checklist 记录。"
     : (reasons.map((item) => item.message || item.code).filter(Boolean).join("；") || "等待样品、目录和硬件状态。");
@@ -3212,6 +3344,11 @@ async function startTrueCapture() {
   if (!requireActiveSample()) return;
   const payload = collectTrueCapturePayload();
   if (!payload) return;
+  const readiness = await refreshTrueCaptureReadiness();
+  if (!readiness?.ready) {
+    addLog("True Capture readiness 未通过，请先处理阻塞原因。", "WARN");
+    return;
+  }
   state.trueCaptureRunning = true;
   state.captureStarted = true;
   lockRotationSettings();
@@ -3658,7 +3795,6 @@ async function loadNewSampleCatalog() {
 }
 
 async function createNewSample() {
-  if (!requireDevicePreparation()) return;
   const sampleName = $("#captureSampleName")?.value.trim() || $("#newSampleName")?.value.trim() || "";
   if (!sampleName) {
     setText("newSampleHint", "样品名称必须填写。");
@@ -3750,6 +3886,7 @@ async function chooseSaveRoot() {
       setPathDisplay("#saveRootDir", selected);
       setText("sampleCreateStatus", "保存位置和图像目录已选择");
       addLog(`样品保存位置已选择: ${selected}；RGB=${state.rgbDirName}，多光谱=${state.multispectralDirName}`);
+      await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
     }
   } catch (error) {
     if (error.payload?.cancelled) {
@@ -4510,7 +4647,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.querySelectorAll(".task-step").forEach((button) => {
     button.dataset.status = button.dataset.status || "idle";
-    button.addEventListener("click", () => switchView(button.dataset.view, button.dataset.stepKey));
+    if (button.dataset.view) {
+      button.addEventListener("click", () => switchView(button.dataset.view, button.dataset.stepKey));
+    }
   });
 
   document.querySelectorAll("[data-test]").forEach((button) => {
@@ -4668,6 +4807,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll("[data-camera-settings-tab]").forEach((button) => {
     button.addEventListener("click", () => setCameraSettingsTab(button.dataset.cameraSettingsTab));
   });
+  $("#operatorPrimaryAction")?.addEventListener("click", runOperatorPrimaryAction);
   ["#cameraAutoExposureEnabled", "#cameraGainAuto", "#cameraAutoWhiteBalanceEnabled"].forEach((selector) => {
     $(selector)?.addEventListener("change", updateCameraParameterControlState);
   });
@@ -4692,7 +4832,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
   $("#trueCaptureMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#trueCalibrationMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
-  $("#trueCalibrationId")?.addEventListener("input", () => renderTrueCaptureReadiness(state.trueCaptureReadiness));
+  $("#trueCalibrationId")?.addEventListener("input", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#operatorConfirmedReferences")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#startTrueCapture")?.addEventListener("click", () => startTrueCapture().catch((error) => addLog(error.message, "ERROR")));
   $("#cancelTrueCapture")?.addEventListener("click", () => cancelTrueCapture().catch((error) => addLog(error.message, "ERROR")));
@@ -4723,6 +4863,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("#modelStudioButton")?.addEventListener("click", openModelStudio);
+  $("#modelStudioNavButton")?.addEventListener("click", openModelStudio);
   $("#exitButton")?.addEventListener("click", shutdownApp);
 
   window.setInterval(updateClock, 1000);

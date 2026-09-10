@@ -28,6 +28,7 @@ from .errors import (
     CameraTimeoutError,
     CameraUnavailableError,
 )
+from process_lock import camera_device_mutex
 
 
 DEFAULT_DVP2_SERIAL = "GP23400004963"
@@ -132,11 +133,13 @@ class Dvp2MonoCamera:
         self._binding: Any | None = None
         self._sdk_info: Dvp2SdkInfo | None = None
         self._handle: int | None = None
+        self._device_mutex = None
         self._streaming = False
         self._selected_device: Dvp2DeviceInfo | None = None
         self._last_devices: list[Dvp2DeviceInfo] = []
         self._last_error = ""
         self._last_technical_error = ""
+        self._status_code = "NOT_DETECTED"
         self._available = False
         self._resolution: tuple[int, int] | None = None
         self._exposure: float | None = None
@@ -185,17 +188,30 @@ class Dvp2MonoCamera:
         binding = self._ensure_binding()
         devices = self._enum_devices(binding)
         device = self._select_device(devices)
+        self._device_mutex = camera_device_mutex("dvp2", self._ownership_identity(device))
+        if not self._device_mutex.acquire():
+            self._selected_device = device
+            self._available = False
+            self._status_code = "BUSY_BY_OTHER_PROCESS"
+            self._last_error = "已检测到 DVP2 多光谱相机，但当前被另一个 FruitTasteAnalyzer 实例占用。"
+            self._last_technical_error = f"DVP2 ownership mutex busy; identity={self._ownership_identity(device)}"
+            raise CameraOpenError(self._last_error, self._last_technical_error)
         try:
             handle = _open_device(binding, device, auto_ip=self.auto_ip)
             self._handle = int(handle)
             self._selected_device = self._merge_open_device_info(binding, device)
             self._available = True
+            self._status_code = "CONNECTED"
             self._last_error = ""
             self._last_technical_error = ""
             self._refresh_open_status(binding)
         except Dvp2ApiError as exc:
             self._last_error = _friendly_open_error(self._selected_device or device)
             self._last_technical_error = str(exc)
+            self._status_code = "OPEN_FAILED"
+            if self._device_mutex is not None:
+                self._device_mutex.release()
+                self._device_mutex = None
             raise CameraOpenError(self._last_error, self._last_technical_error) from exc
 
     def close(self) -> None:
@@ -204,6 +220,9 @@ class Dvp2MonoCamera:
         self._handle = None
         if binding is None or handle is None:
             self._streaming = False
+            if self._device_mutex is not None:
+                self._device_mutex.release()
+                self._device_mutex = None
             return
         try:
             if self._streaming:
@@ -216,6 +235,9 @@ class Dvp2MonoCamera:
             return
         finally:
             self._streaming = False
+            if self._device_mutex is not None:
+                self._device_mutex.release()
+                self._device_mutex = None
 
     @property
     def is_open(self) -> bool:
@@ -271,19 +293,23 @@ class Dvp2MonoCamera:
             pixel_format=self._pixel_format,
             color_space="MONO",
             frame_dtype=self._frame_dtype,
+            status_code=self._status_code if self._status_code else ("CONNECTED" if self._available else "NOT_DETECTED"),
             sdk_path=str(info.sdk_dir) if info.sdk_dir else "",
             dll_path=str(info.dll_path) if info.dll_path else "",
         )
         if not info.sdk_available:
+            status.status_code = "SDK_MISSING"
             status.detected = False
             status.available = False
             status.connected = False
             status.error = "多光谱 GigE 相机 DVP2 SDK 尚未安装"
             status.technical_error = info.reason or "DVPCamera64.dll not found"
         elif not detected:
+            status.status_code = "NOT_DETECTED"
             status.error = self._last_error or "DVP2 SDK 已加载，但未枚举到多光谱相机"
             status.technical_error = self._last_technical_error or "dvpRefresh/dvpEnum returned no target device"
         elif self._last_error and not self._available:
+            status.status_code = self._status_code or "OPEN_FAILED"
             status.error = self._last_error
             status.technical_error = self._last_technical_error
         return status
@@ -300,6 +326,7 @@ class Dvp2MonoCamera:
         except Dvp2ApiError as exc:
             self._last_error = "多光谱相机视频流启动失败"
             self._last_technical_error = str(exc)
+            self._status_code = "DRIVER_ERROR"
             raise CameraCaptureError(self._last_error, self._last_technical_error) from exc
 
     def stop_stream(self) -> None:
@@ -352,11 +379,13 @@ class Dvp2MonoCamera:
         except Dvp2ApiError as exc:
             self._last_error = "多光谱相机取帧超时" if exc.status == DVP_STATUS_TIME_OUT else "多光谱相机取帧失败"
             self._last_technical_error = str(exc)
+            self._status_code = "DRIVER_ERROR"
             error_type = CameraTimeoutError if exc.status == DVP_STATUS_TIME_OUT else CameraCaptureError
             raise error_type(self._last_error, self._last_technical_error) from exc
         except Dvp2BindingError as exc:
             self._last_error = "多光谱相机帧格式暂不支持"
             self._last_technical_error = str(exc)
+            self._status_code = "DRIVER_ERROR"
             raise CameraCaptureError(self._last_error, self._last_technical_error) from exc
 
     def set_exposure(self, value: float) -> float:
@@ -494,6 +523,11 @@ class Dvp2MonoCamera:
         if not self.serial_number and len(devices) == 1:
             return devices[0]
         return None
+
+    def _ownership_identity(self, device: Dvp2DeviceInfo | None = None) -> str:
+        if device:
+            return _device_stable_id(device) or device.serial_number or device.user_id or device.friendly_name
+        return self.stable_id or self.serial_number or self.friendly_name or f"dvp2-index:{self.device_index}"
 
     def _merge_open_device_info(self, binding: Any, fallback: Dvp2DeviceInfo) -> Dvp2DeviceInfo:
         try:
