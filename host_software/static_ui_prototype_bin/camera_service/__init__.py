@@ -13,6 +13,7 @@ from .errors import (
 from .focus_quality import FocusEvaluator, FocusMetrics, FocusResult, FocusRoi, FocusThresholdConfig
 from .manager import CameraManager
 from .rgb_uvc import RgbUvcCamera
+from .settings_store import CameraSettingsStore, default_camera_settings_path
 
 __all__ = [
     "CameraCaptureError",
@@ -26,6 +27,7 @@ __all__ = [
     "CameraStatus",
     "CameraTimeoutError",
     "CameraUnavailableError",
+    "CameraSettingsStore",
     "Dvp2MonoCamera",
     "RgbUvcCamera",
     "RgbCameraConfig",
@@ -35,4 +37,5 @@ __all__ = [
     "FocusResult",
     "FocusRoi",
     "FocusThresholdConfig",
+    "default_camera_settings_path",
 ]

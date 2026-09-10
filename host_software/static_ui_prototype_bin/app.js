@@ -63,6 +63,7 @@ const state = {
     rgb: null,
     multispectral: null,
   },
+  cameraSettings: null,
   deviceDiscovery: {
     candidates: [],
     byKind: {},
@@ -525,6 +526,84 @@ function readCameraSettings() {
   }
 }
 
+function legacyCameraSettingsExists() {
+  try {
+    return Boolean(localStorage.getItem(CAMERA_SETTINGS_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRgbUiSettings(settings = {}) {
+  const merged = { ...DEFAULT_CAMERA_SETTINGS, ...(settings || {}) };
+  const resolution = parseResolutionSetting(merged.resolution || merged, DEFAULT_CAMERA_SETTINGS);
+  return {
+    ...merged,
+    deviceIndex: parseNumberSetting(merged.deviceIndex, DEFAULT_CAMERA_SETTINGS.deviceIndex),
+    width: resolution.width,
+    height: resolution.height,
+    resolution: resolution.resolution,
+    fps: parseNumberSetting(merged.fps, DEFAULT_CAMERA_SETTINGS.fps),
+    fourcc: String(merged.fourcc || DEFAULT_CAMERA_SETTINGS.fourcc),
+    autoExposureEnabled: Boolean(merged.autoExposureEnabled),
+    exposure: parseNumberSetting(merged.exposure, DEFAULT_CAMERA_SETTINGS.exposure),
+    gainAuto: Boolean(merged.gainAuto),
+    gain: parseNumberSetting(merged.gain, DEFAULT_CAMERA_SETTINGS.gain),
+    autoWhiteBalanceEnabled: Boolean(merged.autoWhiteBalanceEnabled),
+    whiteBalance: parseNumberSetting(merged.whiteBalance, DEFAULT_CAMERA_SETTINGS.whiteBalance),
+    fx: parseNumberSetting(merged.fx, DEFAULT_CAMERA_SETTINGS.fx),
+    fy: parseNumberSetting(merged.fy, DEFAULT_CAMERA_SETTINGS.fy),
+    cx: parseNumberSetting(merged.cx, DEFAULT_CAMERA_SETTINGS.cx),
+    cy: parseNumberSetting(merged.cy, DEFAULT_CAMERA_SETTINGS.cy),
+  };
+}
+
+function collectCameraSettingsPayload() {
+  return {
+    rgb: collectCameraSettingsFromForm(),
+    multispectral: collectMultispectralCameraSettingsFromForm(),
+  };
+}
+
+function applyPersistentCameraSettings(settings = state.cameraSettings) {
+  if (!settings) return;
+  state.cameraSettings = settings;
+  if (settings.rgb) {
+    const rgbSettings = normalizeRgbUiSettings(settings.rgb);
+    applyCameraSettings(rgbSettings);
+    try {
+      localStorage.setItem(CAMERA_SETTINGS_KEY, JSON.stringify(rgbSettings));
+    } catch {}
+  }
+  if (settings.multispectral) {
+    setMultispectralNumericControl("multispectralExposureInput", settings.multispectral.exposure);
+    setMultispectralNumericControl("multispectralGainInput", settings.multispectral.gain);
+  }
+  renderCameraPersistenceSummary();
+}
+
+async function loadPersistentCameraSettings() {
+  try {
+    const payload = await api("/api/camera/settings");
+    const settings = payload.settings || {};
+    if (!settings.exists && legacyCameraSettingsExists()) {
+      const migrated = await api("/api/camera/settings/migrate-legacy", {
+        method: "POST",
+        body: JSON.stringify({ rgb: readCameraSettings() }),
+      });
+      applyPersistentCameraSettings(migrated.result?.settings || settings);
+      if (migrated.result?.migration?.migrated) {
+        addLog("已迁移旧版浏览器 RGB 相机参数；后端配置现在作为默认恢复来源。");
+      }
+      return;
+    }
+    applyPersistentCameraSettings(settings);
+  } catch (error) {
+    applyCameraSettings(readCameraSettings());
+    addLog(error.message || "后端相机默认配置读取失败，已使用浏览器缓存。", "WARN");
+  }
+}
+
 function collectCameraSettingsFromForm() {
   const resolution = parseResolutionSetting($("#cameraResolution")?.value, DEFAULT_CAMERA_SETTINGS);
   const autoExposureEnabled = Boolean($("#cameraAutoExposureEnabled")?.checked);
@@ -571,19 +650,38 @@ function applyCameraSettings(settings = readCameraSettings()) {
   setText("cameraSettingsStatus", "当前参数");
 }
 
-function saveCameraSettings() {
-  const settings = collectCameraSettingsFromForm();
-  localStorage.setItem(CAMERA_SETTINGS_KEY, JSON.stringify(settings));
-  applyCameraSettings(settings);
-  setText("cameraSettingsStatus", "默认配置已保存");
-  addLog(`相机参数已保存：RGB index=${settings.deviceIndex}，${settings.resolution} @ ${settings.fps}fps ${settings.fourcc}；fx/fy=${settings.fx}/${settings.fy}。`);
+async function saveCameraSettings() {
+  const settings = collectCameraSettingsPayload();
+  try {
+    const payload = await api("/api/camera/settings/save", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    });
+    applyPersistentCameraSettings(payload.result?.settings);
+    setText("cameraSettingsStatus", "默认配置已保存");
+    addLog("相机默认恢复参数已保存到后端配置文件。");
+  } catch (error) {
+    addLog(error.message || "相机默认配置保存失败。", "ERROR");
+  }
 }
 
-function resetCameraSettings() {
-  localStorage.removeItem(CAMERA_SETTINGS_KEY);
-  applyCameraSettings({ ...DEFAULT_CAMERA_SETTINGS });
-  setText("cameraSettingsStatus", "已恢复默认");
-  addLog("相机参数已恢复为默认值。", "WARN");
+async function resetCameraSettings(section = null) {
+  try {
+    const label = section === "rgb" ? "RGB" : section === "multispectral" ? "多光谱" : "全部";
+    if (!window.confirm(`恢复${label}默认配置会清除后端保存的自定义相机参数，并尝试把默认值下发到当前相机。继续吗？`)) {
+      return;
+    }
+    localStorage.removeItem(CAMERA_SETTINGS_KEY);
+    const payload = await api("/api/camera/settings/reset", {
+      method: "POST",
+      body: JSON.stringify({ section, apply: true }),
+    });
+    applyPersistentCameraSettings(payload.result?.settings);
+    setText("cameraSettingsStatus", "已恢复默认");
+    addLog("相机参数已恢复为软件默认配置；如硬件在线，后端已尝试下发并回读。", "WARN");
+  } catch (error) {
+    addLog(error.message || "相机默认配置恢复失败。", "ERROR");
+  }
 }
 
 function updateCameraParameterControlState() {
@@ -660,6 +758,7 @@ function renderCameraSettingsStatus() {
     technicalError: rgb.technicalError || "",
   };
   setText("rgbCameraCapabilityText", JSON.stringify(capabilityText, null, 2));
+  renderCameraPersistenceSummary("rgb", state.cameraSettings?.rgb, rgb.settingsRestoreState || {});
 
   const multispectral = state.cameraStatus?.multispectral || {};
   const multiActual = multispectral.actual || {};
@@ -704,6 +803,44 @@ function renderCameraSettingsStatus() {
     technicalError: multispectral.technicalError || "",
   };
   setText("multispectralCameraCapabilityText", JSON.stringify(multiCapabilityText, null, 2));
+  renderCameraPersistenceSummary("multispectral", state.cameraSettings?.multispectral, multispectral.settingsRestoreState || {});
+}
+
+function formatRestoreState(stateInfo = {}) {
+  const stateName = stateInfo.state || "not_attempted";
+  const labels = {
+    not_attempted: "尚未恢复",
+    restored: "已恢复",
+    partial: "部分恢复",
+    failed: "恢复失败",
+    device_mismatch: "设备不一致",
+  };
+  const source = stateInfo.settingsSource === "persistent" ? "已保存配置" : stateInfo.settingsSource === "manual_current_session" ? "当前会话" : "默认配置";
+  return `${source} / ${labels[stateName] || stateName}${stateInfo.restoreError ? ` / ${stateInfo.restoreError}` : ""}`;
+}
+
+function renderCameraPersistenceSummary(role = null, saved = null, restoreState = null) {
+  const targets = role ? [role] : ["rgb", "multispectral"];
+  targets.forEach((targetRole) => {
+    const node = targetRole === "rgb" ? $("#rgbSettingsPersistenceSummary") : $("#multispectralSettingsPersistenceSummary");
+    if (!node) return;
+    const savedSettings = saved || state.cameraSettings?.[targetRole] || {};
+    const stateInfo = restoreState || state.cameraStatus?.[targetRole]?.settingsRestoreState || state.cameraSettings?.restoreState?.[targetRole] || {};
+    node.dataset.status = stateInfo.state === "failed" || stateInfo.state === "device_mismatch" ? "error" : stateInfo.state === "partial" ? "warning" : "";
+    if (targetRole === "rgb") {
+      node.innerHTML = [
+        `<span>保存：${escapeHtml(savedSettings.width || "--")} x ${escapeHtml(savedSettings.height || "--")} @ ${escapeHtml(savedSettings.fps ?? "--")} FPS ${escapeHtml(savedSettings.fourcc || "--")}</span>`,
+        `<span>曝光：${escapeHtml(savedSettings.autoExposureEnabled ? "Auto" : savedSettings.exposure ?? "--")}；增益：${escapeHtml(savedSettings.gainAuto ? "默认" : savedSettings.gain ?? "--")}；白平衡：${escapeHtml(savedSettings.autoWhiteBalanceEnabled ? "Auto" : savedSettings.whiteBalance ?? "--")}</span>`,
+        `<span>恢复：${escapeHtml(formatRestoreState(stateInfo))}</span>`,
+      ].join("");
+    } else {
+      node.innerHTML = [
+        `<span>保存：Exposure ${escapeHtml(savedSettings.exposure ?? "--")} μs / Gain ${escapeHtml(savedSettings.gain ?? "--")}</span>`,
+        `<span>设备：${escapeHtml(savedSettings.deviceStableId || savedSettings.serialNumber || "--")}</span>`,
+        `<span>恢复：${escapeHtml(formatRestoreState(stateInfo))}</span>`,
+      ].join("");
+    }
+  });
 }
 
 function setMultispectralNumericControl(id, value, capability = {}) {
@@ -805,25 +942,50 @@ async function probeRgbCamera() {
   }
 }
 
-async function applyRgbCameraSettings() {
+async function applyRgbCameraSettings(options = {}) {
   const settings = collectCameraSettingsFromForm();
   setText("cameraSettingsStatus", "正在应用到相机");
   renderRgbApplySummary(null);
   try {
     const payload = await api("/api/camera/rgb/apply-settings", {
       method: "POST",
-      body: JSON.stringify(settings),
+      body: JSON.stringify({ ...settings, persist: Boolean(options.persist) }),
     });
     const result = payload.result || {};
     applyCameraStatus({ ...(state.cameraStatus || {}), rgb: result.status, preview: result.preview });
+    if (result.settings) applyPersistentCameraSettings(result.settings);
     renderCameraSettingsStatus();
     renderRgbApplySummary(result);
-    setText("cameraSettingsStatus", "已回读实际参数");
-    addLog(result.restartRequired ? "RGB 相机参数已应用，并重新打开相机。" : "RGB 动态参数已应用到相机。");
+    setText("cameraSettingsStatus", options.persist ? "已应用并保存" : "已回读实际参数");
+    addLog(options.persist ? "RGB 相机参数已应用、回读并保存为后端默认恢复配置。" : (result.restartRequired ? "RGB 相机参数已应用，并重新打开相机。" : "RGB 动态参数已应用到相机。"));
   } catch (error) {
     renderRgbApplySummary(null, error);
     setText("cameraSettingsStatus", "应用失败");
     addLog(error.message || "RGB 相机参数应用失败。", "ERROR");
+  }
+}
+
+async function restoreSavedCameraSettings(section = null) {
+  setText("cameraSettingsStatus", "正在恢复已保存配置");
+  try {
+    const payload = await api("/api/camera/settings/restore", {
+      method: "POST",
+      body: JSON.stringify({ section, force: true }),
+    });
+    const result = payload.result || {};
+    applyPersistentCameraSettings(result.settings);
+    if (result.restored?.rgb?.role || result.restored?.rgb) {
+      applyCameraStatus({ ...(state.cameraStatus || {}), rgb: result.restored.rgb, preview: result.preview });
+    }
+    if (result.restored?.multispectral?.role || result.restored?.multispectral) {
+      applyCameraStatus({ ...(state.cameraStatus || {}), multispectral: result.restored.multispectral, preview: result.preview });
+    }
+    renderCameraSettingsStatus();
+    setText("cameraSettingsStatus", "已恢复并回读");
+    addLog("已从后端配置恢复相机参数并读取实际值。");
+  } catch (error) {
+    setText("cameraSettingsStatus", "恢复失败");
+    addLog(error.message || "恢复已保存相机参数失败。", "ERROR");
   }
 }
 
@@ -976,21 +1138,22 @@ async function probeMultispectralCamera() {
   }
 }
 
-async function applyMultispectralCameraSettings() {
+async function applyMultispectralCameraSettings(options = {}) {
   const settings = collectMultispectralCameraSettingsFromForm();
   setText("cameraSettingsStatus", "正在应用多光谱相机参数");
   renderMultispectralApplySummary(null);
   try {
     const payload = await api("/api/camera/multispectral/apply-settings", {
       method: "POST",
-      body: JSON.stringify(settings),
+      body: JSON.stringify({ ...settings, persist: Boolean(options.persist) }),
     });
     const result = payload.result || {};
     applyCameraStatus({ ...(state.cameraStatus || {}), multispectral: result.status, preview: result.preview });
+    if (result.settings) applyPersistentCameraSettings(result.settings);
     renderCameraSettingsStatus();
     renderMultispectralApplySummary(result);
-    setText("cameraSettingsStatus", "多光谱参数已回读");
-    addLog("多光谱相机曝光 / 增益已通过 DVP2 应用并回读。");
+    setText("cameraSettingsStatus", options.persist ? "多光谱参数已应用并保存" : "多光谱参数已回读");
+    addLog(options.persist ? "多光谱相机曝光 / 增益已通过 DVP2 应用、回读并保存。" : "多光谱相机曝光 / 增益已通过 DVP2 应用并回读。");
   } catch (error) {
     renderMultispectralApplySummary(null, error);
     setText("cameraSettingsStatus", "多光谱参数应用失败");
@@ -1695,6 +1858,9 @@ function applyHardwareStatus(device = {}) {
 }
 
 function applyCameraStatus(cameras = {}) {
+  if (cameras?.settings) {
+    state.cameraSettings = cameras.settings;
+  }
   state.cameraStatus = {
     ...state.cameraStatus,
     ...(cameras || {}),
@@ -4506,17 +4672,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     $(selector)?.addEventListener("change", updateCameraParameterControlState);
   });
   $("#testRgbCamera")?.addEventListener("click", probeRgbCamera);
-  $("#applyRgbCameraSettings")?.addEventListener("click", applyRgbCameraSettings);
+  $("#applyRgbCameraSettings")?.addEventListener("click", () => applyRgbCameraSettings());
+  $("#applySaveRgbCameraSettings")?.addEventListener("click", () => applyRgbCameraSettings({ persist: true }));
   $("#startRgbPreview")?.addEventListener("click", startRgbPreview);
   $("#stopRgbPreview")?.addEventListener("click", stopRgbPreview);
   $("#testMultispectralCamera")?.addEventListener("click", probeMultispectralCamera);
-  $("#applyMultispectralCameraSettings")?.addEventListener("click", applyMultispectralCameraSettings);
+  $("#applyMultispectralCameraSettings")?.addEventListener("click", () => applyMultispectralCameraSettings());
+  $("#applySaveMultispectralCameraSettings")?.addEventListener("click", () => applyMultispectralCameraSettings({ persist: true }));
   $("#startMultispectralPreview")?.addEventListener("click", startMultispectralPreview);
   $("#stopMultispectralPreview")?.addEventListener("click", stopMultispectralPreview);
   $("#startMultispectralFocus")?.addEventListener("click", startMultispectralFocus);
   $("#stopMultispectralFocus")?.addEventListener("click", stopMultispectralFocus);
-  $("#saveCameraSettings")?.addEventListener("click", saveCameraSettings);
-  $("#resetCameraSettings")?.addEventListener("click", resetCameraSettings);
+  $("#saveCameraSettings")?.addEventListener("click", () => saveCameraSettings());
+  $("#saveMultispectralCameraSettings")?.addEventListener("click", () => saveCameraSettings());
+  $("#restoreSavedCameraSettings")?.addEventListener("click", () => restoreSavedCameraSettings("rgb"));
+  $("#restoreSavedMultispectralCameraSettings")?.addEventListener("click", () => restoreSavedCameraSettings("multispectral"));
+  $("#resetCameraSettings")?.addEventListener("click", () => resetCameraSettings("rgb"));
+  $("#resetMultispectralCameraSettings")?.addEventListener("click", () => resetCameraSettings("multispectral"));
   $("#confirmCalibration")?.addEventListener("click", () => confirmCalibrationCheck().catch((error) => addLog(error.message, "WARN")));
   $("#trueCaptureMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#trueCalibrationMode")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
@@ -4555,7 +4727,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   window.setInterval(updateClock, 1000);
   updateClock();
-  applyCameraSettings();
+  await loadPersistentCameraSettings();
   setCameraSettingsTab("rgb");
   renderRgbApplySummary();
   renderRotationPlan();

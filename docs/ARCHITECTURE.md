@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-08
+更新时间：2026-09-10
 
 ## 总体结构
 
@@ -20,6 +20,7 @@ host_software/static_ui_prototype_bin/
   rotation_plan.py
   capture_coordinator.py
   camera_service/
+  config/camera_settings.json
   quality_prediction.py
   quality_algorithm/
   training/
@@ -61,7 +62,8 @@ launcher.py
 | 相机服务接口 | `camera_service/base.py`, `camera_service/errors.py` | `CameraDeviceInfo`, `CameraFrame`, `CameraStatus`, `CameraError` | 相机 adapter 状态、帧、参数请求 | 统一状态/异常；`CameraStatus` 区分 `detected`、`available`、`opened`、`streaming`；frame 不绑定样品目录 | Python dataclass/protocol |
 | RGB UVC 相机 | `camera_service/config.py`, `camera_service/rgb_uvc.py` | `RgbCameraConfig`, `RgbUvcCamera` | OpenCV device_index、DirectShow capture、请求 width/height/fps/fourcc/exposure/gain/white balance | RGB `uint8` H×W×3 numpy 帧；probe 成功后释放句柄仍保留 `detected/available`；status 同时返回 `requested`、`actual`、`capabilities` 和 `transport=UVC/DirectShow`；支持 apply config | `cv2`, numpy |
 | DVP2 多光谱相机 | `camera_service/dvp2_binding.py`, `camera_service/dvp2_mono.py` | `Dvp2Binding`, `Dvp2MonoCamera`, `find_dvp2_sdk()`, `frame_to_array()` | `DVP2_SDK_DIR`、配置路径、`DVPCamera64.dll`、真实 `DVPCamera.h`/官方示例、GigE 设备枚举信息 | `dvpRefresh/dvpEnum` 真实枚举、按 serial/user_id 选择目标、打开、状态、ROI/曝光/增益/触发/帧转换接口；`capture_frame()` 保留 mono `uint8/uint16` raw dtype；`connected` 作为 detected 兼容别名；已发现但无法打开时提示 BasedCam3/其他程序占用；当前只验证 `Mono8`，不开放 PixelFormat 切换 | `ctypes`, numpy, pathlib |
-| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `probe_rgb()`, `probe_multispectral()`, `apply_rgb_settings()`, `apply_multispectral_settings()`, `capture_rgb_frame()`, `capture_multispectral_frame()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `start_multispectral_preview()`, `multispectral_preview_jpeg()`, preview stop methods | RGB adapter、多光谱 adapter、RGB/多光谱参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB/DVP2 probe 结果、RGB requested/actual、多光谱曝光/增益回读、RGB 与多光谱 JPEG 预览帧；RGB/DVP2 preview 均由后台 latest-frame + latest encoded JPEG cache 驱动，HTTP 请求直接返回最新 JPEG cache 并允许 drop old frame；`capture_rgb_frame()` 通过同一 RGB adapter 返回正式 RGB `CameraFrame` 和状态快照；`capture_multispectral_frame()` 通过同一 DVP2 adapter 返回正式 raw mono `CameraFrame` 和状态快照，预览运行中复用 stream，预览停止时临时 open/start/capture/stop/close；预览 JPEG 只用于浏览器显示，不改变底层 frame dtype，不作为正式 scientific capture 输入 | RgbUvcCamera, Dvp2MonoCamera, PIL, OpenCV 可选, numpy |
+| 相机参数持久化 | `camera_service/settings_store.py`, `config/camera_settings.json` | `CameraSettingsStore.load/save/get_rgb/get_multispectral/update_rgb/update_multispectral/reset/migrate_legacy_rgb()` | RGB/DVP2 requested settings、status actual、settingResults、legacy localStorage payload | 后端权威 UTF-8 JSON 配置；文件缺失返回软件默认；JSON 损坏返回 default + warning；写入使用 atomic replace；白名单字段只包含 RGB device identity/index/width/height/fps/fourcc/exposure/gain/white balance/几何缓存，以及 DVP2 device identity/exposure/gain；不接受 PixelFormat/trigger/ROI 等未验证底层参数 | pathlib, json, RgbCameraConfig |
+| 相机管理器 | `camera_service/manager.py` | `CameraManager.status()`, `CameraManager.checks()`, `probe_rgb()`, `probe_multispectral()`, `apply_rgb_settings()`, `apply_multispectral_settings()`, `camera_settings()`, `save_camera_settings()`, `restore_camera_settings()`, `reset_camera_settings()`, `migrate_legacy_camera_settings()`, `capture_rgb_frame()`, `capture_multispectral_frame()`, `start_rgb_preview()`, `rgb_preview_jpeg()`, `start_multispectral_preview()`, `multispectral_preview_jpeg()`, preview stop methods | RGB adapter、多光谱 adapter、RGB/多光谱参数 payload、preview 参数 | `/api/status` camera 状态、设备检查相机项、RGB/DVP2 probe 结果、RGB requested/actual、多光谱曝光/增益回读、相机配置 Apply/Persist/Restore/Readback 状态、RGB 与多光谱 JPEG 预览帧；`persist=true` 成功回读后写 store；restore 在 probe、preview/capture open、explicit restore/reconnect 触发而不是每次 status 触发；正式 capture metadata 记录 requested/actual/settingsSource/settingsRestoreState；RGB/DVP2 preview 均由后台 latest-frame + latest encoded JPEG cache 驱动，HTTP 请求直接返回最新 JPEG cache 并允许 drop old frame；预览 JPEG 只用于浏览器显示，不改变底层 frame dtype，不作为正式 scientific capture 输入 | RgbUvcCamera, Dvp2MonoCamera, CameraSettingsStore, PIL, OpenCV 可选, numpy |
 | 样品旋转计划 | `rotation_plan.py`, `backend_server.py`, `app.js` | `build_capture_rotation_plan()`, `mark_plan_completed()`, `renderRotationPlan()` | 期望角度间隔、起始角度、CW/CCW、闭合补拍 | `captureRotationPlan`、`sample_rotation` metadata、`views.json` | math/json |
 | 样品目录 | `backend_server.py` | `create_unique_sample_folder()`, `ensure_sample_capture_folder()` | 保存根目录、样品名、metadata | 创建目录和 `metadata.json` | pathlib/json |
 | 离线采集 | `backend_server.py` | `create_offline_capture_dataset()` | 样品目录、metadata、`captureRotationPlan` | 写模拟图片、校准图、View metadata | PIL, rotation_plan |
@@ -93,11 +95,28 @@ GET /api/status
   -> dependency_status()
   -> DeviceManager.status()
   -> CameraManager.status()
+  -> CameraSettingsStore.snapshot()
   -> SessionState.snapshot()
   -> defaultSaveRoot
 ```
 
 输出包括 Python 依赖、设备准备状态、真实/离线设备状态、顶层 `cameras`、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。`device.cameras` 与顶层 `cameras` 保持同一状态来源。
+
+### 相机参数持久化
+
+```text
+GET  /api/camera/settings
+POST /api/camera/settings/save
+POST /api/camera/settings/reset
+POST /api/camera/settings/restore
+POST /api/camera/settings/migrate-legacy
+POST /api/camera/rgb/apply-settings              body may include persist=true
+POST /api/camera/multispectral/apply-settings    body may include persist=true
+```
+
+`Apply` 只把 UI requested values 下发到当前相机并返回 requested/actual/settingResults；`Apply & Save` 在成功下发和回读后把 requested settings、lastActual 和 settingResults 写入 `config/camera_settings.json`；`Save Default` 只保存未来启动/重连时要恢复的 requested settings；`Restore Saved` 从 store 重新下发并回读；`Restore Default` 重置 store 中对应 section，可在硬件在线时尝试下发软件默认。旧 `fruitAnalyzer.cameraSettings` 只作为 UI cache/legacy migration 来源，后端 store 是 authoritative source。该持久化是上位机本地 JSON 配置，不表示写入 RGB/DVP2 EEPROM 或 UserSet。
+
+restore state 固定为 `not_attempted/restored/partial/failed/device_mismatch`，并带 `lastRestoredAt`、`restoreError`、`settingsSource` 和 per-setting results。DVP2 restore 后必须通过 `set_exposure()`/`set_gain()` 的真实 get readback 更新 actual；RGB DirectShow 参数按单项 accepted/unsupported/actual 记录，非关键项 unsupported 不会伪造成功。设备身份 mismatch 返回 `CAMERA_SETTINGS_DEVICE_MISMATCH`，True Capture readiness 对 mismatch 作为 blocker，对普通 restore failure 作为 warning；无保存配置时使用 `settingsSource=default`，不构成 blocker。
 
 ### 设备准备
 

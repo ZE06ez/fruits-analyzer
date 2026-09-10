@@ -40,6 +40,10 @@ class FakeCameraManager:
         self.multispectral_applied_payload = None
         self.preview_running = False
         self.multispectral_preview_running = False
+        self.saved_settings_payload = None
+        self.reset_settings_payload = None
+        self.restore_settings_payload = None
+        self.legacy_settings_payload = None
 
     def status(self):
         return {
@@ -89,6 +93,34 @@ class FakeCameraManager:
                 "rgb": {"running": self.preview_running, "width": 960, "height": 540, "fps": 12},
                 "multispectral": {"running": self.multispectral_preview_running, "width": 960, "height": 540, "fps": 8},
             },
+            "settings": self.camera_settings(),
+        }
+
+    def camera_settings(self):
+        return {
+            "version": 1,
+            "path": "config/camera_settings.json",
+            "exists": True,
+            "rgb": {
+                "deviceIndex": 1,
+                "width": 3840,
+                "height": 2160,
+                "fps": 25,
+                "fourcc": "MJPG",
+                "settingsSource": "persistent",
+            },
+            "multispectral": {
+                "deviceStableId": "DSGP23400004963",
+                "exposure": 10000.0,
+                "gain": 1.0,
+                "settingsSource": "persistent",
+            },
+            "restoreState": {
+                "rgb": {"state": "restored", "settingsSource": "persistent"},
+                "multispectral": {"state": "restored", "settingsSource": "persistent"},
+            },
+            "hasCustom": {"rgb": True, "multispectral": True},
+            "warnings": [],
         }
 
     def probe_rgb(self):
@@ -159,6 +191,22 @@ class FakeCameraManager:
             },
             "preview": self.status()["preview"],
         }
+
+    def save_camera_settings(self, payload):
+        self.saved_settings_payload = dict(payload)
+        return {"settings": self.camera_settings()}
+
+    def reset_camera_settings(self, payload):
+        self.reset_settings_payload = dict(payload)
+        return {"settings": self.camera_settings(), "applied": {}}
+
+    def restore_camera_settings(self, payload):
+        self.restore_settings_payload = dict(payload)
+        return {"restored": {"rgb": self.status()["rgb"], "multispectral": self.status()["multispectral"]}, "settings": self.camera_settings()}
+
+    def migrate_legacy_camera_settings(self, payload):
+        self.legacy_settings_payload = dict(payload)
+        return {"settings": self.camera_settings(), "migration": {"migrated": False, "reason": "backend_settings_exists"}}
 
     def start_multispectral_preview(self, payload=None):
         self.multispectral_preview_running = True
@@ -710,6 +758,29 @@ class BackendDeviceApiTests(unittest.TestCase):
         multi_stopped = self.post_json("/api/camera/multispectral/preview/stop")
         self.assertFalse(multi_stopped["result"]["preview"]["multispectral"]["running"])
 
+    def test_camera_settings_persistence_routes(self):
+        settings = self.get_json("/api/camera/settings")
+        self.assertEqual(settings["settings"]["rgb"]["settingsSource"], "persistent")
+
+        saved = self.post_json("/api/camera/settings/save", {
+            "rgb": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "multispectral": {"exposure": 12000, "gain": 1.5},
+        })
+        self.assertEqual(saved["result"]["settings"]["multispectral"]["deviceStableId"], "DSGP23400004963")
+        self.assertEqual(self.device.camera_manager.saved_settings_payload["multispectral"]["gain"], 1.5)
+
+        restored = self.post_json("/api/camera/settings/restore", {"section": "multispectral", "force": True})
+        self.assertEqual(restored["result"]["settings"]["restoreState"]["multispectral"]["state"], "restored")
+        self.assertEqual(self.device.camera_manager.restore_settings_payload["section"], "multispectral")
+
+        reset = self.post_json("/api/camera/settings/reset", {"section": "rgb", "apply": True})
+        self.assertIn("settings", reset["result"])
+        self.assertTrue(self.device.camera_manager.reset_settings_payload["apply"])
+
+        migrated = self.post_json("/api/camera/settings/migrate-legacy", {"rgb": {"deviceIndex": 2}})
+        self.assertEqual(migrated["result"]["migration"]["reason"], "backend_settings_exists")
+        self.assertEqual(self.device.camera_manager.legacy_settings_payload["rgb"]["deviceIndex"], 2)
+
     def test_multispectral_focus_evaluate_api_and_capture_start_guard(self):
         self.post_json("/api/camera/multispectral/preview/start", {"width": 960, "height": 540, "fps": 8})
 
@@ -825,6 +896,8 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("DVP2", multispectral_section)
         self.assertIn("PixelFormat", multispectral_section)
         self.assertIn("id=\"applyMultispectralCameraSettings\"", multispectral_section)
+        self.assertIn("id=\"applySaveMultispectralCameraSettings\"", multispectral_section)
+        self.assertIn("id=\"restoreSavedMultispectralCameraSettings\"", multispectral_section)
         self.assertIn("id=\"multispectralExposureInput\"", multispectral_section)
         self.assertIn("id=\"multispectralGainInput\"", multispectral_section)
         self.assertNotIn("White Balance", multispectral_section)
@@ -847,13 +920,18 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("id=\"cameraMultispectralDeviceSelect\"", html)
         self.assertIn("id=\"multispectralHostAdapter\"", html)
         self.assertIn("/api/camera/multispectral/apply-settings", app_js)
+        self.assertIn("/api/camera/settings", app_js)
+        self.assertIn("/api/camera/settings/save", app_js)
+        self.assertIn("/api/camera/settings/restore", app_js)
+        self.assertIn("/api/camera/settings/reset", app_js)
+        self.assertIn("/api/camera/settings/migrate-legacy", app_js)
         self.assertIn("/api/camera/multispectral/preview-frame", app_js)
         self.assertIn("/api/camera/multispectral/focus/evaluate", app_js)
         self.assertIn("id=\"multispectralFocusReadout\"", html)
         self.assertIn("id=\"startMultispectralFocus\"", html)
         self.assertIn('addEventListener("click", probeRgbCamera)', app_js)
         self.assertIn('addEventListener("click", probeMultispectralCamera)', app_js)
-        self.assertIn('addEventListener("click", applyMultispectralCameraSettings)', app_js)
+        self.assertIn('addEventListener("click", () => applyMultispectralCameraSettings())', app_js)
         self.assertNotIn("http://127.0.0.1", app_js)
         self.assertNotIn("http://localhost", app_js)
 

@@ -464,10 +464,20 @@ class DeviceManager:
             rgb_ready = (not plan.rgb_enabled) or bool(rgb_status.get("available"))
             if plan.rgb_enabled and not rgb_ready:
                 blocking.append({"code": "RGB_NOT_AVAILABLE", "message": rgb_status.get("error") or "RGB 相机不可用"})
+            rgb_restore = rgb_status.get("settingsRestoreState") or {}
+            if plan.rgb_enabled and rgb_restore.get("state") == "device_mismatch":
+                blocking.append({"code": "CAMERA_SETTINGS_DEVICE_MISMATCH", "message": "RGB 已保存相机参数与当前设备身份不一致"})
+            elif plan.rgb_enabled and rgb_restore.get("state") == "failed":
+                warnings.append({"code": "CAMERA_SETTINGS_RESTORE_FAILED", "message": rgb_restore.get("restoreError") or "RGB 已保存参数恢复失败"})
 
             multispectral_ready = (not plan.multispectral_enabled) or bool(multispectral_status.get("available"))
             if plan.multispectral_enabled and not multispectral_ready:
                 blocking.append({"code": "DVP2_NOT_AVAILABLE", "message": multispectral_status.get("error") or "DVP2 多光谱相机不可用"})
+            multispectral_restore = multispectral_status.get("settingsRestoreState") or {}
+            if plan.multispectral_enabled and multispectral_restore.get("state") == "device_mismatch":
+                blocking.append({"code": "CAMERA_SETTINGS_DEVICE_MISMATCH", "message": "DVP2 已保存相机参数与当前设备身份不一致"})
+            elif plan.multispectral_enabled and multispectral_restore.get("state") == "failed":
+                warnings.append({"code": "CAMERA_SETTINGS_RESTORE_FAILED", "message": multispectral_restore.get("restoreError") or "DVP2 已保存参数恢复失败"})
 
             filter_wheel_ready = (not plan.multispectral_enabled) or (
                 bool(status.get("connected")) and bool(status.get("wheelHomed"))
