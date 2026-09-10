@@ -22,6 +22,7 @@
 | 真实采集放行必须经过正式 hardware acceptance gate | 已确认/文档已建立 | P1B 正式验收规范位于 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`，要求逐项记录测试日期、测试人员、硬件身份、实测值、证据、PASS/FAIL/BLOCKED 和 release decision。没有真实硬件证据的项目默认 `NOT TESTED`；unit test、fake adapter 或 simulation 不能把 STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台或完整真实采集标记为 PASS |
 | 主界面应显示统一全局系统状态 | 已实现 | 顶栏新增“当前状态”，由 `deriveSystemStatus()` 基于设备、样品、离线验证、形态任务和预测状态派生 |
 | 设备准备页应提供普通用户的一键设备检查 | 已实现/部分真实 | “开始设备检查”调用 `/api/device/check`，按 STM32、RGB、DVP2 独立硬件域检查；STM32 未连接或缺 pyserial 不阻断 RGB/DVP2；RGB 状态来自 OpenCV/DirectShow adapter probe，多光谱来自 DVP2 SDK probe，标定显示需要确认 |
+| Windows 正式程序必须严格单实例运行 | 已实现/需打包验证 | `launcher.py` 在启动 backend、打开浏览器和初始化任何硬件前先创建 `Local\FruitTasteAnalyzer.SingleInstance` Named Mutex。第一个实例保持 mutex handle 覆盖整个程序生命周期；第二个及以后实例发现 `ERROR_ALREADY_EXISTS=183` 后只提示“FruitTasteAnalyzer 已经在运行。”并退出，不读取 runtime 文件作为主判断、不打开浏览器、不启动 backend、不访问 STM32/RGB/DVP2 |
 | 软件应支持统一设备发现、选择和绑定 | 部分实现 | P1B-3.6 新增基础层；P1B-3.7 完善 `/api/devices/discover`、`/api/devices/bindings`、`/api/devices/bind` 的角色/kind 校验、Windows RGB 身份元数据和相机设置页绑定入口。绑定保存 stableId 和 last known location，但不等于 connected/verified/ready |
 | 软件不得把 COM 口或 camera index 当作永久身份 | 已实现/架构约束 | 串口 stableId 仅在 pyserial 提供 VID/PID/serial_number 时生成；COM 只保存为 `lastPort`。RGB 会尝试读取 Windows FriendlyName/PnP/VID/PID/USB serial，但 DirectShow index 或仅按顺序推断的映射只保存为 `lastDeviceIndex`/`mappingConfidence=inferred`，不生成 stableId。DVP2 优先按 serial/user id 匹配 |
 | 设备发现阶段不得触发机械动作 | 已实现/测试覆盖 | 串口 discovery 对候选 COM 只执行 open/PING/close；已连接的正式 `SerialService` 端口标记 `inUse=true`，不二次打开；不调用风扇、门、光源、滤光轮或电机动作命令 |

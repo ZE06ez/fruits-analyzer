@@ -34,6 +34,8 @@ host_software/static_ui_prototype_bin/
 
 ```text
 launcher.py
+  -> acquire Local\FruitTasteAnalyzer.SingleInstance named mutex
+  -> if already exists: show "FruitTasteAnalyzer 已经在运行。" and exit
   -> start_backend()
   -> ThreadingHTTPServer 127.0.0.1:<free_port>
   -> Browser UI
@@ -44,7 +46,7 @@ launcher.py
 
 | 模块 | 文件 | 关键类/函数 | 输入 | 输出/副作用 | 依赖 |
 | --- | --- | --- | --- | --- | --- |
-| 桌面启动 | `launcher.py` | `prepare_runtime_site()`, `main()` | 打包资源或源码目录 | 启动后端，打开浏览器 | `backend_server.start_backend` |
+| 桌面启动 | `launcher.py` | `show_already_running_message()`, `prepare_runtime_site()`, `main()` | 打包资源或源码目录 | 先获取 Windows named mutex；首实例启动后端并打开浏览器；后续实例只提示并退出 | `process_lock.app_single_instance_mutex`, `backend_server.start_backend` |
 | HTTP 后端 | `backend_server.py` | `start_backend()`, `create_handler()` | 静态目录、输出目录、app_dir | 本地 HTTP 服务 | Python stdlib, PIL |
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |

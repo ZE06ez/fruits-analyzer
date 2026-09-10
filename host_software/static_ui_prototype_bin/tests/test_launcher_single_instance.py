@@ -67,9 +67,10 @@ class LauncherSingleInstanceTests(unittest.TestCase):
             self.assertTrue(server.device_manager.camera_manager.released)
             self.assertTrue(mutex.released)
 
-    def test_second_instance_opens_existing_ui_without_starting_backend(self):
+    def test_second_instance_only_prompts_without_starting_backend_or_browser(self):
         mutex = FakeAppMutex(False)
         opened: list[str] = []
+        messages: list[bool] = []
 
         def start_backend(static_dir, outputs_dir, app_dir):
             raise AssertionError("second instance must not start backend")
@@ -83,9 +84,11 @@ class LauncherSingleInstanceTests(unittest.TestCase):
                     with mock.patch.object(process_lock, "app_single_instance_mutex", return_value=mutex):
                         with mock.patch.object(launcher, "prepare_runtime_site", side_effect=AssertionError("second instance must not prepare site")):
                             with mock.patch.object(launcher.webbrowser, "open", side_effect=lambda url, new=0: opened.append(url)):
-                                launcher.main()
+                                with mock.patch.object(launcher, "show_already_running_message", side_effect=lambda: messages.append(True)):
+                                    launcher.main()
 
-            self.assertEqual(opened, ["http://127.0.0.1:45678/"])
+            self.assertEqual(opened, [])
+            self.assertEqual(messages, [True])
             self.assertTrue(mutex.released)
 
     def test_backend_start_failure_releases_single_instance_mutex(self):
