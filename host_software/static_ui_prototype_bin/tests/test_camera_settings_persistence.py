@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,8 +172,42 @@ class RgbScientificTransportPolicyTests(unittest.TestCase):
         )
 
         self.assertFalse(policy["scientificStrictLossless"])
+        self.assertFalse(policy["scientificCaptureApproved"])
         self.assertEqual(policy["sourceCompression"], "unknown")
         self.assertEqual(policy["reason"], "actual_transport_not_read")
+
+    def test_yuy2_is_approved_but_not_strict_lossless(self) -> None:
+        policy = classify_rgb_scientific_transport(
+            requested_fourcc="YUY2",
+            actual_fourcc="YUY2",
+            color_space="RGB",
+            dtype="uint8",
+        )
+
+        self.assertFalse(policy["scientificStrictLossless"])
+        self.assertTrue(policy["scientificCaptureApproved"])
+        self.assertEqual(policy["scientificQualityClass"], "uncompressed_422")
+        self.assertEqual(policy["chromaSubsampling"], "4:2:2")
+        self.assertEqual(policy["sourceCompression"], "uncompressed_but_chroma_subsampled")
+
+    def test_mjpg_and_unknown_are_not_approved_for_scientific_capture(self) -> None:
+        mjpg = classify_rgb_scientific_transport(
+            requested_fourcc="MJPG",
+            actual_fourcc="MJPG",
+            color_space="RGB",
+            dtype="uint8",
+        )
+        unknown = classify_rgb_scientific_transport(
+            requested_fourcc="YUY2",
+            actual_fourcc="",
+            color_space="RGB",
+            dtype="uint8",
+        )
+
+        self.assertFalse(mjpg["scientificCaptureApproved"])
+        self.assertEqual(mjpg["scientificQualityClass"], "lossy")
+        self.assertFalse(unknown["scientificCaptureApproved"])
+        self.assertEqual(unknown["scientificQualityClass"], "unknown")
 
 
 class CameraSettingsPersistenceTests(unittest.TestCase):
@@ -182,7 +217,17 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
     def test_store_save_load_missing_corrupt_and_reset(self):
         with tempfile.TemporaryDirectory(prefix="camera_settings_store_") as tmp:
             store = self.store(tmp)
-            self.assertFalse(store.snapshot()["exists"])
+            initial = store.snapshot()
+            self.assertTrue(initial["exists"])
+            self.assertFalse(initial["hasCustom"]["rgb"])
+            self.assertFalse(initial["hasCustom"]["multispectral"])
+            self.assertEqual(initial["rgb"]["width"], 3840)
+            self.assertEqual(initial["rgb"]["height"], 2160)
+            self.assertEqual(initial["rgb"]["fps"], 25.0)
+            self.assertEqual(initial["rgb"]["fourcc"], "MJPG")
+            self.assertEqual(initial["rgb"]["scientificProfile"], {"width": 1920, "height": 1080, "fps": 5.0, "fourcc": "YUY2"})
+            generated = json.loads(store.path.read_text(encoding="utf-8"))
+            self.assertEqual(generated["rgb"]["scientificProfile"]["fourcc"], "YUY2")
             saved = store.update_rgb({"deviceIndex": 2, "width": 1920, "height": 1080, "fps": 15, "fourcc": "MJPG"})
             store.update_multispectral({"deviceStableId": "DSGP23400004963", "exposure": 12000, "gain": 1.5})
 
@@ -191,6 +236,8 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
             self.assertEqual(saved["rgb"]["width"], 1920)
             self.assertEqual(loaded["rgb"]["deviceIndex"], 2)
             self.assertEqual(loaded["multispectral"]["exposure"], 12000.0)
+            self.assertEqual(loaded["rgb"]["scientificProfile"]["fourcc"], "YUY2")
+            self.assertEqual(loaded["rgb"]["scientificProfile"]["width"], 1920)
 
             store.path.write_text("{not json", encoding="utf-8")
             corrupt = CameraSettingsStore(store.path).snapshot()
@@ -313,13 +360,41 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
     def test_rgb_scientific_capture_blocks_mjpg_even_when_png_would_be_possible(self):
         with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_lossy_") as tmp:
             store = self.store(tmp)
-            store.update_rgb({"deviceStableId": "RGB-A", "fourcc": "MJPG"})
+            store.update_rgb({"deviceStableId": "RGB-A", "scientificProfile": {"width": 3840, "height": 2160, "fps": 5, "fourcc": "MJPG"}})
             manager = CameraManager(rgb_camera=RestoreRgbAdapter(stable_id="RGB-A"), multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
 
             with self.assertRaises(CameraCaptureError) as context:
                 manager.capture_rgb_frame()
 
             self.assertIn("RGB_SCIENTIFIC_TRANSPORT_LOSSY", context.exception.technical_message)
+
+    def test_rgb_scientific_capture_uses_yuy2_profile_not_preview_mjpg(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_yuy2_") as tmp:
+            store = self.store(tmp)
+            store.update_rgb({
+                "deviceStableId": "RGB-A",
+                "width": 3840,
+                "height": 2160,
+                "fps": 25,
+                "fourcc": "MJPG",
+                "scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            })
+            rgb = RestoreRgbAdapter(stable_id="RGB-A")
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            _, metadata = manager.capture_rgb_frame()
+
+            self.assertEqual(rgb.apply_calls[0]["config"]["width"], 1920)
+            self.assertEqual(rgb.apply_calls[0]["config"]["height"], 1080)
+            self.assertEqual(rgb.apply_calls[0]["config"]["fourcc"], "YUY2")
+            self.assertEqual(metadata["previewProfile"]["fourcc"], "MJPG")
+            self.assertEqual(metadata["scientificProfile"]["fourcc"], "YUY2")
+            self.assertEqual(metadata["requestedFourcc"], "YUY2")
+            self.assertEqual(metadata["actualFourcc"], "YUY2")
+            self.assertFalse(metadata["scientificStrictLossless"])
+            self.assertTrue(metadata["scientificCaptureApproved"])
+            self.assertEqual(metadata["scientificQualityClass"], "uncompressed_422")
+            self.assertEqual(metadata["chromaSubsampling"], "4:2:2")
 
     def test_rgb_scientific_capture_passes_verified_rgb24_profile(self):
         with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_lossless_") as tmp:
@@ -339,6 +414,7 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
             self.assertEqual(metadata["actualFourcc"], "RGB3")
             self.assertEqual(metadata["sourceCompression"], "none")
             self.assertTrue(metadata["scientificStrictLossless"])
+            self.assertTrue(metadata["scientificCaptureApproved"])
             self.assertEqual(metadata["outputFormat"], "PNG")
             self.assertTrue(metadata["outputLossless"])
 
@@ -356,6 +432,45 @@ class CameraSettingsPersistenceTests(unittest.TestCase):
                 manager.capture_rgb_frame()
 
             self.assertIn("actual=MJPG", context.exception.technical_message)
+
+    def test_rgb_scientific_capture_blocks_missing_profile_instead_of_inheriting_preview(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_missing_profile_") as tmp:
+            store = self.store(tmp)
+            store.path.write_text(
+                '{"version": 1, "rgb": {"deviceStableId": "RGB-A", "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"}, "multispectral": {}}',
+                encoding="utf-8",
+            )
+            manager = CameraManager(rgb_camera=RestoreRgbAdapter(stable_id="RGB-A"), multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+
+            with self.assertRaises(CameraCaptureError) as context:
+                manager.capture_rgb_frame()
+
+            self.assertIn("RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED", context.exception.technical_message)
+
+    def test_rgb_capture_restores_preview_profile_after_scientific_capture(self):
+        with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_restore_preview_") as tmp:
+            store = self.store(tmp)
+            store.update_rgb({
+                "deviceStableId": "RGB-A",
+                "width": 3840,
+                "height": 2160,
+                "fps": 25,
+                "fourcc": "MJPG",
+                "scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            })
+            rgb = RestoreRgbAdapter(stable_id="RGB-A")
+            manager = CameraManager(rgb_camera=rgb, multispectral_camera=RestoreDvp2Adapter(), settings_store=store)
+            try:
+                manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+
+                _, metadata = manager.capture_rgb_frame()
+            finally:
+                manager.stop_rgb_preview()
+
+            self.assertTrue(metadata["previewWasRunning"])
+            self.assertEqual(rgb.apply_calls[-1]["config"]["width"], 3840)
+            self.assertEqual(rgb.apply_calls[-1]["config"]["height"], 2160)
+            self.assertEqual(rgb.apply_calls[-1]["config"]["fourcc"], "MJPG")
 
     def test_rgb_preview_mjpg_remains_allowed_separate_from_scientific_capture(self):
         with tempfile.TemporaryDirectory(prefix="camera_settings_rgb_preview_") as tmp:

@@ -7,7 +7,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from camera_service import CameraError, CameraManager, Dvp2MonoCamera, RgbCameraConfig, RgbUvcCamera
+from camera_service import CameraError, CameraManager, CameraSettingsStore, Dvp2MonoCamera, RgbCameraConfig, RgbUvcCamera
 from capture_coordinator import CaptureCoordinator
 from hardware_controller import HardwareController
 from serial_service import SerialService, SerialServiceError
@@ -155,9 +155,9 @@ def run_rgb_preview_benchmark(
 
 
 def run_rgb_lossless_probe(config: RgbCameraConfig) -> int:
-    print("RGB strict-lossless scientific transport probe")
+    print("RGB scientific transport probe")
     print("This opens the real RGB camera once per candidate mode and records actual FOURCC readback.")
-    print("MJPG/JPEG/H264/H265 are FAIL. YUY2/YUYV/UYVY are uncompressed but 4:2:2 and FAIL under this project's strict policy.")
+    print("MJPG/JPEG/H264/H265 are BLOCKED. YUY2/YUYV/UYVY are approved for capture as uncompressed 4:2:2 but are not strict RGB lossless.")
     print()
     candidates = []
     seen = set()
@@ -171,32 +171,32 @@ def run_rgb_lossless_probe(config: RgbCameraConfig) -> int:
                 candidates.append({"width": width, "height": height, "fps": fps, "fourcc": fourcc})
     camera = RgbUvcCamera(config=config)
     rows = camera.probe_scientific_modes(candidates)
-    print(f"{'Mode':<28} {'Actual':<26} {'Frame':<8} {'Strict Lossless'}")
+    print(f"{'Mode':<28} {'Actual':<26} {'Frame':<8} {'Scientific Capture'}")
     print("-" * 84)
-    strict_modes = []
+    approved_modes = []
     for row in rows:
         mode = f"{row['requestedFourcc']} {row['requestedWidth']}x{row['requestedHeight']}@{row['requestedFps']:g}"
         actual = f"{row.get('actualFourcc') or '--'} {row.get('actualWidth') or '--'}x{row.get('actualHeight') or '--'}@{row.get('actualFps') or '--'}"
         frame = "PASS" if row.get("frameRead") else "FAIL"
-        if row.get("scientificStrictLossless"):
-            strict = "PASS"
-            strict_modes.append(row)
+        if row.get("scientificCaptureApproved"):
+            strict = f"APPROVED({row.get('scientificQualityClass')})"
+            approved_modes.append(row)
         elif row.get("sourceCompression") == "uncompressed_but_chroma_subsampled":
-            strict = "FAIL(strict 4:2:2)"
+            strict = "APPROVED_POLICY_MISSING"
         else:
-            strict = f"FAIL({row.get('reason') or row.get('error') or 'unavailable'})"
+            strict = f"BLOCKED({row.get('reason') or row.get('error') or 'unavailable'})"
         print(f"{mode:<28} {actual:<26} {frame:<8} {strict}")
     print()
-    if strict_modes:
-        best = strict_modes[0]
+    if approved_modes:
+        best = approved_modes[0]
         print(
-            "strict_lossless_mode: "
+            "scientific_capture_approved_mode: "
             f"{best.get('actualFourcc') or best.get('requestedFourcc')} "
             f"{best.get('actualWidth')}x{best.get('actualHeight')}@{best.get('actualFps')}"
         )
         return 0
-    print("strict_lossless_mode: NONE")
-    print("CURRENT_RGB_CAMERA_NOT_SUITABLE_FOR_STRICT_LOSSLESS_CAPTURE unless a vendor/native API exposes RAW Bayer or RGB24/BGR24.")
+    print("scientific_capture_approved_mode: NONE")
+    print("CURRENT_RGB_CAMERA_NOT_APPROVED_FOR_SCIENTIFIC_CAPTURE until actual transport is RAW/RGB/BGR or YUY2/YUYV/UYVY.")
     return 3
 
 
@@ -340,7 +340,26 @@ def run_rgb_capture_once_validation(
 
     output_dir = _next_manual_sample_dir(output_root, sample_name)
     rgb = RgbUvcCamera(config=config)
-    manager = CameraManager(rgb_camera=rgb)
+    settings_store = CameraSettingsStore(Path(tempfile.mkdtemp(prefix="fruit_rgb_scientific_settings_")) / "camera_settings.json")
+    settings_store.update_rgb({
+        "deviceIndex": config.device_index,
+        "width": 3840,
+        "height": 2160,
+        "fps": 25.0,
+        "fourcc": "MJPG",
+        "exposure": config.exposure,
+        "gain": config.gain,
+        "whiteBalance": config.white_balance,
+        "autoExposure": config.auto_exposure,
+        "autoWhiteBalance": config.auto_white_balance,
+        "scientificProfile": {
+            "width": config.width,
+            "height": config.height,
+            "fps": config.fps,
+            "fourcc": config.fourcc,
+        },
+    })
+    manager = CameraManager(rgb_camera=rgb, settings_store=settings_store)
     hardware = CameraOnlyValidationHardware()
     coordinator = CaptureCoordinator(camera_manager=manager, hardware_controller=hardware)
     preview_after = None
@@ -360,10 +379,17 @@ def run_rgb_capture_once_validation(
         result["metadata"]["hardwareSafetyBypassedForManualCameraValidation"] = True
         result["metadata"]["manualValidationHardwareCalls"] = hardware.calls
         _write_manual_metadata(output_dir, result["metadata"])
-        if preview_running:
-            preview_data, preview_after = manager.rgb_preview_jpeg()
-            preview_meta["previewFrameReadableAfterCapture"] = bool(preview_data.startswith(b"\xff\xd8"))
         frame_meta = _first_frame_metadata(result)
+        if preview_running:
+            preview_meta["previewRestoreStatus"] = (frame_meta or {}).get("previewRestoreStatus")
+            preview_meta["previewRestore"] = (frame_meta or {}).get("previewRestore") or {}
+            try:
+                preview_data, preview_after = manager.rgb_preview_jpeg()
+                preview_meta["previewFrameReadableAfterCapture"] = bool(preview_data.startswith(b"\xff\xd8"))
+            except CameraError as exc:
+                preview_meta["previewFrameReadableAfterCapture"] = False
+                preview_meta["previewReadError"] = exc.user_message
+                preview_meta["previewReadTechnicalError"] = exc.technical_message
         if result.get("state") != "completed" or not frame_meta:
             _print_capture_result(status, result, output_dir, preview_meta, None)
             return 2
@@ -742,6 +768,11 @@ def _print_capture_result(
     print(f"Requested FPS: {requested.get('fps', '--')}")
     print(f"Actual FPS: {actual.get('fps', '--')}")
     print(f"Codec: requested={requested.get('fourcc', '--')} actual={actual.get('fourcc', '--')}")
+    print(f"sourceCompression: {frame_meta.get('sourceCompression', '--')}")
+    print(f"chromaSubsampling: {frame_meta.get('chromaSubsampling', '--')}")
+    print(f"scientificStrictLossless: {frame_meta.get('scientificStrictLossless', '--')}")
+    print(f"scientificCaptureApproved: {frame_meta.get('scientificCaptureApproved', '--')}")
+    print(f"scientificQualityClass: {frame_meta.get('scientificQualityClass', '--')}")
     print(f"Frame shape: {frame_meta.get('height', '--')}x{frame_meta.get('width', '--')}x{frame_meta.get('channels', '--')}")
     print(f"dtype: {frame_meta.get('dtype', '--')}")
     print(f"channels: {frame_meta.get('channels', '--')}")
@@ -751,7 +782,11 @@ def _print_capture_result(
     print(f"Saved path: {frame_meta.get('path', '--')}")
     print(f"File size: {(png_check or {}).get('fileSizeBytes', '--')}")
     print(f"Preview ownership mode: {preview_meta.get('mode')}")
+    print(f"Preview restore status: {preview_meta.get('previewRestoreStatus', frame_meta.get('previewRestoreStatus', '--'))}")
     print(f"Preview frame readable after capture: {preview_meta.get('previewFrameReadableAfterCapture')}")
+    if preview_meta.get("previewReadError"):
+        print(f"Preview read error: {preview_meta.get('previewReadError')}")
+        print(f"Preview read technical error: {preview_meta.get('previewReadTechnicalError')}")
     print(f"Output directory: {output_dir}")
     print("PNG check:")
     _print_section("  png", png_check or {})
