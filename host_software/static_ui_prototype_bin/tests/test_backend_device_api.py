@@ -317,6 +317,8 @@ class FakeDeviceManager:
         self.emergency_stopped = False
         self.fan_on = False
         self.led3_on = False
+        self.tungsten1_on = False
+        self.tungsten2_on = False
         self.actuator_busy = False
         self.wheel_moves = []
         self.camera_manager = FakeCameraManager()
@@ -359,10 +361,14 @@ class FakeDeviceManager:
             "rgbLed1On": False,
             "rgbLed2On": False,
             "rgbLed3On": self.led3_on,
-            "ledMask": 0x04 if self.led3_on else 0,
+            "ledMask": (0x01 if self.tungsten1_on else 0) | (0x02 if self.tungsten2_on else 0) | (0x04 if self.led3_on else 0),
             "led3Duty": 100 if self.led3_on else 0,
-            "tungsten1On": False,
-            "tungsten2On": False,
+            "tungsten1On": self.tungsten1_on,
+            "tungsten2On": self.tungsten2_on,
+            "tungsten1Duty": 100 if self.tungsten1_on else 0,
+            "tungsten2Duty": 100 if self.tungsten2_on else 0,
+            "tungstenAutoOff": {},
+            "tungstenLastError": "",
             "wheelPositionDeg": 0.0 if self.connected else None,
             "wheelTargetDeg": 0.0 if self.connected else None,
             "wheelMotorState": "idle" if self.connected else "unknown",
@@ -473,7 +479,47 @@ class FakeDeviceManager:
 
     def set_led3(self, enabled):
         self.led3_on = bool(enabled)
-        return {"commandAccepted": True, "ledMask": 0x04 if self.led3_on else 0, "led3Duty": 100 if self.led3_on else 0, "status": self._status()}
+        return {"commandAccepted": True, "ledMask": self._status()["ledMask"], "led3Duty": 100 if self.led3_on else 0, "status": self._status()}
+
+    def set_tungsten(self, channel, enabled, duration_ms=None, operator_confirmed_safety=False):
+        if bool(enabled) and operator_confirmed_safety is not True:
+            raise RuntimeError("operator_confirmation_required")
+        if int(channel) == 1:
+            self.tungsten1_on = bool(enabled)
+        elif int(channel) == 2:
+            self.tungsten2_on = bool(enabled)
+        else:
+            raise ValueError("channel must be 1 or 2")
+        status = self._status()
+        return {
+            "ok": True,
+            "commandAccepted": True,
+            "channel": int(channel),
+            "enabled": bool(enabled),
+            "durationMs": duration_ms if enabled else None,
+            "autoOffScheduled": bool(enabled),
+            "requestedMask": status["ledMask"],
+            "confirmedMask": status["ledMask"],
+            "statusFresh": True,
+            "errorCode": status["errorCode"],
+            "message": "ok",
+            "status": status,
+        }
+
+    def tungsten_all_off(self, emergency=False):
+        self.tungsten1_on = False
+        self.tungsten2_on = False
+        status = self._status()
+        return {
+            "ok": True,
+            "commandAccepted": True,
+            "emergency": bool(emergency),
+            "requestedMask": status["ledMask"],
+            "confirmedMask": status["ledMask"],
+            "statusFresh": True,
+            "safetyWarning": "",
+            "status": status,
+        }
 
     def actuator_extend(self, duration_ms=None):
         self.actuator_busy = True
@@ -654,6 +700,20 @@ class BackendDeviceApiTests(unittest.TestCase):
         led = self.post_json("/api/device/led", {"channel": 3, "enabled": True})["result"]
         self.assertEqual(led["ledMask"], 0x04)
         self.assertEqual(led["led3Duty"], 100)
+
+        tungsten = self.post_json("/api/device/tungsten", {
+            "channel": 1,
+            "enabled": True,
+            "durationMs": 5000,
+            "operatorConfirmedSafety": True,
+        })["result"]
+        self.assertTrue(tungsten["autoOffScheduled"])
+        self.assertEqual(tungsten["channel"], 1)
+        self.assertEqual(tungsten["confirmedMask"], 0x05)
+        tungsten_off = self.post_json("/api/device/tungsten", {"channel": 1, "enabled": False})["result"]
+        self.assertEqual(tungsten_off["confirmedMask"], 0x04)
+        all_off = self.post_json("/api/device/tungsten/all-off", {})["result"]
+        self.assertEqual(all_off["confirmedMask"], 0x04)
 
         actuator = self.post_json("/api/device/actuator", {"action": "extend", "durationMs": 1000})["result"]
         self.assertTrue(actuator["autoStopScheduled"])
@@ -944,6 +1004,9 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("id=\"wheelSetOrigin\"", html)
         self.assertIn("id=\"actuatorExtend\"", html)
         self.assertIn("id=\"led3OnButton\"", html)
+        self.assertIn("id=\"tungsten1OnButton\"", html)
+        self.assertIn("id=\"tungsten2OnButton\"", html)
+        self.assertIn("id=\"tungstenAllOffButton\"", html)
         self.assertIn("id=\"sampleStageHome\"", html)
         self.assertIn("id=\"sampleStageMovePos30\"", html)
         self.assertIn("id=\"startTrueCapture\"", html)
@@ -953,6 +1016,8 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertIn("/api/device/actuator", app_js)
         self.assertIn("/api/device/fan", app_js)
         self.assertIn("/api/device/led", app_js)
+        self.assertIn("/api/device/tungsten", app_js)
+        self.assertIn("/api/device/tungsten/all-off", app_js)
         self.assertIn("/api/device/sample-stage/status", app_js)
         self.assertIn("/api/device/sample-stage/move-absolute", app_js)
         self.assertIn("/api/capture/readiness", app_js)
@@ -963,6 +1028,7 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertNotIn("升降复位", html)
         self.assertNotIn("hardwareMotionSelfTest", html)
         self.assertNotIn("hardwareMotionSelfTest", app_js)
+        self.assertNotIn("manual_stm32_test.py", app_js)
 
 
 if __name__ == "__main__":

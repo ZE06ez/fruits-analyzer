@@ -2,6 +2,16 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-12 Two-Channel Tungsten Web Control
+
+- 修改内容：按 2026-09-11 实机确认映射修正光源语义：PB7/bit0/0x01 为钨灯1 SSR，PB8/bit1/0x02 为钨灯2 SSR，PB9/bit2/0x04 为 LED3，三路统一复用 current firmware `LED_SET=0x12` 和 STATUS `led_mask/led1_duty/led2_duty/led3_duty`，不新增或伪造 0x13 钨灯协议。
+- 修改内容：新增集中光源位常量和安全 read-modify-write 控制；LED3 操作不再覆盖 PB7/PB8，钨灯单路操作保留其它位，普通钨灯 all-off 保留 LED3，emergency/safe shutdown 发送全部光源 `led_mask=0x00`。
+- 修改内容：新增 `POST /api/device/tungsten` 和 `POST /api/device/tungsten/all-off`，手动开启钨灯限制 1-5 秒，要求风扇 fresh STATUS、无故障、LED3 关闭、无可靠门反馈时操作员人工确认；后端 timer 自动关闭，关闭失败时返回“无法确认钨灯已关闭，请立即切断12V光源电源。”。
+- 修改内容：主 UI “光源与滤光轮”新增“钨灯手动测试”卡片，提供钨灯1/2 点亮5秒、立即关闭、全部钨灯关闭、led_mask、led1/led2 duty、STATUS revision、串口和故障码显示；不提供永久开启和双路同时开启。
+- 修改内容：True Capture 光源语义修正：Coordinator 默认 RGB 光源不再使用 `0x03`，旧 `rgbLedMask=0x03` 会被 `RGB_LIGHT_MAPPING_NOT_CONFIRMED` 阻断；多光谱默认单路钨灯，`allowDualTungsten=false` 时 `tungstenMask=0x03` 会被 `DUAL_TUNGSTEN_NOT_ACCEPTED` 阻断；Dark 和取消/异常收尾执行全光源关闭验证。
+- 修改文件：`host_software/static_ui_prototype_bin/hardware_controller.py`、`stm32_controller.py`、`device_manager.py`、`backend_server.py`、`capture_coordinator.py`、`index.html`、`styles.css`、`app.js`、相关测试与项目文档。
+- 是否影响原有功能：不修改 STM32 固件，不新增协议命令，不调用 `manual_stm32_test.py`，不放行未验收双钨灯同时开启，不虚构 RGB 正式照明映射或硬件门端点反馈。
+
 ## 2026-09-11 P1C-1 RGB Scientific Profile + YUY2 Capture Approval
 
 - 修改内容：RGB Preview Profile 与 RGB Scientific Capture Profile 明确分离；默认 Preview 保持 `3840x2160 @25fps MJPG`，默认 Scientific 明确为 `1920x1080 @5fps YUY2`；`config/camera_settings.json` 是本机运行时配置并被 Git 忽略，`config/camera_settings.example.json` 作为可提交参考。
@@ -12,6 +22,13 @@
 - 修改内容：`manual_camera_test.py --rgb-capture-once` 使用 isolated settings store，把 CLI `--width/--height/--fps/--fourcc` 显式作为 scientific profile，避免 persistent preview MJPG 覆盖本次真实验证目标。
 - 修改文件：`host_software/static_ui_prototype_bin/camera_service/config.py`、`settings_store.py`、`rgb_scientific.py`、`rgb_uvc.py`、`manager.py`、`capture_coordinator.py`、`device_manager.py`、`manual_camera_test.py`、`host_software/static_ui_prototype_bin/config/camera_settings.example.json`、相关测试与项目文档。
 - 是否影响原有功能：不删除 MJPG preview，不降低 preview 分辨率，不修改 DVP2、STM32、滤光轮、SampleStage、Model Studio 或 RGB-MS registration；YUY2 不被伪装为 strict lossless。
+
+## 2026-09-11 Model Studio Same-Tab Navigation
+
+- 修改内容：主检测页“模型训练”和“打开 Model Studio”入口由新开浏览器页改为当前页跳转 `/model-studio`，避免从模型训练中心返回后多出一个检测中心页面。
+- 修改内容：确认 Model Studio 顶部“返回检测工作站”继续使用同页 `href="/"`，不使用 `target="_blank"`。
+- 修改文件：`host_software/static_ui_prototype_bin/app.js`、`host_software/static_ui_prototype_bin/tests/test_model_studio_frontend_static.py`、`docs/UI_ARCHITECTURE.md`、`docs/CHANGELOG.md`。
+- 是否影响原有功能：不合并 Model Studio 到主检测页，不修改训练/模型/后端 API，不改变 Operator Workflow 与 Engineer Workflow 分离。
 
 ## 2026-09-10 UI-0/UI-1 Main Workstation IA + Instrument Visual Refinement
 

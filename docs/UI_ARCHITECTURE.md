@@ -11,7 +11,7 @@
 - 检测工作台：普通检测人员的默认入口，围绕样品、设备就绪、采集、分析和结果。
 - 样品与记录：查看本次或本地样品数据、图片、数据完整性和报告入口。
 - 设备与维护：工程调试入口，包括 STM32、设备发现/绑定、相机维护、光源、滤光轮、推杆和样品台边界。
-- 模型训练：只作为打开 Model Studio 的入口；Dataset、Training、Models 仍在独立 Model Studio 内完成。
+- 模型训练：只作为在当前浏览器页打开 `/model-studio` 的入口；Dataset、Training、Models 仍在独立 Model Studio 内完成，返回检测工作站也必须在同一页完成，避免额外生成检测中心窗口。
 - 系统设置：软件级设置和预留配置，不重复承载硬件手动控制。
 
 ## 2. Operator Workflow
@@ -60,4 +60,3 @@ UI 信息架构不得改变底层真实性边界：
 - 没有 Production/Default 模型时显示缺失状态，不伪造 SSC/TA/pH 数值。
 - Sample rotation 与 filter wheel rotation 必须保持独立。
 - 未接入或未验收硬件必须显示 unknown / not ready / unsupported / blocked。
-

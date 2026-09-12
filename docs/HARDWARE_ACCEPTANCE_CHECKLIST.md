@@ -26,6 +26,7 @@
 | STM32 Communication | `NOT TESTED` |  |  |
 | Fan | `NOT TESTED` |  |  |
 | LED3 | `NOT TESTED` |  |  |
+| Two-channel Tungsten | `NOT TESTED` | PB7/PB8 software control added after 2026-09-11 bench confirmation. | Requires现场确认 SSR wiring, 12V cutoff, thermal safety, single-channel auto-off, all-off, and dual-channel policy. |
 | Door / Actuator | `NOT TESTED` |  |  |
 | Filter Wheel | `NOT TESTED` |  |  |
 | Dark Reference | `NOT TESTED` |  |  |
@@ -750,6 +751,55 @@ Failure Reason:
 Follow-up:
 ```
 
+## AC-TUNGSTEN — Two-Channel Tungsten Acceptance
+
+Overall status: `NOT TESTED`
+
+Known software mapping:
+
+- PB7 / original LED1 / `led_mask` bit0 `0x01` = Tungsten 1 SSR.
+- PB8 / original LED2 / `led_mask` bit1 `0x02` = Tungsten 2 SSR.
+- PB9 / LED3 / `led_mask` bit2 `0x04` remains LED3.
+- All channels use current firmware `LED_SET=0x12`; there is no accepted separate tungsten command.
+
+Steps:
+
+1. Confirm 12V light power can be physically cut immediately and safety cover/shielding is closed.
+2. Connect STM32 from the main application; do not run `manual_stm32_test.py` concurrently.
+3. Turn fan on and confirm fresh STATUS reports fan duty > 0.
+4. Use the Web tungsten panel to turn Tungsten 1 on for 5 seconds with operator safety confirmation.
+5. Confirm PB7/SSR/Tungsten 1 turns on, PB8 and PB9 do not change unexpectedly, and fresh STATUS reports `led1_duty=100`.
+6. Confirm backend auto-off turns Tungsten 1 off and fresh STATUS reports `led1_duty=0`.
+7. Repeat steps 4-6 for Tungsten 2 / PB8 / `led2_duty`.
+8. With LED3 on, execute normal tungsten all-off and confirm LED3 remains on while both tungsten channels are off.
+9. Execute Emergency Stop and confirm fresh STATUS reports `led_mask=0x00` for all light outputs.
+10. Attempt a dual-tungsten request while `allowDualTungsten=false` and confirm it is rejected without sending a dual-on command.
+
+PASS criteria:
+
+- Web UI and fresh STATUS match observed PB7/PB8/PB9 outputs.
+- Manual tungsten on is limited to 1-5 seconds and backend auto-off works if the browser is closed.
+- Closing commands are never blocked by ordinary interlocks.
+- Failure to confirm off shows the physical 12V cutoff warning.
+- Dual tungsten remains blocked until power capacity, cold inrush, cooling, and protective interlocks are accepted.
+
+Acceptance record:
+
+```text
+Status:
+Date:
+Tester:
+Application Commit:
+Hardware:
+Steps Performed:
+Observed Result:
+Expected Result:
+Measured Values:
+Evidence:
+Failure Reason:
+Follow-up:
+```
+
 ## AC-DOOR — Door / Actuator Acceptance
 
 Overall status: `NOT TESTED`
@@ -1374,6 +1424,7 @@ Required prerequisites:
 | RGB | `PASS` | `NOT TESTED` |
 | DVP2 | `PASS` | `NOT TESTED` |
 | STM32 | `PASS` | `NOT TESTED` |
+| Two-channel Tungsten | `PASS` | `NOT TESTED` |
 | Filter Wheel | `PASS` | `NOT TESTED` |
 | Dark Reference | `PASS` | `NOT TESTED` |
 | White Reference | `PASS` | `NOT TESTED` |

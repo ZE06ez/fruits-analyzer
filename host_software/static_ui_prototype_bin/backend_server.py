@@ -884,6 +884,29 @@ def create_handler(
                 except Exception as exc:
                     self.device_error_response(exc)
                 return
+            if parsed.path == "/api/device/tungsten":
+                payload = self.read_json()
+                try:
+                    if "enabled" not in payload or not isinstance(payload.get("enabled"), bool):
+                        raise ValueError("enabled must be true or false")
+                    result = device_manager.set_tungsten(
+                        int(payload.get("channel", 0)),
+                        payload["enabled"],
+                        duration_ms=payload.get("durationMs"),
+                        operator_confirmed_safety=bool(payload.get("operatorConfirmedSafety", False)),
+                    )
+                    self.json_response({"ok": bool(result.get("ok", True)), "result": result})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
+            if parsed.path == "/api/device/tungsten/all-off":
+                self.read_json()
+                try:
+                    result = device_manager.tungsten_all_off(emergency=False)
+                    self.json_response({"ok": bool(result.get("ok", True)), "result": result})
+                except Exception as exc:
+                    self.device_error_response(exc)
+                return
             if parsed.path == "/api/device/actuator":
                 payload = self.read_json()
                 try:
@@ -1212,7 +1235,7 @@ def create_handler(
                     if parsed.path.endswith("/dark"):
                         capture = coordinator.run_dark_reference_capture(**kwargs)
                     else:
-                        kwargs["tungsten_mask"] = int(payload.get("tungstenMask", 0x03))
+                        kwargs["tungsten_mask"] = int(payload.get("tungstenMask", 0x01))
                         capture = coordinator.run_white_reference_capture(**kwargs)
                     completed = (capture.get("state") or capture.get("status")) == "completed"
                     self.json_response({"ok": completed, "capture": capture}, status=200 if completed else 409)
@@ -1259,8 +1282,8 @@ def create_handler(
                         return_home=bool(return_home),
                         calibration_id=payload.get("calibrationId"),
                         require_calibration=bool(payload.get("requireCalibration", False)),
-                        rgb_led_mask=int(payload.get("rgbLedMask", 0x03)),
-                        tungsten_mask=int(payload.get("tungstenMask", 0x03)),
+                        rgb_led_mask=int(payload.get("rgbLedMask", 0x04)),
+                        tungsten_mask=int(payload.get("tungstenMask", 0x01)),
                     )
                     completed = (capture.get("state") or capture.get("status")) == "completed"
                     self.json_response({"ok": completed, "capture": capture}, status=200 if completed else 409)

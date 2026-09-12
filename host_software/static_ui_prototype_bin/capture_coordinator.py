@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from hardware_controller import ALLOW_DUAL_TUNGSTEN, LED3_BIT, TUNGSTEN_MASK
 from rotation_plan import build_capture_rotation_plan
 from sample_stage import SampleStageNotImplemented, SampleStagePosition, SimulatedSampleStage, UnimplementedSampleStage
 
@@ -302,8 +303,8 @@ class TrueCapturePlan:
     sample_stage_mode: str = "hardware"
     operator_confirmed_dark: bool = False
     operator_confirmed_white: bool = False
-    rgb_led_mask: int = 0x03
-    tungsten_mask: int = 0x03
+    rgb_led_mask: int = LED3_BIT
+    tungsten_mask: int = 0x01
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -325,6 +326,8 @@ class TrueCapturePlan:
             "requireCalibration": self.require_calibration,
             "sampleStageMode": self.sample_stage_mode,
             "sampleStageSettlingMs": self.sample_stage_settling_ms,
+            "rgbLedMask": self.rgb_led_mask,
+            "tungstenMask": self.tungsten_mask,
         }
 
 
@@ -468,8 +471,8 @@ class CaptureCoordinator:
         mode: str,
         sample_id: str = "",
         output_dir: str | Path | None = None,
-        rgb_led_mask: int = 0x03,
-        tungsten_mask: int = 0x03,
+        rgb_led_mask: int = LED3_BIT,
+        tungsten_mask: int = 0x01,
         steps: list[CaptureStepPlan] | None = None,
     ) -> dict[str, Any]:
         """Run hardware safety preparation without opening real capture."""
@@ -496,7 +499,7 @@ class CaptureCoordinator:
         view_index: int = 0,
         view_id: str | None = None,
         filename: str | None = None,
-        rgb_led_mask: int = 0x03,
+        rgb_led_mask: int = LED3_BIT,
     ) -> dict[str, Any]:
         """Run protected RGB preparation, capture one RGB frame, save PNG, and shut light down."""
 
@@ -540,7 +543,7 @@ class CaptureCoordinator:
         frame_index: int = 0,
         view_id: str | None = None,
         filename: str | None = None,
-        tungsten_mask: int = 0x03,
+        tungsten_mask: int = 0x01,
     ) -> dict[str, Any]:
         """Run protected DVP2 mono single-frame capture, save raw PNG, and shut light down."""
 
@@ -584,7 +587,7 @@ class CaptureCoordinator:
         band_plan: MultispectralCapturePlan | list[MultispectralBandPlan] | list[dict[str, Any]] | None = None,
         filter_config_path: str | Path | None = None,
         settling_ms: int | None = None,
-        tungsten_mask: int = 0x03,
+        tungsten_mask: int = 0x01,
     ) -> dict[str, Any]:
         """Run one protected DVP2 band sequence for a single sample view."""
 
@@ -677,7 +680,7 @@ class CaptureCoordinator:
         band_plan: MultispectralCapturePlan | list[MultispectralBandPlan] | list[dict[str, Any]] | None = None,
         filter_config_path: str | Path | None = None,
         settling_ms: int | None = None,
-        tungsten_mask: int = 0x03,
+        tungsten_mask: int = 0x01,
         calibration_id: str | None = None,
         operator_confirmed: bool = False,
         confirmation_callback: Callable[[str, dict[str, Any]], bool] | None = None,
@@ -740,8 +743,8 @@ class CaptureCoordinator:
         return_home: bool = True,
         calibration_id: str | None = None,
         require_calibration: bool = False,
-        rgb_led_mask: int = 0x03,
-        tungsten_mask: int = 0x03,
+        rgb_led_mask: int = LED3_BIT,
+        tungsten_mask: int = 0x01,
     ) -> dict[str, Any]:
         """Capture one sample as multiple views, each with RGB plus a multispectral sequence."""
 
@@ -1067,8 +1070,8 @@ class CaptureCoordinator:
         self,
         *,
         mode: str,
-        rgb_led_mask: int = 0x03,
-        tungsten_mask: int = 0x03,
+        rgb_led_mask: int = LED3_BIT,
+        tungsten_mask: int = 0x01,
     ) -> list[CaptureStepPlan]:
         normalized_mode = self._normalize_mode(mode)
         lighting_step = (
@@ -1562,6 +1565,8 @@ class CaptureCoordinator:
     def _prepare_rgb_lighting(self, mask: int) -> dict[str, Any]:
         step = "rgb_light_prepare"
         controller = self._controller(step)
+        if int(mask) != LED3_BIT:
+            raise CaptureSafetyError("RGB_LIGHT_MAPPING_NOT_CONFIRMED: PB7/PB8 已确认为钨灯，RGB 光源不能使用 0x01/0x02", step=step)
         try:
             controller.tungsten_set(0x00)
             controller.rgb_led_set(mask)
@@ -1579,6 +1584,10 @@ class CaptureCoordinator:
     def _prepare_multispectral_lighting(self, mask: int) -> dict[str, Any]:
         step = "multispectral_light_prepare"
         controller = self._controller(step)
+        if int(mask) & ~TUNGSTEN_MASK:
+            raise CaptureSafetyError("INVALID_TUNGSTEN_MASK: 多光谱钨灯只能使用 PB7/PB8 bit0/bit1", step=step)
+        if int(mask) == TUNGSTEN_MASK and not ALLOW_DUAL_TUNGSTEN:
+            raise CaptureSafetyError("DUAL_TUNGSTEN_NOT_ACCEPTED: 两路钨灯同时开启尚未通过验收", step=step)
         try:
             controller.rgb_led_set(0x00)
             controller.tungsten_set(mask)
@@ -1609,8 +1618,11 @@ class CaptureCoordinator:
         step = "lighting_shutdown"
         controller = self._controller(step)
         try:
-            controller.tungsten_set(0x00)
-            controller.rgb_led_set(0x00)
+            if hasattr(controller, "all_lights_off"):
+                controller.all_lights_off()
+            else:
+                controller.tungsten_set(0x00)
+                controller.rgb_led_set(0x00)
         except Exception as exc:
             raise CaptureSafetyError("关闭采集光源失败", step=step, cause=exc) from exc
         return {
@@ -1634,11 +1646,12 @@ class CaptureCoordinator:
             outputs = controller.get_output_status()
         except Exception as exc:
             raise CaptureSafetyError("无法读取光源输出状态", step=step, cause=exc) from exc
-        rgb_on = bool(getattr(outputs, "rgb_led_1_on", False) or getattr(outputs, "rgb_led_2_on", False))
+        rgb_on = bool(getattr(outputs, "rgb_led_3_on", False))
         tungsten_on = bool(getattr(outputs, "tungsten_1_on", False) or getattr(outputs, "tungsten_2_on", False))
         result.update({
-            "rgbLed1On": bool(getattr(outputs, "rgb_led_1_on", False)),
-            "rgbLed2On": bool(getattr(outputs, "rgb_led_2_on", False)),
+            "rgbLed1On": False,
+            "rgbLed2On": False,
+            "rgbLed3On": bool(getattr(outputs, "rgb_led_3_on", False)),
             "tungsten1On": bool(getattr(outputs, "tungsten_1_on", False)),
             "tungsten2On": bool(getattr(outputs, "tungsten_2_on", False)),
             "lightsOffConfirmed": not rgb_on and not tungsten_on,

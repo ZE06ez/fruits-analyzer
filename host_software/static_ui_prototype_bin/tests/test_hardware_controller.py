@@ -49,15 +49,18 @@ class HardwareControllerTests(unittest.TestCase):
 
         self.assertNotIn((0x13, 0x01, 0.5), serial.calls)
 
-    def test_tungsten_current_firmware_capability_unavailable_is_explicit(self):
+    def test_physical_mapping_pb7_pb8_are_tungsten_and_pb9_is_led3(self):
         serial = FakeSerialService()
-        serial.tungsten_supported = False
+        serial.set_response(0x30, 0x00, 0x07)
         controller = HardwareController(serial)
 
-        with self.assertRaises(CapabilityUnavailableError):
-            controller.tungsten_set(0x01)
+        outputs = controller.get_output_status()
 
-        self.assertEqual(serial.calls, [])
+        self.assertTrue(outputs.tungsten_1_on)
+        self.assertTrue(outputs.tungsten_2_on)
+        self.assertTrue(outputs.rgb_led_3_on)
+        self.assertFalse(outputs.rgb_led_1_on)
+        self.assertFalse(outputs.rgb_led_2_on)
 
     def test_tungsten_rejects_rgb_led_conflict(self):
         serial = FakeSerialService()
@@ -70,32 +73,39 @@ class HardwareControllerTests(unittest.TestCase):
 
     def test_rgb_led_rejects_tungsten_conflict(self):
         serial = FakeSerialService()
-        serial.set_response(0x30, 0x00, 0b00001001)  # fan + tungsten 1
+        serial.set_response(0x30, 0x00, 0b00000001)  # tungsten 1 / PB7
         serial.set_response(0x31, 0x00, DoorState.CLOSED)
         controller = HardwareController(serial)
 
         with self.assertRaises(InterlockError):
+            controller.rgb_led_set(0x04)
+
+    def test_rgb_led_rejects_pb7_pb8_tungsten_bits(self):
+        serial = FakeSerialService()
+        controller = HardwareController(serial)
+
+        with self.assertRaises(CapabilityUnavailableError):
             controller.rgb_led_set(0x03)
 
-    def test_rgb_led_accepts_current_firmware_three_channel_mask(self):
+    def test_rgb_led_accepts_pb9_led3_only(self):
         serial = FakeSerialService()
         serial.set_response(0x33, 0x00, 0x00)
         serial.set_response(0x31, 0x00, DoorState.CLOSED)
-        serial.set_response(0x30, 0x00, 0b00000001)  # fan on, tungsten off
+        serial.set_response(0x30, 0x00, 0x00)
         controller = HardwareController(serial)
 
-        controller.rgb_led_set(0x07)
+        controller.rgb_led_set(0x04)
 
-        self.assertIn((0x12, 0x07, 0.5), serial.calls)
+        self.assertIn((0x12, 0x04, 0.5), serial.calls)
 
     def test_output_status_exposes_rgb_led3_without_marking_tungsten(self):
         serial = FakeSerialService()
-        serial.set_response(0x30, 0x00, 0b00100001)  # fan + RGB LED3
+        serial.set_response(0x30, 0x00, 0x04)
         controller = HardwareController(serial)
 
         outputs = controller.get_output_status()
 
-        self.assertTrue(outputs.fan_on)
+        self.assertFalse(outputs.fan_on)
         self.assertTrue(outputs.rgb_led_3_on)
         self.assertTrue(outputs.any_rgb_led_on)
         self.assertFalse(outputs.any_tungsten_on)

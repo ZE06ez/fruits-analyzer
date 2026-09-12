@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Callable
 
 from camera_service import CameraManager
 from capture_coordinator import CaptureCoordinator, TrueCapturePlan
 from device_discovery import DeviceDiscovery, DeviceRegistry
-from hardware_controller import DoorState, HardwareController
+from hardware_controller import (
+    ALL_LIGHT_MASK,
+    ALLOW_DUAL_TUNGSTEN,
+    LED3_BIT,
+    RGB_CAPTURE_LIGHT_MASK,
+    TUNGSTEN_1_BIT,
+    TUNGSTEN_2_BIT,
+    TUNGSTEN_CLOSE_FAILURE_MESSAGE,
+    TUNGSTEN_MASK,
+    DoorState,
+    HardwareController,
+)
 from sample_stage import SAMPLE_STAGE_PROTOCOL_UNKNOWN, SampleStageNotImplemented, UnimplementedSampleStage
 from serial_service import SerialDependencyError, SerialService
 from stm32_controller import Stm32ControllerAdapter
@@ -100,6 +112,11 @@ class DeviceManager:
         self._actuator_token = 0
         self._actuator_busy = False
         self._last_actuator_action = ""
+        self._tungsten_lock = threading.RLock()
+        self._tungsten_timers: dict[int, threading.Timer] = {}
+        self._tungsten_tokens: dict[int, int] = {1: 0, 2: 0}
+        self._tungsten_auto_off_deadlines: dict[int, float] = {}
+        self._tungsten_last_error = ""
 
     def list_ports(self) -> list[dict[str, str]]:
         """返回适合直接转换成 JSON 的串口列表。"""
@@ -220,13 +237,18 @@ class DeviceManager:
                 "wheelPositionDeg": adapter_status.position_deg if adapter_status is not None else None,
                 "wheelTargetDeg": adapter_status.target_deg if adapter_status is not None else None,
                 "wheelMotorState": adapter_status.motor_state if adapter_status is not None else "unknown",
-                "rgbLed1On": outputs.rgb_led_1_on,
-                "rgbLed2On": outputs.rgb_led_2_on,
-                "rgbLed3On": outputs.rgb_led_3_on,
+                "rgbLed1On": False,
+                "rgbLed2On": False,
+                "rgbLed3On": bool(adapter_status.led3_duty or ((adapter_status.led_mask or 0) & LED3_BIT)) if adapter_status is not None else outputs.rgb_led_3_on,
                 "ledMask": adapter_status.led_mask if adapter_status is not None else outputs.raw,
                 "led3Duty": adapter_status.led3_duty if adapter_status is not None else (100 if outputs.rgb_led_3_on else 0),
-                "tungsten1On": outputs.tungsten_1_on,
-                "tungsten2On": outputs.tungsten_2_on,
+                "tungsten1On": bool(adapter_status.led1_duty or ((adapter_status.led_mask or 0) & TUNGSTEN_1_BIT)) if adapter_status is not None else outputs.tungsten_1_on,
+                "tungsten2On": bool(adapter_status.led2_duty or ((adapter_status.led_mask or 0) & TUNGSTEN_2_BIT)) if adapter_status is not None else outputs.tungsten_2_on,
+                "tungsten1Duty": adapter_status.led1_duty if adapter_status is not None else (100 if outputs.tungsten_1_on else 0),
+                "tungsten2Duty": adapter_status.led2_duty if adapter_status is not None else (100 if outputs.tungsten_2_on else 0),
+                "lightMapping": self._light_mapping_status(),
+                "tungstenAutoOff": self._tungsten_auto_off_status(),
+                "tungstenLastError": self._tungsten_last_error,
                 "errorCode": error_code,
                 "statusRevision": adapter_snapshot.revision if adapter_snapshot is not None else None,
                 "statusReceivedMonotonic": adapter_snapshot.received_monotonic if adapter_snapshot is not None else None,
@@ -337,19 +359,85 @@ class DeviceManager:
 
     def set_led3(self, enabled: bool) -> dict[str, Any]:
         with self._lock:
-            adapter = self._require_adapter()
-            before = adapter.status_snapshot.revision
-            mask = 0x04 if enabled else 0x00
-            result = adapter.set_led_mask(mask)
-            status = adapter.query_status(require_fresh=True, after_revision=before)
-            if int(status.led_mask or 0) != mask:
-                raise DeviceManagerError("state_verification_failed: LED3 状态回读与命令不一致")
+            bit_result = self._update_led_mask_bit(LED3_BIT, bool(enabled), verify_bits=LED3_BIT)
+            status = bit_result["statusAfter"]
             return {
-                "commandAccepted": result.ok(),
-                "ledMask": status.led_mask,
+                "commandAccepted": bit_result["commandAccepted"],
+                "ledMask": status.led_mask if status is not None else None,
                 "led3Duty": status.led3_duty,
+                "statusFresh": bit_result["statusFresh"],
                 "status": self.status(),
             }
+
+    def set_tungsten(
+        self,
+        channel: int,
+        enabled: bool,
+        *,
+        duration_ms: int | None = None,
+        operator_confirmed_safety: bool = False,
+    ) -> dict[str, Any]:
+        channel = int(channel)
+        if channel not in (1, 2):
+            raise ValueError("channel must be 1 or 2")
+        bit = TUNGSTEN_1_BIT if channel == 1 else TUNGSTEN_2_BIT
+        enabled = bool(enabled)
+        duration = 5000 if duration_ms is None else int(duration_ms)
+        if enabled and not 1000 <= duration <= 5000:
+            raise ValueError("durationMs must be 1000..5000")
+        if enabled:
+            self._require_tungsten_interlock(bit, operator_confirmed_safety=operator_confirmed_safety)
+        with self._lock:
+            with self._tungsten_lock:
+                if enabled:
+                    self._cancel_tungsten_timer_locked(channel)
+                result = self._update_led_mask_bit(bit, enabled, verify_bits=bit, preserve_unknown_on_close=True)
+                status_after = result["statusAfter"]
+                auto_off_scheduled = False
+                if enabled:
+                    token = self._tungsten_tokens[channel] + 1
+                    self._tungsten_tokens[channel] = token
+                    deadline = time.monotonic() + duration / 1000.0
+                    timer = threading.Timer(duration / 1000.0, self._auto_off_tungsten, args=(channel, token))
+                    timer.daemon = True
+                    self._tungsten_timers[channel] = timer
+                    self._tungsten_auto_off_deadlines[channel] = deadline
+                    timer.start()
+                    auto_off_scheduled = True
+                else:
+                    self._cancel_tungsten_timer_locked(channel)
+                return {
+                    "ok": True,
+                    "commandAccepted": result["commandAccepted"],
+                    "channel": channel,
+                    "enabled": enabled,
+                    "durationMs": duration if enabled else None,
+                    "autoOffScheduled": auto_off_scheduled,
+                    "requestedMask": result["requestedMask"],
+                    "confirmedMask": status_after.led_mask if status_after is not None else None,
+                    "statusFresh": result["statusFresh"],
+                    "errorCode": status_after.error_code if status_after is not None else None,
+                    "safetyWarning": "" if result["confirmed"] else TUNGSTEN_CLOSE_FAILURE_MESSAGE if not enabled else "",
+                    "message": f"钨灯{channel}已开启，将在{duration // 1000}秒后自动关闭" if enabled else f"钨灯{channel}关闭命令已确认",
+                    "status": self.status(),
+                }
+
+    def tungsten_all_off(self, *, emergency: bool = False) -> dict[str, Any]:
+        with self._lock:
+            with self._tungsten_lock:
+                self._cancel_all_tungsten_timers_locked()
+                result = self._set_tungsten_all_off_locked(emergency=emergency)
+                status_after = result["statusAfter"]
+                return {
+                    "ok": result["confirmed"],
+                    "commandAccepted": result["commandAccepted"],
+                    "emergency": bool(emergency),
+                    "requestedMask": result["requestedMask"],
+                    "confirmedMask": status_after.led_mask if status_after is not None else None,
+                    "statusFresh": result["statusFresh"],
+                    "safetyWarning": "" if result["confirmed"] else TUNGSTEN_CLOSE_FAILURE_MESSAGE,
+                    "status": self.status(),
+                }
 
     def actuator_extend(self, duration_ms: int | None = None) -> dict[str, Any]:
         return self._start_actuator_action("extend", duration_ms)
@@ -523,6 +611,16 @@ class DeviceManager:
             if plan.multispectral_enabled and not filter_wheel_ready:
                 blocking.append({"code": "FILTER_WHEEL_NOT_READY", "message": "滤光轮未连接或尚未建立逻辑零点"})
 
+            if plan.rgb_enabled and plan.rgb_led_mask != LED3_BIT:
+                blocking.append({
+                    "code": "RGB_LIGHT_MAPPING_NOT_CONFIRMED",
+                    "message": "PB7/PB8 已确认为钨灯；RGB 正式照明未能从仓库确认。请现场确认后显式使用 PB9/LED3(0x04) 或更新映射。",
+                })
+            if plan.multispectral_enabled and (plan.tungsten_mask & ~TUNGSTEN_MASK):
+                blocking.append({"code": "INVALID_TUNGSTEN_MASK", "message": "多光谱钨灯只能使用 PB7/PB8 bit0/bit1"})
+            if plan.multispectral_enabled and plan.tungsten_mask == TUNGSTEN_MASK and not ALLOW_DUAL_TUNGSTEN:
+                blocking.append({"code": "DUAL_TUNGSTEN_NOT_ACCEPTED", "message": "两路钨灯同时开启尚未通过电源、冷态冲击、散热和防护联锁验收"})
+
             sample_stage_required = plan.capture_mode == "multi_view" and bool((plan.rotation_plan or {}).get("enabled"))
             sample_stage_ready = (not sample_stage_required) or (
                 bool(sample_stage.get("available")) and bool(sample_stage.get("protocolKnown"))
@@ -589,6 +687,9 @@ class DeviceManager:
                 "sampleStageReady": sample_stage_ready,
                 "controllerReady": controller_ready,
                 "productionAccepted": False,
+                "allowDualTungsten": ALLOW_DUAL_TUNGSTEN,
+                "rgbLightMappingConfirmed": plan.rgb_led_mask == LED3_BIT,
+                "lightMapping": self._light_mapping_status(),
             }
             return {
                 "ready": ready,
@@ -705,9 +806,169 @@ class DeviceManager:
             sample_stage_mode=str(payload.get("sampleStageMode") or "hardware").strip().lower(),
             operator_confirmed_dark=self._bool_payload(payload.get("operatorConfirmedDark", payload.get("operatorConfirmed")), default=False),
             operator_confirmed_white=self._bool_payload(payload.get("operatorConfirmedWhite", payload.get("operatorConfirmed")), default=False),
-            rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=0x03) or 0x03,
-            tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x03) or 0x03,
+            rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=LED3_BIT) or LED3_BIT,
+            tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x01) or 0x01,
         )
+
+    def _update_led_mask_bit(
+        self,
+        bit: int,
+        enabled: bool,
+        *,
+        verify_bits: int,
+        preserve_unknown_on_close: bool = False,
+    ) -> dict[str, Any]:
+        adapter = self._require_adapter()
+        current_status = None
+        current_mask = 0
+        try:
+            current_status = adapter.query_status(require_fresh=True)
+            current_mask = int(current_status.led_mask or 0) & ALL_LIGHT_MASK
+        except Exception:
+            if enabled or not preserve_unknown_on_close:
+                raise
+        target_mask = (current_mask | bit) if enabled else (current_mask & ~bit)
+        before = adapter.status_snapshot.revision
+        command = adapter.set_led_mask(target_mask)
+        status_after = adapter.query_status(require_fresh=True, after_revision=before)
+        confirmed_mask = int(status_after.led_mask or 0) & ALL_LIGHT_MASK
+        if confirmed_mask != target_mask:
+            raise DeviceManagerError("state_verification_failed: 灯光 led_mask 回读与命令不一致")
+        duty_ok = self._verify_light_duty(status_after, verify_bits, enabled)
+        if not duty_ok:
+            raise DeviceManagerError("state_verification_failed: 灯光 duty 回读与命令不一致")
+        return {
+            "commandAccepted": command.ok(),
+            "requestedMask": target_mask,
+            "statusBefore": current_status,
+            "statusAfter": status_after,
+            "statusFresh": True,
+            "confirmed": True,
+        }
+
+    def _set_tungsten_all_off_locked(self, *, emergency: bool) -> dict[str, Any]:
+        adapter = self._require_adapter()
+        current_mask = 0
+        try:
+            status_before = adapter.query_status(require_fresh=True)
+            current_mask = int(status_before.led_mask or 0) & ALL_LIGHT_MASK
+            target_mask = 0x00 if emergency else (current_mask & LED3_BIT)
+        except Exception:
+            target_mask = 0x00
+        try:
+            before = adapter.status_snapshot.revision
+            command = adapter.set_led_mask(target_mask)
+            status_after = adapter.query_status(require_fresh=True, after_revision=before)
+            confirmed = (int(status_after.led_mask or 0) & TUNGSTEN_MASK) == 0
+            if not confirmed:
+                self._tungsten_last_error = TUNGSTEN_CLOSE_FAILURE_MESSAGE
+            else:
+                self._tungsten_last_error = ""
+            return {
+                "commandAccepted": command.ok(),
+                "requestedMask": target_mask,
+                "statusAfter": status_after,
+                "statusFresh": True,
+                "confirmed": confirmed,
+            }
+        except Exception as exc:
+            self._tungsten_last_error = TUNGSTEN_CLOSE_FAILURE_MESSAGE
+            LOGGER.error("钨灯关闭后无法确认 STATUS：%s", exc)
+            return {
+                "commandAccepted": False,
+                "requestedMask": target_mask,
+                "statusAfter": None,
+                "statusFresh": False,
+                "confirmed": False,
+                "error": str(exc),
+            }
+
+    def _require_tungsten_interlock(self, bit: int, *, operator_confirmed_safety: bool) -> None:
+        with self._lock:
+            adapter = self._require_adapter()
+            status = adapter.query_status(require_fresh=True)
+            if status.error_code not in (None, 0):
+                raise DeviceManagerError(f"interlock_failed: STM32 当前故障码为 0x{int(status.error_code):02X}")
+            if not status.fan_on or int(status.fan_duty or 0) <= 0:
+                raise DeviceManagerError("interlock_failed: 风扇未开启，禁止开启钨灯")
+            current_mask = int(status.led_mask or 0) & ALL_LIGHT_MASK
+            if current_mask & LED3_BIT:
+                raise DeviceManagerError("interlock_failed: LED3/RGB 光源开启时禁止开启钨灯")
+            if current_mask & (TUNGSTEN_MASK & ~bit):
+                raise DeviceManagerError("DUAL_TUNGSTEN_NOT_ACCEPTED: 暂不允许两路钨灯同时开启")
+            if self.stm32_adapter is None or not self.stm32_adapter.door_endpoint_feedback_supported:
+                if operator_confirmed_safety is not True:
+                    raise DeviceManagerError("operator_confirmation_required: 门控无可靠端点反馈，开启钨灯前必须人工确认防护与12V电源安全")
+            else:
+                door = self.controller.get_door_status() if self.controller is not None else DoorState.UNKNOWN
+                if door != DoorState.CLOSED:
+                    raise DeviceManagerError("interlock_failed: 防护门未确认关闭，禁止开启钨灯")
+
+    @staticmethod
+    def _verify_light_duty(status: Any, bits: int, enabled: bool) -> bool:
+        checks = []
+        if bits & TUNGSTEN_1_BIT:
+            checks.append(int(status.led1_duty or 0))
+        if bits & TUNGSTEN_2_BIT:
+            checks.append(int(status.led2_duty or 0))
+        if bits & LED3_BIT:
+            checks.append(int(status.led3_duty or 0))
+        return all((value > 0) if enabled else (value == 0) for value in checks)
+
+    def _auto_off_tungsten(self, channel: int, token: int) -> None:
+        with self._tungsten_lock:
+            if token != self._tungsten_tokens.get(channel):
+                return
+        try:
+            self.set_tungsten(channel, False)
+        except Exception as exc:
+            LOGGER.error("钨灯%d自动关闭失败：%s", channel, exc)
+            self._tungsten_last_error = TUNGSTEN_CLOSE_FAILURE_MESSAGE
+            try:
+                with self._lock:
+                    with self._tungsten_lock:
+                        self._set_tungsten_all_off_locked(emergency=True)
+            except Exception:
+                LOGGER.exception("钨灯%d自动关闭后的 emergency all-off 也失败", channel)
+        finally:
+            with self._tungsten_lock:
+                if token == self._tungsten_tokens.get(channel):
+                    self._tungsten_auto_off_deadlines.pop(channel, None)
+                    self._tungsten_timers.pop(channel, None)
+
+    def _cancel_tungsten_timer_locked(self, channel: int) -> None:
+        self._tungsten_tokens[channel] = self._tungsten_tokens.get(channel, 0) + 1
+        timer = self._tungsten_timers.pop(channel, None)
+        self._tungsten_auto_off_deadlines.pop(channel, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _cancel_all_tungsten_timers_locked(self) -> None:
+        for channel in (1, 2):
+            self._cancel_tungsten_timer_locked(channel)
+
+    def _tungsten_auto_off_status(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._tungsten_lock:
+            return {
+                str(channel): {
+                    "scheduled": channel in self._tungsten_auto_off_deadlines,
+                    "remainingMs": max(0, int((deadline - now) * 1000)),
+                }
+                for channel, deadline in self._tungsten_auto_off_deadlines.items()
+            }
+
+    @staticmethod
+    def _light_mapping_status() -> dict[str, Any]:
+        return {
+            "tungsten1Bit": TUNGSTEN_1_BIT,
+            "tungsten2Bit": TUNGSTEN_2_BIT,
+            "led3Bit": LED3_BIT,
+            "tungstenMask": TUNGSTEN_MASK,
+            "allLightMask": ALL_LIGHT_MASK,
+            "rgbCaptureLightMask": RGB_CAPTURE_LIGHT_MASK,
+            "allowDualTungsten": ALLOW_DUAL_TUNGSTEN,
+        }
 
     @staticmethod
     def _bool_payload(value: Any, *, default: bool = False) -> bool:
@@ -964,8 +1225,15 @@ class DeviceManager:
             "rgbLed1On": False,
             "rgbLed2On": False,
             "rgbLed3On": False,
+            "ledMask": 0,
+            "led3Duty": 0,
             "tungsten1On": False,
             "tungsten2On": False,
+            "tungsten1Duty": 0,
+            "tungsten2Duty": 0,
+            "lightMapping": self._light_mapping_status(),
+            "tungstenAutoOff": self._tungsten_auto_off_status(),
+            "tungstenLastError": self._tungsten_last_error,
             "errorCode": None,
             "sampleStage": self.sample_stage_status(),
             "stm32FirmwareProfile": self._stm32_profile_status(),

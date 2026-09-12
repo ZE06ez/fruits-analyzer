@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from device_discovery import DeviceCandidate, DeviceDiscovery, DeviceRegistry, DeviceRole
 from device_manager import CameraIntegrationRequired, DeviceManager, UnsupportedCapabilityError
@@ -57,12 +58,13 @@ class FakeHardwareController:
 
     def get_output_status(self):
         return OutputStatus(
-            raw=0b00000111,
+            raw=0x04,
             fan_on=True,
             rgb_led_1_on=True,
             rgb_led_2_on=True,
             tungsten_1_on=False,
             tungsten_2_on=False,
+            rgb_led_3_on=False,
         )
 
     def get_door_status(self):
@@ -194,6 +196,63 @@ class BindingCameraManager(FakeCameraManager):
         self.multispectral = type("Multi", (), {})()
 
 
+class FakeLightStatus:
+    def __init__(self, *, led_mask=0, fan_duty=100, error_code=0):
+        self.led_mask = led_mask
+        self.fan_duty = fan_duty
+        self.fan_on = fan_duty > 0
+        self.error_code = error_code
+        self.led1_duty = 100 if led_mask & 0x01 else 0
+        self.led2_duty = 100 if led_mask & 0x02 else 0
+        self.led3_duty = 100 if led_mask & 0x04 else 0
+        self.position_deg = 0.0
+        self.target_deg = 0.0
+        self.motor_state = "idle"
+
+    def to_dict(self):
+        return {
+            "ledMask": self.led_mask,
+            "fanDuty": self.fan_duty,
+            "errorCode": self.error_code,
+            "led1Duty": self.led1_duty,
+            "led2Duty": self.led2_duty,
+            "led3Duty": self.led3_duty,
+        }
+
+
+class FakeLightAdapter:
+    def __init__(self, *, led_mask=0, fan_duty=100, fail_fresh_after_set=False):
+        self.led_mask = led_mask
+        self.fan_duty = fan_duty
+        self.fail_fresh_after_set = fail_fresh_after_set
+        self.revision = 0
+        self.calls = []
+        self.current_firmware_profile_validated = True
+        self.tungsten_supported = True
+        self.door_endpoint_feedback_supported = False
+        self.automatic_homing_supported = False
+        self.physical_encoder_verified = False
+        self.info_cache = None
+
+    @property
+    def status_snapshot(self):
+        return SimpleNamespace(revision=self.revision, received_monotonic=123.0, status=FakeLightStatus(led_mask=self.led_mask, fan_duty=self.fan_duty))
+
+    def query_status(self, *, require_fresh=True, after_revision=None, timeout_s=None):
+        if self.fail_fresh_after_set and after_revision is not None:
+            raise RuntimeError("no fresh status")
+        self.revision += 1
+        return FakeLightStatus(led_mask=self.led_mask, fan_duty=self.fan_duty)
+
+    def set_led_mask(self, mask, *, timeout_s=None):
+        self.calls.append(("set_led_mask", int(mask)))
+        self.led_mask = int(mask)
+        return SimpleNamespace(ok=lambda: True)
+
+    def validate_profile_consistency(self):
+        return {}
+
+
 class DeviceManagerTests(unittest.TestCase):
     def make_manager(self):
         serial = FakeSerialService()
@@ -227,13 +286,86 @@ class DeviceManagerTests(unittest.TestCase):
         self.assertFalse(status["rgbLed3On"])
         self.assertTrue(status["stm32FirmwareProfile"]["enabled"])
         self.assertFalse(status["stm32FirmwareProfile"]["currentFirmwareProfileValidated"])
-        self.assertFalse(status["stm32FirmwareProfile"]["tungstenSupported"])
+        self.assertTrue(status["stm32FirmwareProfile"]["tungstenSupported"])
         self.assertIn("cameras", status)
         self.assertFalse(status["cameras"]["rgb"]["connected"])
         self.assertEqual(status["cameras"]["rgb"]["transport"], "UVC/DirectShow")
         self.assertEqual(status["cameras"]["multispectral"]["transport"], "GigE/DVP2")
         self.assertEqual(status["sampleStage"]["lastError"], "SAMPLE_STAGE_PROTOCOL_UNKNOWN")
         self.assertFalse(status["sampleStage"]["protocolKnown"])
+
+    def make_light_manager(self, adapter):
+        manager, serial = self.make_manager()
+        manager.connect("COM3")
+        manager.stm32_adapter = adapter
+        return manager, adapter
+
+    def test_led3_bit_update_preserves_tungsten_bits(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x03))
+
+        result = manager.set_led3(True)
+
+        self.assertEqual(adapter.calls[-1], ("set_led_mask", 0x07))
+        self.assertEqual(result["ledMask"], 0x07)
+
+    def test_tungsten_channel_updates_preserve_other_bits(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x00))
+
+        on = manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=True)
+        adapter.led_mask = 0x07
+        off = manager.set_tungsten(2, False)
+
+        self.assertEqual(on["requestedMask"], 0x01)
+        self.assertEqual(off["requestedMask"], 0x05)
+        self.assertIn(("set_led_mask", 0x01), adapter.calls)
+        self.assertIn(("set_led_mask", 0x05), adapter.calls)
+
+    def test_tungsten_all_off_preserves_led3(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x07))
+
+        result = manager.tungsten_all_off()
+
+        self.assertEqual(adapter.calls[-1], ("set_led_mask", 0x04))
+        self.assertEqual(result["confirmedMask"], 0x04)
+
+    def test_tungsten_emergency_all_off_sends_zero(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x07))
+
+        result = manager.tungsten_all_off(emergency=True)
+
+        self.assertEqual(adapter.calls[-1], ("set_led_mask", 0x00))
+        self.assertEqual(result["confirmedMask"], 0x00)
+
+    def test_tungsten_open_requires_connection_fan_and_operator_confirmation(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x00, fan_duty=0))
+
+        with self.assertRaises(Exception):
+            manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=True)
+        adapter.fan_duty = 100
+        with self.assertRaises(Exception):
+            manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=False)
+
+    def test_tungsten_open_refuses_dual_channel_when_not_accepted(self):
+        manager, _ = self.make_light_manager(FakeLightAdapter(led_mask=0x02))
+
+        with self.assertRaises(Exception):
+            manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=True)
+
+    def test_ack_without_fresh_status_does_not_report_confirmed(self):
+        manager, _ = self.make_light_manager(FakeLightAdapter(led_mask=0x00, fail_fresh_after_set=True))
+
+        with self.assertRaises(Exception):
+            manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=True)
+
+    def test_tungsten_auto_off_closes_without_reopening(self):
+        manager, adapter = self.make_light_manager(FakeLightAdapter(led_mask=0x00))
+
+        manager.set_tungsten(1, True, duration_ms=1000, operator_confirmed_safety=True)
+        token = manager._tungsten_tokens[1]
+        manager._auto_off_tungsten(1, token)
+
+        self.assertEqual(adapter.calls[-1], ("set_led_mask", 0x00))
+        self.assertEqual(adapter.calls.count(("set_led_mask", 0x01)), 1)
 
     def test_current_firmware_profile_wraps_same_serial_owner_in_adapter(self):
         serial = FakeSerialService()
@@ -380,6 +512,8 @@ class DeviceManagerTests(unittest.TestCase):
                 "calibrationMode": "none",
                 "requireCalibration": False,
                 "settlingMs": 0,
+                "rgbLedMask": 0x04,
+                "tungstenMask": 0x01,
                 "bandPlan": [{"bandId": "A520", "wheelPosition": 1, "wavelengthNm": 520}],
             }
             readiness = manager.capture_readiness(payload)
@@ -392,6 +526,33 @@ class DeviceManagerTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "views" / "view_000" / "rgb" / "rgb_view_000.png").exists())
             self.assertEqual(camera.capture_count, 1)
             self.assertEqual(camera.multispectral_capture_count, 1)
+
+    def test_true_capture_readiness_blocks_legacy_light_masks(self):
+        hardware = ReadyHardwareController()
+        hardware.wheel_position = 0
+        serial = FakeSerialService()
+        manager = DeviceManager(
+            serial_service=serial,
+            controller_factory=lambda _transport: hardware,
+            camera_manager=ReadyCameraManager(),
+            stm32_protocol_profile=None,
+        )
+        manager.connect("COM3")
+
+        readiness = manager.capture_readiness({
+            "sampleId": "S-DM-LIGHT",
+            "outputDir": str(Path(tempfile.gettempdir()) / "dm_light_block"),
+            "captureMode": "single_view",
+            "calibrationMode": "none",
+            "requireCalibration": False,
+            "rgbLedMask": 0x03,
+            "tungstenMask": 0x03,
+            "bandPlan": [{"bandId": "A520", "wheelPosition": 1, "wavelengthNm": 520}],
+        })
+
+        codes = [item["code"] for item in readiness["blockingReasons"]]
+        self.assertIn("RGB_LIGHT_MAPPING_NOT_CONFIRMED", codes)
+        self.assertIn("DUAL_TUNGSTEN_NOT_ACCEPTED", codes)
 
     def test_true_capture_multiview_blocks_on_sample_stage_protocol_unknown(self):
         hardware = ReadyHardwareController()
