@@ -325,6 +325,7 @@ class RgbUvcCamera:
                     "colorSpace": frame.color_space,
                     **policy,
                     "strictLossless": bool(policy.get("scientificStrictLossless")),
+                    "captureApproved": bool(policy.get("scientificCaptureApproved")),
                 })
             except Exception as exc:
                 row["error"] = str(exc)

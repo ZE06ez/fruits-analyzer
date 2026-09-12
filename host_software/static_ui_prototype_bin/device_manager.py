@@ -476,21 +476,27 @@ class DeviceManager:
                     except Exception as exc:
                         rgb_scientific = {
                             "scientificStrictLossless": False,
+                            "scientificCaptureApproved": False,
                             "reason": str(exc),
                             "sourceCompression": "unknown",
                         }
                 else:
                     rgb_scientific = rgb_status.get("scientificTransport") or {}
-                if rgb_scientific and not rgb_scientific.get("scientificStrictLossless"):
+                if rgb_scientific and not rgb_scientific.get(
+                    "scientificCaptureApproved",
+                    rgb_scientific.get("scientificStrictLossless"),
+                ):
                     code = (
                         "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
                         if rgb_scientific.get("sourceCompression") == "lossy"
+                        else "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
+                        if rgb_scientific.get("detailCode") == "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
                         else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
                     )
                     blocking.append({
                         "code": "CAMERA_NOT_READY",
                         "detailCode": code,
-                        "message": "RGB 正式科学采集链路未通过 strict lossless transport 验证",
+                        "message": "RGB 正式科学采集链路未通过科研采集准入",
                     })
             rgb_restore = rgb_status.get("settingsRestoreState") or {}
             if plan.rgb_enabled and rgb_restore.get("state") == "device_mismatch":
@@ -575,6 +581,7 @@ class DeviceManager:
                 "multiViewReady": multi_view_ready,
                 "rgbReady": rgb_ready,
                 "rgbScientificStrictLossless": bool(rgb_scientific.get("scientificStrictLossless")) if rgb_scientific else None,
+                "rgbScientificCaptureApproved": bool(rgb_scientific.get("scientificCaptureApproved")) if rgb_scientific else None,
                 "rgbScientificTransport": rgb_scientific,
                 "multispectralReady": multispectral_ready,
                 "calibrationReady": calibration_ready,

@@ -2,6 +2,17 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-11 P1C-1 RGB Scientific Profile + YUY2 Capture Approval
+
+- 修改内容：RGB Preview Profile 与 RGB Scientific Capture Profile 明确分离；默认 Preview 保持 `3840x2160 @25fps MJPG`，默认 Scientific 明确为 `1920x1080 @5fps YUY2`；`config/camera_settings.json` 是本机运行时配置并被 Git 忽略，`config/camera_settings.example.json` 作为可提交参考。
+- 修改内容：`CameraSettingsStore` 不再在 `scientificProfile` 缺失时静默继承 preview profile；正式 RGB capture 缺少完整 scientific profile 时失败为 `RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED`。
+- 修改内容：`rgb_scientific.py` 新增 `scientificCaptureApproved`、`scientificQualityClass` 和 `chromaSubsampling`。YUY2/YUYV/UYVY 保持 `scientificStrictLossless=false`，但作为 `uncompressed_422` 允许正式科研 PNG；MJPG/JPEG/H264/H265 仍判定为 lossy 并阻断。
+- 修改内容：`CameraManager.capture_rgb_frame()` 在正式采集前暂停 preview、释放 preview handle、应用 scientific profile、按 actual mode 判断准入，并在结束后恢复 preview profile；metadata 记录 preview/scientific profile、source compression、chroma subsampling、approved/strict/quality class 和 device/settings 来源。
+- 修改内容：`CaptureCoordinator` 与 `DeviceManager.capture_readiness()` 改为按 `scientificCaptureApproved` gate，同时保留 `scientificStrictLossless` 诚实记录；actual FOURCC/尺寸/FPS 与 scientific profile 不一致时阻断为 profile mismatch。
+- 修改内容：`manual_camera_test.py --rgb-capture-once` 使用 isolated settings store，把 CLI `--width/--height/--fps/--fourcc` 显式作为 scientific profile，避免 persistent preview MJPG 覆盖本次真实验证目标。
+- 修改文件：`host_software/static_ui_prototype_bin/camera_service/config.py`、`settings_store.py`、`rgb_scientific.py`、`rgb_uvc.py`、`manager.py`、`capture_coordinator.py`、`device_manager.py`、`manual_camera_test.py`、`host_software/static_ui_prototype_bin/config/camera_settings.example.json`、相关测试与项目文档。
+- 是否影响原有功能：不删除 MJPG preview，不降低 preview 分辨率，不修改 DVP2、STM32、滤光轮、SampleStage、Model Studio 或 RGB-MS registration；YUY2 不被伪装为 strict lossless。
+
 ## 2026-09-10 UI-0/UI-1 Main Workstation IA + Instrument Visual Refinement
 
 - 修改内容：主检测软件左侧导航从底层 Task Tree 收敛为五个一级工作区：检测工作台、样品与记录、设备与维护、模型训练、系统设置；Model Studio 继续作为独立 `/model-studio` 工作空间，不合并回主检测页。
@@ -42,7 +53,7 @@
 
 ## 2026-09-10 P1B-8.1 Camera Settings Persistence & Restore
 
-- 修改内容：新增 `camera_service/settings_store.py` 和后端权威 `config/camera_settings.json` 配置结构，支持 JSON UTF-8 load/save/reset/migrate legacy，缺文件返回 default，损坏 JSON 返回 warning/default，保存使用 atomic replace。字段白名单限制为 RGB device identity/index、width/height/fps/fourcc、auto/manual exposure、gain、white balance 和现有几何缓存，以及 DVP2 device identity、exposure、gain；不开放 DVP2 PixelFormat/trigger/ROI 持久化。
+- 修改内容：新增 `camera_service/settings_store.py` 和后端权威运行时 `config/camera_settings.json` 配置结构，支持 JSON UTF-8 load/save/reset/migrate legacy，缺文件自动生成 default，损坏 JSON 返回 warning/default，保存使用 atomic replace。字段白名单限制为 RGB device identity/index、width/height/fps/fourcc、auto/manual exposure、gain、white balance 和现有几何缓存，以及 DVP2 device identity、exposure、gain；不开放 DVP2 PixelFormat/trigger/ROI 持久化。
 - 修改内容：`CameraManager` 区分 Apply、Apply & Save、Save Default、Restore Saved、Restore Default。`/api/camera/rgb/apply-settings` 和 `/api/camera/multispectral/apply-settings` 支持 `persist=true`，仅在成功下发并回读后写入 store；DVP2 exposure/gain 继续 set 后 get readback；RGB DirectShow 每项参数记录 requested/actual/accepted/supported，不伪造 unsupported 成功。
 - 修改内容：新增 `GET /api/camera/settings`、`POST /api/camera/settings/save|reset|restore|migrate-legacy`。restore state 记录 `not_attempted/restored/partial/failed/device_mismatch`、`lastRestoredAt`、`restoreError` 和 per-setting results；恢复触发于 probe、preview/capture open、explicit restore 和 reconnect，而不是每次 status 查询。probe 恢复后仍释放相机句柄，保留 `detected/available` 语义。
 - 修改内容：主 UI 相机设置页启动时优先读取后端配置；仅当后端配置不存在且旧 `fruitAnalyzer.cameraSettings` 存在时迁移旧 RGB localStorage。按钮新增/调整为“应用到相机”“应用并保存”“保存为默认配置”“恢复已保存配置”“恢复默认配置”，并显示 saved requested、current actual 和 restore state。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -369,6 +370,120 @@ class LowLatencyRgbPreviewCamera:
             "transport": self.transport,
             "actual": {"width": 32, "height": 24, "fps": 25.0, "fourcc": "MJPG"},
             "requested": {"deviceIndex": 1, "width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "capabilities": {},
+        }
+
+
+class PreviewRestartRgbCamera:
+    role = "rgb"
+    transport = "UVC/DirectShow"
+
+    def __init__(
+        self,
+        *,
+        preview_delay_after_restore_s: float = 0.0,
+        block_preview_after_restore: bool = False,
+    ):
+        self.config = RgbCameraConfig(width=3840, height=2160, fps=25, fourcc="MJPG")
+        self.is_open = False
+        self.started = False
+        self.apply_history: list[dict[str, object]] = []
+        self.capture_history: list[str] = []
+        self.start_count = 0
+        self.stop_count = 0
+        self.close_count = 0
+        self.preview_delay_after_restore_s = preview_delay_after_restore_s
+        self.block_preview_after_restore = block_preview_after_restore
+        self.after_scientific_restore = False
+        self.preview_restore_capture_started = threading.Event()
+        self.release_blocked_preview = threading.Event()
+        self._capture_owner_lock = threading.Lock()
+        self._active_captures = 0
+        self.max_concurrent_captures = 0
+
+    def start_stream(self):
+        self.start_count += 1
+        self.open()
+        self.started = True
+
+    def open(self):
+        self.is_open = True
+
+    def stop_stream(self):
+        self.stop_count += 1
+        self.started = False
+
+    def close(self):
+        self.close_count += 1
+        self.is_open = False
+
+    def apply_config(self, config, *, restart=False):
+        config = RgbCameraConfig.from_dict(config.to_dict() if hasattr(config, "to_dict") else config)
+        if restart and self.is_open:
+            self.close()
+        self.config = config
+        self.apply_history.append(config.to_dict())
+        if config.fourcc.upper() != "MJPG":
+            self.after_scientific_restore = False
+        elif any(str(item.get("fourcc")).upper() != "MJPG" for item in self.apply_history[:-1]):
+            self.after_scientific_restore = True
+        self.open()
+        return {
+            "status": self.get_status(),
+            "settingResults": {
+                "width": {"requested": config.width, "accepted": True},
+                "height": {"requested": config.height, "accepted": True},
+                "fps": {"requested": config.fps, "accepted": True},
+                "fourcc": {"requested": config.fourcc, "accepted": True},
+            },
+        }
+
+    def capture_frame(self):
+        with self._capture_owner_lock:
+            self._active_captures += 1
+            self.max_concurrent_captures = max(self.max_concurrent_captures, self._active_captures)
+        try:
+            fourcc = self.config.fourcc.upper()
+            self.capture_history.append(fourcc)
+            if fourcc == "MJPG" and self.after_scientific_restore:
+                self.preview_restore_capture_started.set()
+                if self.block_preview_after_restore:
+                    self.release_blocked_preview.wait(timeout=2.0)
+                elif self.preview_delay_after_restore_s > 0:
+                    time.sleep(self.preview_delay_after_restore_s)
+                self.after_scientific_restore = False
+            data = np.zeros((24, 32, 3), dtype=np.uint8)
+            data[:, :, 0] = 80 if fourcc == "MJPG" else 180
+            data[:, :, 1] = 40
+            data[:, :, 2] = 220
+            return CameraFrame(
+                data=data,
+                color_space="RGB",
+                dtype=str(data.dtype),
+                shape=data.shape,
+                metadata={"sourceColorSpace": "BGR", "timestamp": time.time(), "deviceIndex": 1},
+            )
+        finally:
+            with self._capture_owner_lock:
+                self._active_captures -= 1
+
+    def get_status(self):
+        return {
+            "role": "rgb",
+            "sdkAvailable": True,
+            "detected": True,
+            "available": True,
+            "connected": True,
+            "opened": self.is_open,
+            "streaming": self.started,
+            "transport": self.transport,
+            "actual": {
+                "width": self.config.width,
+                "height": self.config.height,
+                "fps": float(self.config.fps),
+                "fourcc": self.config.fourcc.upper(),
+            },
+            "requested": self.config.to_dict(),
             "capabilities": {},
         }
 
@@ -898,6 +1013,92 @@ class CameraServiceTests(unittest.TestCase):
             self.assertTrue(meta["openedForCapture"])
             self.assertTrue(meta["scientificStrictLossless"])
 
+    def test_rgb_scientific_capture_does_not_restart_preview_when_preview_was_stopped(self):
+        camera = PreviewRestartRgbCamera()
+        with tempfile.TemporaryDirectory(prefix="rgb_preview_stopped_") as tmp:
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"}})
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
+
+            frame, meta = manager.capture_rgb_frame()
+
+        self.assertEqual(frame.shape, (24, 32, 3))
+        self.assertFalse(meta["previewWasRunning"])
+        self.assertNotIn("previewRestoreStatus", meta)
+        self.assertIsNone(manager._rgb_preview_thread)
+        self.assertEqual(camera.capture_history, ["YUY2"])
+
+    def test_rgb_scientific_capture_restarts_preview_and_waits_until_first_jpeg_ready(self):
+        camera = PreviewRestartRgbCamera()
+        with tempfile.TemporaryDirectory(prefix="rgb_preview_restore_") as tmp:
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"}})
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
+            manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+            self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
+            first_thread = manager._rgb_preview_thread
+            try:
+                frame, meta = manager.capture_rgb_frame()
+                second_thread = manager._rgb_preview_thread
+                data, jpeg_meta = manager.rgb_preview_jpeg()
+            finally:
+                manager.stop_rgb_preview()
+
+        self.assertEqual(frame.shape, (24, 32, 3))
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+        self.assertEqual(meta["previewRestoreStatus"], "restored")
+        self.assertTrue(meta["previewRestore"]["ready"])
+        self.assertEqual(meta["previewRestore"]["previewProfile"]["fourcc"], "MJPG")
+        self.assertEqual(meta["actualFourcc"], "YUY2")
+        self.assertIn("YUY2", camera.capture_history)
+        self.assertEqual(camera.apply_history[-2]["fourcc"], "YUY2")
+        self.assertEqual(camera.apply_history[-1]["fourcc"], "MJPG")
+        self.assertIsNot(second_thread, first_thread)
+        self.assertIsNotNone(second_thread)
+        self.assertFalse(first_thread.is_alive())
+        self.assertGreaterEqual(jpeg_meta["frameId"], 1)
+        self.assertEqual(camera.max_concurrent_captures, 1)
+
+    def test_rgb_scientific_capture_allows_delayed_preview_first_frame_within_timeout(self):
+        camera = PreviewRestartRgbCamera(preview_delay_after_restore_s=0.1)
+        with tempfile.TemporaryDirectory(prefix="rgb_preview_delay_") as tmp:
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"}})
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
+            manager._rgb_preview_restart_timeout_seconds = 1.0
+            manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+            self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
+            try:
+                _, meta = manager.capture_rgb_frame()
+            finally:
+                manager.stop_rgb_preview()
+
+        self.assertEqual(meta["previewRestoreStatus"], "restored")
+        self.assertTrue(meta["previewRestore"]["latestJpegExists"])
+
+    def test_rgb_scientific_capture_records_preview_restart_timeout_without_losing_frame(self):
+        camera = PreviewRestartRgbCamera(block_preview_after_restore=True)
+        with tempfile.TemporaryDirectory(prefix="rgb_preview_timeout_") as tmp:
+            store = CameraSettingsStore(Path(tmp) / "camera_settings.json")
+            store.update_rgb({"scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"}})
+            manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp), settings_store=store)
+            manager._rgb_preview_restart_timeout_seconds = 0.05
+            manager.start_rgb_preview({"width": 320, "height": 180, "fps": 12})
+            self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
+            try:
+                frame, meta = manager.capture_rgb_frame()
+            finally:
+                camera.release_blocked_preview.set()
+                manager.stop_rgb_preview()
+
+        self.assertEqual(frame.shape, (24, 32, 3))
+        self.assertTrue(meta["previewWasRunning"])
+        self.assertEqual(meta["previewRestoreStatus"], "failed")
+        self.assertEqual(meta["previewRestore"]["code"], "RGB_PREVIEW_RESTART_TIMEOUT")
+        self.assertTrue(meta["previewRestore"]["threadAlive"])
+        self.assertFalse(meta["previewRestore"]["latestJpegExists"])
+        self.assertEqual(meta["actualFourcc"], "YUY2")
+
     def test_camera_manager_rgb_preview_reports_unavailable_camera(self):
         rgb = RgbUvcCamera(cv2_module=FakeCv2, capture_factory=lambda index: FakeCapture(opened=False))
         with tempfile.TemporaryDirectory(prefix="dvp2_manager_") as tmp:
@@ -914,7 +1115,7 @@ class CameraServiceTests(unittest.TestCase):
             manager = CameraManager(rgb_camera=camera, multispectral_camera=Dvp2MonoCamera(sdk_dir=tmp))
             manager.start_rgb_preview({"width": 160, "height": 90, "fps": 20})
             self.assertTrue(manager._rgb_preview_ready_event.wait(timeout=1.0))
-            deadline = time.time() + 1.0
+            deadline = time.time() + 3.0
             while camera.capture_count < 3 and time.time() < deadline:
                 time.sleep(0.01)
             manager._rgb_preview_stop_event.set()

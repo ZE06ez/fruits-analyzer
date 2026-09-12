@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from typing import Any
 
 
+DEFAULT_RGB_SCIENTIFIC_WIDTH = 1920
+DEFAULT_RGB_SCIENTIFIC_HEIGHT = 1080
+DEFAULT_RGB_SCIENTIFIC_FPS = 5.0
+DEFAULT_RGB_SCIENTIFIC_FOURCC = "YUY2"
+
+
 @dataclass(frozen=True)
 class RgbCameraConfig:
     """Requested RGB UVC camera settings.
@@ -23,10 +29,10 @@ class RgbCameraConfig:
     white_balance: float | None = None
     auto_exposure: float | None = None
     auto_white_balance: float | None = None
-    scientific_width: int | None = None
-    scientific_height: int | None = None
-    scientific_fps: float | None = None
-    scientific_fourcc: str | None = None
+    scientific_width: int | None = DEFAULT_RGB_SCIENTIFIC_WIDTH
+    scientific_height: int | None = DEFAULT_RGB_SCIENTIFIC_HEIGHT
+    scientific_fps: float | None = DEFAULT_RGB_SCIENTIFIC_FPS
+    scientific_fourcc: str | None = DEFAULT_RGB_SCIENTIFIC_FOURCC
     max_probe_index: int = 4
 
     def to_dict(self) -> dict[str, Any]:

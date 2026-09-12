@@ -84,6 +84,7 @@ class CameraManager:
         self._rgb_preview_sequence = 0
         self._rgb_preview_last_served_frame_id = 0
         self._rgb_preview_dropped_frames_total = 0
+        self._rgb_preview_restart_timeout_seconds = 5.0
         self._multispectral_latest_lock = threading.Lock()
         self._multispectral_latest_frame: CameraFrame | None = None
         self._multispectral_latest_diagnostics: dict[str, Any] = {}
@@ -470,39 +471,46 @@ class CameraManager:
                 thread = self._rgb_preview_thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        frame: CameraFrame | None = None
+        metadata: dict[str, Any] | None = None
+        preview_profile: dict[str, Any] | None = None
+        preview_restore_error: Exception | None = None
+        restart_preview = False
         with self._lock:
             with self._rgb_capture_lock:
                 try:
                     if preview_was_running and getattr(self.rgb, "is_open", False):
                         self.rgb.stop_stream()
                         self.rgb.close()
+                    preview_profile = self._rgb_preview_profile_settings()
                     scientific_config = self._rgb_scientific_config()
                     if hasattr(self.rgb, "apply_config"):
                         self.rgb.apply_config(scientific_config, restart=True)
                     else:
                         self.rgb.open()
-                    frame = self.rgb.capture_frame()
+                    captured_frame = self.rgb.capture_frame()
                     status = self._status_dict(self.rgb)
                     policy = classify_rgb_scientific_transport(
                         requested_fourcc=scientific_config.fourcc,
                         actual_fourcc=(status.get("actual") or {}).get("fourcc"),
-                        color_space=frame.color_space,
-                        dtype=frame.dtype,
+                        color_space=captured_frame.color_space,
+                        dtype=captured_frame.dtype,
                     )
                     metadata = {
                         "status": status,
                         "preview": self._preview_status(),
                         "previewWasRunning": preview_was_running,
                         "openedForCapture": True,
+                        "previewProfile": preview_profile,
                         "scientificProfile": scientific_config.to_dict(),
                         "requestedSettings": dict(status.get("requested") or {}),
                         "actualSettings": dict(status.get("actual") or {}),
                         "settingsSource": self._settings_source.get("rgb") or "default",
                         "settingsRestoreState": dict(self._settings_restore_state["rgb"]),
-                        "device": self._camera_device_metadata(status, frame.metadata),
+                        "device": self._camera_device_metadata(status, captured_frame.metadata),
                         **policy,
                     }
-                    if not policy["scientificStrictLossless"]:
+                    if not policy["scientificCaptureApproved"]:
                         code = (
                             "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
                             if policy["sourceCompression"] == "lossy"
@@ -513,14 +521,41 @@ class CameraManager:
                             f"{code}: requested={policy['requestedFourcc']} actual={policy['actualFourcc']} "
                             f"compression={policy['sourceCompression']} reason={policy['reason']}",
                         )
-                    return frame, metadata
+                    mismatches = self._rgb_scientific_actual_mismatches(scientific_config, status, policy)
+                    if mismatches:
+                        raise CameraCaptureError(
+                            "RGB 正式采集实际相机模式与 Scientific Profile 不一致，禁止保存科研 PNG。",
+                            "RGB_SCIENTIFIC_PROFILE_MISMATCH: " + ", ".join(mismatches),
+                        )
+                    frame = captured_frame
                 finally:
                     self.rgb.stop_stream()
                     self.rgb.close()
+                    if hasattr(self.rgb, "apply_config"):
+                        try:
+                            self._restore_rgb_settings_locked(force=True, reason="capture_restore_preview_profile")
+                        except Exception as exc:
+                            preview_restore_error = exc
+                            print(f"[camera.settings] rgb preview restore after capture failed: {exc}", flush=True)
+                        finally:
+                            self.rgb.stop_stream()
+                            self.rgb.close()
                     if preview_was_running:
                         self._reset_rgb_preview_cache()
                         self._rgb_preview["running"] = True
                         self._start_rgb_preview_worker_locked()
+                        restart_preview = True
+        if restart_preview and metadata is not None:
+            restore = self._wait_rgb_preview_ready_after_restart(
+                timeout_s=self._rgb_preview_restart_timeout_seconds,
+                preview_profile=preview_profile,
+                restore_error=preview_restore_error,
+            )
+            metadata["previewRestore"] = restore
+            metadata["previewRestoreStatus"] = restore["status"]
+        if frame is None or metadata is None:
+            raise CameraCaptureError("RGB 正式采集未返回有效帧", "RGB capture returned without frame metadata")
+        return frame, metadata
 
     def capture_multispectral_frame(self) -> tuple[CameraFrame, dict[str, Any]]:
         """Capture one production DVP2 mono frame through the owned adapter."""
@@ -846,6 +881,64 @@ class CameraManager:
             interval = 1.0 / max(1.0, min(target_fps, 60.0))
             self._rgb_preview_stop_event.wait(timeout=max(0.0, interval - elapsed))
 
+    def _wait_rgb_preview_ready_after_restart(
+        self,
+        *,
+        timeout_s: float,
+        preview_profile: dict[str, Any] | None,
+        restore_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        timeout_s = max(0.0, float(timeout_s))
+        ready = self._rgb_preview_ready_event.wait(timeout=timeout_s)
+        snapshot = self._rgb_preview_restart_snapshot(
+            timeout_s=timeout_s,
+            preview_profile=preview_profile,
+            restore_error=restore_error,
+        )
+        if ready:
+            return {
+                **snapshot,
+                "status": "restored",
+                "ready": True,
+                "code": None,
+            }
+        return {
+            **snapshot,
+            "status": "failed",
+            "ready": False,
+            "code": "RGB_PREVIEW_RESTART_TIMEOUT",
+        }
+
+    def _rgb_preview_restart_snapshot(
+        self,
+        *,
+        timeout_s: float,
+        preview_profile: dict[str, Any] | None,
+        restore_error: Exception | None = None,
+    ) -> dict[str, Any]:
+        thread = self._rgb_preview_thread
+        preview_error = self._rgb_preview_error
+        with self._rgb_latest_lock:
+            latest_frame_exists = self._rgb_latest_frame is not None
+            latest_jpeg_exists = self._rgb_latest_jpeg is not None
+        status = self._status_dict(self.rgb)
+        snapshot = {
+            "timeoutSeconds": timeout_s,
+            "threadAlive": bool(thread and thread.is_alive()),
+            "previewRunning": bool(self._rgb_preview.get("running")),
+            "cameraOpen": bool(getattr(self.rgb, "is_open", False)),
+            "latestFrameExists": latest_frame_exists,
+            "latestJpegExists": latest_jpeg_exists,
+            "previewError": preview_error.user_message if preview_error is not None else None,
+            "technicalError": preview_error.technical_message if preview_error is not None else None,
+            "previewProfile": dict(preview_profile or {}),
+            "actualSettings": dict(status.get("actual") or {}),
+            "requestedSettings": dict(status.get("requested") or {}),
+        }
+        if restore_error is not None:
+            snapshot["restoreError"] = str(restore_error)
+        return snapshot
+
     def _latest_rgb_preview_jpeg(self) -> tuple[bytes, dict[str, Any]]:
         if not self._rgb_preview_ready_event.wait(timeout=1.0):
             if self._rgb_preview_error is not None:
@@ -1152,19 +1245,35 @@ class CameraManager:
     def _rgb_scientific_config(self) -> RgbCameraConfig:
         current = getattr(self.rgb, "config", RgbCameraConfig.from_env())
         settings = self.settings_store.get_rgb()
-        profile = dict(settings.get("scientificProfile") or {})
+        profile = self._rgb_scientific_profile(settings)
+        if not profile:
+            raise CameraCaptureError(
+                "RGB Scientific Profile 未配置，禁止静默继承预览参数。",
+                "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED",
+            )
         return RgbCameraConfig.from_dict({
             **current.to_dict(),
-            "width": profile.get("width", current.width),
-            "height": profile.get("height", current.height),
-            "fps": profile.get("fps", current.fps),
-            "fourcc": profile.get("fourcc", current.fourcc),
+            "width": profile["width"],
+            "height": profile["height"],
+            "fps": profile["fps"],
+            "fourcc": profile["fourcc"],
         })
 
     def rgb_scientific_status(self) -> dict[str, Any]:
         with self._lock:
             status = self._status_dict(self.rgb)
             actual = status.get("actual") or {}
+            settings = self.settings_store.get_rgb()
+            profile = self._rgb_scientific_profile(settings)
+            if not profile:
+                return {
+                    **self._rgb_scientific_profile_missing_policy(),
+                    "available": bool(status.get("available")),
+                    "configured": False,
+                    "profile": {},
+                    "previewProfile": self._rgb_preview_profile_settings(settings),
+                    "actual": actual,
+                }
             scientific_config = self._rgb_scientific_config()
             policy = classify_rgb_scientific_transport(
                 requested_fourcc=scientific_config.fourcc,
@@ -1175,9 +1284,75 @@ class CameraManager:
             return {
                 **policy,
                 "available": bool(status.get("available")),
+                "configured": True,
                 "profile": scientific_config.to_dict(),
+                "previewProfile": self._rgb_preview_profile_settings(settings),
                 "actual": actual,
             }
+
+    @staticmethod
+    def _rgb_scientific_profile(settings: dict[str, Any]) -> dict[str, Any]:
+        profile = settings.get("scientificProfile")
+        if not isinstance(profile, dict):
+            return {}
+        required = ("width", "height", "fps", "fourcc")
+        if any(profile.get(key) in (None, "") for key in required):
+            return {}
+        return {
+            "width": int(profile["width"]),
+            "height": int(profile["height"]),
+            "fps": float(profile["fps"]),
+            "fourcc": str(profile["fourcc"]).upper()[:4],
+        }
+
+    def _rgb_preview_profile_settings(self, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+        settings = settings or self.settings_store.get_rgb()
+        return {
+            "deviceIndex": int(settings.get("deviceIndex", 1)),
+            "width": int(settings.get("width", 3840)),
+            "height": int(settings.get("height", 2160)),
+            "fps": float(settings.get("fps", 25.0)),
+            "fourcc": str(settings.get("fourcc") or "MJPG").upper()[:4],
+        }
+
+    @staticmethod
+    def _rgb_scientific_profile_missing_policy() -> dict[str, Any]:
+        return {
+            "requestedFourcc": "",
+            "actualFourcc": "",
+            "sourcePixelFormat": "unknown",
+            "sourceCompression": "unknown",
+            "scientificStrictLossless": False,
+            "scientificCaptureApproved": False,
+            "scientificQualityClass": "unconfigured",
+            "chromaSubsampling": "unknown",
+            "reason": "scientific_profile_not_configured",
+            "outputFormat": "PNG",
+            "outputLossless": True,
+            "detailCode": "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED",
+        }
+
+    @staticmethod
+    def _rgb_scientific_actual_mismatches(
+        requested: RgbCameraConfig,
+        status: dict[str, Any],
+        policy: dict[str, Any],
+    ) -> list[str]:
+        actual = status.get("actual") or {}
+        mismatches: list[str] = []
+        actual_width = actual.get("width")
+        actual_height = actual.get("height")
+        actual_fps = actual.get("fps")
+        actual_fourcc = policy.get("actualFourcc") or actual.get("fourcc")
+        if actual_width is not None and int(actual_width) != int(requested.width):
+            mismatches.append(f"width requested={requested.width} actual={actual_width}")
+        if actual_height is not None and int(actual_height) != int(requested.height):
+            mismatches.append(f"height requested={requested.height} actual={actual_height}")
+        if actual_fps is not None and abs(float(actual_fps) - float(requested.fps)) > 0.25:
+            mismatches.append(f"fps requested={requested.fps:g} actual={actual_fps}")
+        if str(actual_fourcc or "").upper()[:4] != str(requested.fourcc or "").upper()[:4]:
+            mismatches.append(f"fourcc requested={requested.fourcc} actual={actual_fourcc or '--'}")
+        return mismatches
 
     @staticmethod
     def _restore_state(
@@ -1404,14 +1579,23 @@ class CameraManager:
             status_dict["settingsSource"] = self._settings_source.get(role) or "default"
         if role == "rgb":
             actual = status_dict.get("actual") or {}
-            scientific_config = self._rgb_scientific_config()
-            status_dict["scientificTransport"] = classify_rgb_scientific_transport(
-                requested_fourcc=scientific_config.fourcc,
-                actual_fourcc=actual.get("fourcc"),
-                color_space=status_dict.get("colorSpace") or "RGB",
-                dtype=status_dict.get("frameDtype") or "uint8",
-            )
-            status_dict["scientificProfile"] = scientific_config.to_dict()
+            settings = self.settings_store.get_rgb()
+            profile = self._rgb_scientific_profile(settings)
+            if profile:
+                scientific_config = self._rgb_scientific_config()
+                status_dict["scientificTransport"] = classify_rgb_scientific_transport(
+                    requested_fourcc=scientific_config.fourcc,
+                    actual_fourcc=actual.get("fourcc"),
+                    color_space=status_dict.get("colorSpace") or "RGB",
+                    dtype=status_dict.get("frameDtype") or "uint8",
+                )
+                status_dict["scientificTransport"]["configured"] = True
+                status_dict["scientificProfile"] = scientific_config.to_dict()
+            else:
+                status_dict["scientificTransport"] = self._rgb_scientific_profile_missing_policy()
+                status_dict["scientificTransport"]["configured"] = False
+                status_dict["scientificProfile"] = {}
+            status_dict["previewProfile"] = self._rgb_preview_profile_settings(settings)
         return status_dict
 
     @staticmethod
