@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from backend_server import SessionState
-from camera_service import CameraFrame
+from camera_service import CameraCaptureError, CameraFrame
 from capture_coordinator import (
     CaptureCoordinator,
     CaptureCoordinatorError,
@@ -579,9 +579,99 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(frame_meta["requestedFourcc"], "RGB3")
             self.assertEqual(frame_meta["actualFourcc"], "RGB3")
             self.assertTrue(frame_meta["scientificStrictLossless"])
+            self.assertTrue(frame_meta["scientificCaptureApproved"])
             self.assertEqual(frame_meta["outputFormat"], "PNG")
             self.assertTrue(frame_meta["outputLossless"])
             self.assert_no_jpeg_metadata_references(result["metadata"])
+
+    def test_rgb_capture_allows_yuy2_approved_non_strict_transport(self):
+        yuy2_meta = {
+            "previewWasRunning": True,
+            "openedForCapture": True,
+            "device": {"deviceIndex": 1, "transport": "UVC/DirectShow", "backend": "opencv"},
+            "previewProfile": {"width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            "requestedSettings": {"deviceIndex": 1, "width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            "actualSettings": {"width": 1920, "height": 1080, "fps": 5.0, "fourcc": "YUY2"},
+            "requestedFourcc": "YUY2",
+            "actualFourcc": "YUY2",
+            "sourcePixelFormat": "YUY2",
+            "sourceCompression": "uncompressed_but_chroma_subsampled",
+            "chromaSubsampling": "4:2:2",
+            "scientificStrictLossless": False,
+            "scientificCaptureApproved": True,
+            "scientificQualityClass": "uncompressed_422",
+            "outputFormat": "PNG",
+            "outputLossless": True,
+            "status": {"available": True, "streaming": False},
+        }
+        camera = FakeCameraManager(capture_metadata=yuy2_meta)
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="capture_rgb_yuy2_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                capture_id_factory=lambda: "cap-rgb-yuy2",
+            )
+
+            result = coordinator.run_rgb_capture(sample_id="S-RGB", output_dir=tmp)
+
+            self.assertEqual(result["state"], "completed")
+            frame_meta = result["metadata"]["frames"][0]
+            self.assertFalse(frame_meta["scientificStrictLossless"])
+            self.assertTrue(frame_meta["scientificCaptureApproved"])
+            self.assertEqual(frame_meta["scientificQualityClass"], "uncompressed_422")
+            self.assertEqual(frame_meta["chromaSubsampling"], "4:2:2")
+            self.assertEqual(frame_meta["previewProfile"]["fourcc"], "MJPG")
+            self.assertEqual(frame_meta["scientificProfile"]["fourcc"], "YUY2")
+
+    def test_rgb_capture_records_preview_restore_failure_without_negating_saved_png(self):
+        capture_meta = {
+            "previewWasRunning": True,
+            "openedForCapture": True,
+            "device": {"deviceIndex": 1, "transport": "UVC/DirectShow", "backend": "opencv"},
+            "previewProfile": {"width": 3840, "height": 2160, "fps": 25, "fourcc": "MJPG"},
+            "scientificProfile": {"width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            "requestedSettings": {"deviceIndex": 1, "width": 1920, "height": 1080, "fps": 5, "fourcc": "YUY2"},
+            "actualSettings": {"width": 1920, "height": 1080, "fps": 5.0, "fourcc": "YUY2"},
+            "requestedFourcc": "YUY2",
+            "actualFourcc": "YUY2",
+            "sourcePixelFormat": "YUY2",
+            "sourceCompression": "uncompressed_but_chroma_subsampled",
+            "chromaSubsampling": "4:2:2",
+            "scientificStrictLossless": False,
+            "scientificCaptureApproved": True,
+            "scientificQualityClass": "uncompressed_422",
+            "outputFormat": "PNG",
+            "outputLossless": True,
+            "previewRestoreStatus": "failed",
+            "previewRestore": {
+                "status": "failed",
+                "ready": False,
+                "code": "RGB_PREVIEW_RESTART_TIMEOUT",
+                "latestJpegExists": False,
+            },
+            "status": {"available": True, "streaming": False},
+        }
+        camera = FakeCameraManager(capture_metadata=capture_meta)
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="capture_rgb_preview_restore_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                capture_id_factory=lambda: "cap-rgb-preview-restore",
+            )
+
+            result = coordinator.run_rgb_capture(sample_id="S-RGB", output_dir=tmp)
+
+            target = Path(tmp) / "rgb" / "rgb_view_000.png"
+            self.assertEqual(result["state"], "completed")
+            self.assertTrue(target.exists())
+            self.assertGreater(target.stat().st_size, 0)
+            frame_meta = result["metadata"]["frames"][0]
+            self.assertEqual(frame_meta["previewRestoreStatus"], "failed")
+            self.assertEqual(frame_meta["previewRestore"]["code"], "RGB_PREVIEW_RESTART_TIMEOUT")
+            self.assertTrue(frame_meta["scientificCaptureApproved"])
 
     def test_rgb_capture_refuses_lossy_transport_before_png_save(self):
         lossy_meta = {
@@ -614,6 +704,27 @@ class CaptureCoordinatorTests(unittest.TestCase):
             self.assertEqual(result["error"]["code"], "RGB_SCIENTIFIC_TRANSPORT_LOSSY")
             self.assertFalse((Path(tmp) / "rgb" / "rgb_view_000.png").exists())
             self.assertEqual(hardware.safe_stop_count, 1)
+
+    def test_rgb_capture_preserves_manager_scientific_gate_code(self):
+        camera = FakeCameraManager(
+            fail_capture=CameraCaptureError(
+                "blocked",
+                "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED",
+            )
+        )
+        hardware = FakeHardwareController()
+        with tempfile.TemporaryDirectory(prefix="capture_rgb_profile_missing_") as tmp:
+            coordinator = CaptureCoordinator(
+                camera_manager=camera,
+                hardware_controller=hardware,
+                capture_id_factory=lambda: "cap-rgb-profile-missing",
+            )
+
+            result = coordinator.run_rgb_capture(sample_id="S-RGB", output_dir=tmp)
+
+            self.assertEqual(result["state"], "failed")
+            self.assertEqual(result["error"]["code"], "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED")
+            self.assertFalse((Path(tmp) / "rgb" / "rgb_view_000.png").exists())
 
     def test_rgb_capture_rejects_empty_frame_and_safe_stops(self):
         camera = FakeCameraManager(frame=CameraFrame(

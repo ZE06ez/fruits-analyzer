@@ -1720,16 +1720,32 @@ class CaptureCoordinator:
         except CaptureCoordinatorError:
             raise
         except Exception as exc:
+            technical = str(getattr(exc, "technical_message", "") or exc)
+            for code in (
+                "RGB_SCIENTIFIC_TRANSPORT_LOSSY",
+                "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE",
+                "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED",
+                "RGB_SCIENTIFIC_PROFILE_MISMATCH",
+            ):
+                if code in technical:
+                    raise CaptureCoordinatorError(
+                        "当前 RGB 相机正式采集链路未通过科研采集准入，禁止保存科研 PNG。",
+                        step=step,
+                        code=code,
+                        cause=exc,
+                    ) from exc
             raise CaptureCoordinatorError("RGB 正式取帧失败", step=step, code="rgb_capture_failed", cause=exc) from exc
-        if capture_meta.get("scientificStrictLossless") is False:
+        if not capture_meta.get("scientificCaptureApproved", capture_meta.get("scientificStrictLossless")):
             reason = str(capture_meta.get("reason") or capture_meta.get("sourceCompression") or "lossless_unavailable")
             code = (
                 "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
                 if capture_meta.get("sourceCompression") == "lossy"
+                else "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
+                if capture_meta.get("detailCode") == "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
                 else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
             )
             raise CaptureCoordinatorError(
-                "当前 RGB 相机正式采集链路存在有损或未验证传输，禁止用于科学采集。",
+                "当前 RGB 相机正式采集链路未通过科研采集准入，禁止保存科研 PNG。",
                 step=step,
                 code=code,
                 cause=RuntimeError(reason),
@@ -2617,14 +2633,24 @@ class CaptureCoordinator:
             "device": capture_meta.get("device") or {},
             "requestedSettings": requested,
             "actualSettings": actual,
+            "previewProfile": capture_meta.get("previewProfile") or {},
+            "scientificProfile": capture_meta.get("scientificProfile") or {},
+            "settingsSource": capture_meta.get("settingsSource") or "",
             "requestedFourcc": capture_meta.get("requestedFourcc") or requested.get("fourcc") or "",
             "actualFourcc": capture_meta.get("actualFourcc") or actual.get("fourcc") or "",
             "sourcePixelFormat": capture_meta.get("sourcePixelFormat") or actual.get("fourcc") or "",
             "sourceCompression": capture_meta.get("sourceCompression") or "",
+            "chromaSubsampling": capture_meta.get("chromaSubsampling") or "",
             "scientificStrictLossless": bool(capture_meta.get("scientificStrictLossless")),
+            "scientificCaptureApproved": bool(
+                capture_meta.get("scientificCaptureApproved", capture_meta.get("scientificStrictLossless"))
+            ),
+            "scientificQualityClass": capture_meta.get("scientificQualityClass") or "",
             "outputFormat": capture_meta.get("outputFormat") or "PNG",
             "outputLossless": capture_meta.get("outputLossless") is not False,
             "previewWasRunning": bool(capture_meta.get("previewWasRunning")),
+            "previewRestoreStatus": capture_meta.get("previewRestoreStatus") or "not_required",
+            "previewRestore": capture_meta.get("previewRestore") or {},
             "openedForCapture": bool(capture_meta.get("openedForCapture")),
         }
 

@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import RgbCameraConfig
+from .config import (
+    DEFAULT_RGB_SCIENTIFIC_FOURCC,
+    DEFAULT_RGB_SCIENTIFIC_FPS,
+    DEFAULT_RGB_SCIENTIFIC_HEIGHT,
+    DEFAULT_RGB_SCIENTIFIC_WIDTH,
+    RgbCameraConfig,
+)
 from .dvp2_mono import DEFAULT_DVP2_SERIAL
 
 
@@ -40,7 +46,12 @@ def default_camera_settings_document() -> dict[str, Any]:
             "lastActual": {},
             "settingResults": {},
             "settingsSource": "default",
-            "scientificProfile": {},
+            "scientificProfile": {
+                "width": DEFAULT_RGB_SCIENTIFIC_WIDTH,
+                "height": DEFAULT_RGB_SCIENTIFIC_HEIGHT,
+                "fps": DEFAULT_RGB_SCIENTIFIC_FPS,
+                "fourcc": DEFAULT_RGB_SCIENTIFIC_FOURCC,
+            },
         },
         "multispectral": {
             "deviceStableId": f"DS{DEFAULT_DVP2_SERIAL}",
@@ -67,7 +78,7 @@ class CameraSettingsStore:
         self._last_warnings = []
         document = default_camera_settings_document()
         if not self.path.exists():
-            return document
+            return self.save(document)
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -221,6 +232,11 @@ class CameraSettingsStore:
             payload.get("autoWhiteBalanceEnabled") if "autoWhiteBalanceEnabled" in payload else None,
             default=bool(merged.get("autoWhiteBalance", defaults["autoWhiteBalance"])),
         )
+        scientific_profile_payload = None
+        if "scientificProfile" in payload:
+            scientific_profile_payload = payload.get("scientificProfile")
+        elif any(key in payload for key in ("scientificWidth", "scientificHeight", "scientificFps", "scientificFourcc")):
+            scientific_profile_payload = payload
         rgb: dict[str, Any] = {
             "deviceStableId": cls._string(merged.get("deviceStableId") or merged.get("stableId")),
             "deviceIndex": int(config.device_index),
@@ -242,7 +258,7 @@ class CameraSettingsStore:
             "lastActual": dict(merged.get("lastActual") or {}),
             "settingResults": dict(merged.get("settingResults") or {}),
             "settingsSource": cls._string(merged.get("settingsSource") or "default") or "default",
-            "scientificProfile": cls.normalize_rgb_scientific_profile(merged.get("scientificProfile") or merged),
+            "scientificProfile": cls.normalize_rgb_scientific_profile(scientific_profile_payload),
         }
         for key in ("fx", "fy", "cx", "cy"):
             value = cls._optional_float(merged.get(key))

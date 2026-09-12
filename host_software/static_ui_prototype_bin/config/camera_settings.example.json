@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "rgb": {
+    "deviceStableId": "",
+    "deviceIndex": 1,
+    "deviceName": "",
+    "identitySource": "deviceIndex",
+    "width": 3840,
+    "height": 2160,
+    "resolution": "3840 x 2160",
+    "fps": 25.0,
+    "fourcc": "MJPG",
+    "autoExposureEnabled": true,
+    "autoExposure": 0.75,
+    "exposure": null,
+    "gainAuto": true,
+    "gain": null,
+    "autoWhiteBalanceEnabled": true,
+    "autoWhiteBalance": 1,
+    "whiteBalance": null,
+    "lastActual": {},
+    "settingResults": {},
+    "settingsSource": "default",
+    "scientificProfile": {
+      "width": 1920,
+      "height": 1080,
+      "fps": 5.0,
+      "fourcc": "YUY2"
+    }
+  },
+  "multispectral": {
+    "deviceStableId": "",
+    "serialNumber": "",
+    "deviceIndex": null,
+    "friendlyName": "",
+    "exposure": 10000.0,
+    "gain": 1.0,
+    "lastActual": {},
+    "settingResults": {},
+    "settingsSource": "default"
+  }
+}

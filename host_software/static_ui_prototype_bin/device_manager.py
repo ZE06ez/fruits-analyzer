@@ -564,21 +564,27 @@ class DeviceManager:
                     except Exception as exc:
                         rgb_scientific = {
                             "scientificStrictLossless": False,
+                            "scientificCaptureApproved": False,
                             "reason": str(exc),
                             "sourceCompression": "unknown",
                         }
                 else:
                     rgb_scientific = rgb_status.get("scientificTransport") or {}
-                if rgb_scientific and not rgb_scientific.get("scientificStrictLossless"):
+                if rgb_scientific and not rgb_scientific.get(
+                    "scientificCaptureApproved",
+                    rgb_scientific.get("scientificStrictLossless"),
+                ):
                     code = (
                         "RGB_SCIENTIFIC_TRANSPORT_LOSSY"
                         if rgb_scientific.get("sourceCompression") == "lossy"
+                        else "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
+                        if rgb_scientific.get("detailCode") == "RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED"
                         else "RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE"
                     )
                     blocking.append({
                         "code": "CAMERA_NOT_READY",
                         "detailCode": code,
-                        "message": "RGB 正式科学采集链路未通过 strict lossless transport 验证",
+                        "message": "RGB 正式科学采集链路未通过科研采集准入",
                     })
             rgb_restore = rgb_status.get("settingsRestoreState") or {}
             if plan.rgb_enabled and rgb_restore.get("state") == "device_mismatch":
@@ -673,6 +679,7 @@ class DeviceManager:
                 "multiViewReady": multi_view_ready,
                 "rgbReady": rgb_ready,
                 "rgbScientificStrictLossless": bool(rgb_scientific.get("scientificStrictLossless")) if rgb_scientific else None,
+                "rgbScientificCaptureApproved": bool(rgb_scientific.get("scientificCaptureApproved")) if rgb_scientific else None,
                 "rgbScientificTransport": rgb_scientific,
                 "multispectralReady": multispectral_ready,
                 "calibrationReady": calibration_ready,
@@ -799,8 +806,8 @@ class DeviceManager:
             sample_stage_mode=str(payload.get("sampleStageMode") or "hardware").strip().lower(),
             operator_confirmed_dark=self._bool_payload(payload.get("operatorConfirmedDark", payload.get("operatorConfirmed")), default=False),
             operator_confirmed_white=self._bool_payload(payload.get("operatorConfirmedWhite", payload.get("operatorConfirmed")), default=False),
-            rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=0x03) or 0x03,
-            tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x03) or 0x03,
+            rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=LED3_BIT) or LED3_BIT,
+            tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x01) or 0x01,
         )
 
     def _update_led_mask_bit(
