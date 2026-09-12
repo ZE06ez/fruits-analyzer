@@ -6,6 +6,16 @@ from enum import IntEnum
 from typing import Protocol
 
 
+TUNGSTEN_1_BIT = 0x01
+TUNGSTEN_2_BIT = 0x02
+LED3_BIT = 0x04
+TUNGSTEN_MASK = TUNGSTEN_1_BIT | TUNGSTEN_2_BIT
+ALL_LIGHT_MASK = TUNGSTEN_MASK | LED3_BIT
+RGB_CAPTURE_LIGHT_MASK: int | None = None
+ALLOW_DUAL_TUNGSTEN = False
+TUNGSTEN_CLOSE_FAILURE_MESSAGE = "无法确认钨灯已关闭，请立即切断12V光源电源。"
+
+
 class SerialTransport(Protocol):
     def send_command(self, cmd: int, param: int, timeout_s: float | None = None) -> int: ...
     def ping(self, timeout_s: float = 0.5) -> bool: ...
@@ -50,7 +60,7 @@ class OutputStatus:
 
     @property
     def any_rgb_led_on(self) -> bool:
-        return self.rgb_led_1_on or self.rgb_led_2_on or self.rgb_led_3_on
+        return self.rgb_led_3_on
 
     @property
     def any_tungsten_on(self) -> bool:
@@ -61,7 +71,7 @@ class HardwareController:
     FAN_SET = 0x10
     DOOR_SET = 0x11
     RGB_LED_SET = 0x12
-    TUNGSTEN_SET = 0x13
+    TUNGSTEN_SET = RGB_LED_SET
     WHEEL_MOVE_RELATIVE = 0x20
     WHEEL_HOME = 0x21
     OUTPUT_STATUS_GET = 0x30
@@ -106,7 +116,9 @@ class HardwareController:
         self._send_control(self.DOOR_SET, 0x02, 0.5)
 
     def rgb_led_set(self, mask: int) -> None:
-        self._validate_mask(mask, max_mask=0x07, label="RGB LED mask")
+        self._validate_mask(mask, max_mask=ALL_LIGHT_MASK, label="RGB LED mask")
+        if mask & TUNGSTEN_MASK:
+            raise CapabilityUnavailableError("PB7/PB8 已确认为钨灯 SSR，不能作为 RGB LED 使用")
         if mask:
             self._ensure_operational()
             self._require_closed_door()
@@ -115,10 +127,10 @@ class HardwareController:
         self._send_control(self.RGB_LED_SET, mask, 0.5)
 
     def tungsten_set(self, mask: int) -> None:
-        self._validate_mask(mask, max_mask=0x03, label="tungsten mask")
+        self._validate_mask(mask, max_mask=TUNGSTEN_MASK, label="tungsten mask")
+        if mask == TUNGSTEN_MASK and not ALLOW_DUAL_TUNGSTEN:
+            raise InterlockError("DUAL_TUNGSTEN_NOT_ACCEPTED: 两路钨灯同时开启尚未通过电源/散热/防护验收")
         if mask:
-            if getattr(self.serial, "tungsten_supported", True) is False:
-                raise CapabilityUnavailableError("当前 STM32 firmware 尚未实现钨灯控制")
             self._ensure_operational()
             self._require_closed_door()
             outputs = self.get_output_status()
@@ -127,6 +139,9 @@ class HardwareController:
             if outputs.any_rgb_led_on:
                 raise InterlockError("RGB LED 开启时禁止开启钨灯")
         self._send_control(self.TUNGSTEN_SET, mask, 0.5)
+
+    def all_lights_off(self) -> None:
+        self._send_control(self.RGB_LED_SET, 0x00, 0.5, stop_on_error=False)
 
     def wheel_home(self) -> None:
         self._ensure_operational()
@@ -152,15 +167,27 @@ class HardwareController:
                 self._wheel_moving = False
 
     def get_output_status(self) -> OutputStatus:
+        if hasattr(self.serial, "query_status"):
+            status = self.serial.query_status(require_fresh=True, timeout_s=0.5)
+            led_mask = int(status.led_mask or 0) & ALL_LIGHT_MASK
+            return OutputStatus(
+                raw=led_mask,
+                fan_on=bool(status.fan_on),
+                rgb_led_1_on=False,
+                rgb_led_2_on=False,
+                rgb_led_3_on=bool(status.led3_duty or (led_mask & LED3_BIT)),
+                tungsten_1_on=bool(status.led1_duty or (led_mask & TUNGSTEN_1_BIT)),
+                tungsten_2_on=bool(status.led2_duty or (led_mask & TUNGSTEN_2_BIT)),
+            )
         raw = self._query(self.OUTPUT_STATUS_GET)
         return OutputStatus(
             raw=raw,
             fan_on=bool(raw & (1 << 0)),
-            rgb_led_1_on=bool(raw & (1 << 1)),
-            rgb_led_2_on=bool(raw & (1 << 2)),
-            rgb_led_3_on=bool(raw & (1 << 5)),
-            tungsten_1_on=bool(raw & (1 << 3)),
-            tungsten_2_on=bool(raw & (1 << 4)),
+            rgb_led_1_on=False,
+            rgb_led_2_on=False,
+            rgb_led_3_on=bool(raw & LED3_BIT),
+            tungsten_1_on=bool(raw & TUNGSTEN_1_BIT),
+            tungsten_2_on=bool(raw & TUNGSTEN_2_BIT),
         )
 
     def get_door_status(self) -> DoorState:
@@ -208,6 +235,10 @@ class HardwareController:
     def safe_stop(self) -> None:
         with self._lock:
             self._safe_stopped = True
+            try:
+                self.all_lights_off()
+            except Exception:
+                pass
             self._send_control(self.SAFE_STOP, 0x00, 0.5, stop_on_error=False)
 
     def fault_clear(self) -> None:

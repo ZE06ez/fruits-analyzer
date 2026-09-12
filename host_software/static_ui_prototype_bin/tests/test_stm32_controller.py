@@ -193,14 +193,20 @@ class Stm32ControllerAdapterTests(unittest.TestCase):
 
         self.assertEqual(fake.writes, [b"\x10\x01", b"\x12\x04"])
 
-    def test_tungsten_nonzero_is_capability_unavailable(self):
-        fake = FakeRawSerial()
+    def test_legacy_tungsten_compatibility_uses_led_set_mask(self):
+        codec = Aa55Codec(PROFILE)
+        fake = FakeRawSerial([
+            codec.encode(PROFILE.ack_cmd, bytes((PROFILE.led_set_cmd, 0x00))),
+        ])
         adapter = self.make_adapter(fake)
 
         self.assertEqual(
             adapter.send_command(adapter.LEGACY_TUNGSTEN_SET, 0x01),
-            adapter.ERROR_CAPABILITY_UNAVAILABLE,
+            0x00,
         )
+        frame = codec.decode(fake.writes[-1])
+        self.assertEqual(frame.cmd, PROFILE.led_set_cmd)
+        self.assertEqual(frame.payload, b"\x01")
 
     def test_safe_stop_reports_each_best_effort_action(self):
         codec = Aa55Codec(PROFILE)

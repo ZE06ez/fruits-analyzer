@@ -209,8 +209,9 @@ class FakeHardwareController:
         return OutputStatus(
             raw=0,
             fan_on=self.fan_on_state,
-            rgb_led_1_on=bool(self.rgb_mask & 0x01),
-            rgb_led_2_on=bool(self.rgb_mask & 0x02),
+            rgb_led_1_on=False,
+            rgb_led_2_on=False,
+            rgb_led_3_on=bool(self.rgb_mask & 0x04),
             tungsten_1_on=bool(self.tungsten_mask & 0x01),
             tungsten_2_on=bool(self.tungsten_mask & 0x02),
         )
@@ -239,7 +240,7 @@ class FakeHardwareController:
 
     def ensure_rgb_capture_ready(self):
         self._record("ensure_rgb_capture_ready")
-        if not self.fan_on_state or self.rgb_mask == 0x00 or self.tungsten_mask != 0x00:
+        if not self.fan_on_state or self.rgb_mask != 0x04 or self.tungsten_mask != 0x00:
             raise RuntimeError("RGB interlock failed")
 
     def ensure_multispectral_capture_ready(self):
@@ -431,13 +432,33 @@ class CaptureCoordinatorTests(unittest.TestCase):
         hardware = FakeHardwareController()
         coordinator = CaptureCoordinator(hardware_controller=hardware, capture_id_factory=lambda: "cap-rgb")
 
-        result = coordinator.run_preparation(mode="rgb", rgb_led_mask=0x02)
+        result = coordinator.run_preparation(mode="rgb", rgb_led_mask=0x04)
 
         self.assertEqual(result["state"], "completed")
         self.assertIn(("tungsten_set", 0x00), hardware.calls)
-        self.assertIn(("rgb_led_set", 0x02), hardware.calls)
+        self.assertIn(("rgb_led_set", 0x04), hardware.calls)
         self.assertIn(("ensure_rgb_capture_ready",), hardware.calls)
         self.assertEqual(hardware.serial.send_command_count, 0)
+
+    def test_rgb_preparation_rejects_old_tungsten_bits_as_rgb_lighting(self):
+        hardware = FakeHardwareController()
+        coordinator = CaptureCoordinator(hardware_controller=hardware, capture_id_factory=lambda: "cap-rgb-bad")
+
+        result = coordinator.run_preparation(mode="rgb", rgb_led_mask=0x03)
+
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["step"], "rgb_light_prepare")
+        self.assertIn("RGB_LIGHT_MAPPING_NOT_CONFIRMED", result["error"]["message"])
+
+    def test_multispectral_preparation_rejects_dual_tungsten_before_acceptance(self):
+        hardware = FakeHardwareController()
+        coordinator = CaptureCoordinator(hardware_controller=hardware, capture_id_factory=lambda: "cap-ms-dual")
+
+        result = coordinator.run_preparation(mode="multispectral", tungsten_mask=0x03)
+
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["error"]["step"], "multispectral_light_prepare")
+        self.assertIn("DUAL_TUNGSTEN_NOT_ACCEPTED", result["error"]["message"])
 
     def test_multispectral_preparation_uses_multispectral_safety_api(self):
         hardware = FakeHardwareController()

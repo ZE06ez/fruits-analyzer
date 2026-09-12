@@ -185,7 +185,7 @@ class Stm32ControllerAdapter:
         self._motion_cancel_event = threading.Event()
         self._last_safety_report = Stm32SafetyReport()
         self.current_firmware_profile_validated = False
-        self.tungsten_supported = False
+        self.tungsten_supported = True
         self.door_endpoint_feedback_supported = False
         self.physical_encoder_verified = False
         self.automatic_homing_supported = False
@@ -276,9 +276,8 @@ class Stm32ControllerAdapter:
             self.set_led_mask(param, timeout_s=timeout_s)
             return 0x00
         if cmd == self.LEGACY_TUNGSTEN_SET:
-            if int(param) == 0:
-                return 0x00
-            return self.ERROR_CAPABILITY_UNAVAILABLE
+            self.set_led_mask(int(param) & 0x03, timeout_s=timeout_s)
+            return 0x00
         if cmd == self.LEGACY_DOOR_SET:
             self.door_command(param, timeout_s=timeout_s)
             return 0x00

@@ -3470,3 +3470,46 @@ dd {
     height: 56px;
   }
 }
+
+.tungsten-test-panel {
+  margin-bottom: 16px;
+}
+
+.tungsten-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.tungsten-channel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.tungsten-channel strong {
+  color: var(--soft);
+  font-weight: 650;
+}
+
+.compact-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.warning-text {
+  min-height: 20px;
+  margin: 12px 0 0;
+  color: var(--red);
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .tungsten-channel-grid,
+  .compact-controls {
+    grid-template-columns: 1fr;
+  }
+}

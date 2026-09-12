@@ -8,6 +8,20 @@ APP_DIR = Path(__file__).resolve().parents[1]
 
 
 class ModelStudioFrontendStaticTests(unittest.TestCase):
+    def test_main_workstation_opens_model_studio_in_current_tab(self):
+        app_js = (APP_DIR / "app.js").read_text(encoding="utf-8")
+        main_html = (APP_DIR / "index.html").read_text(encoding="utf-8")
+        studio_html = (APP_DIR / "model_studio" / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="modelStudioButton"', main_html)
+        self.assertIn('id="modelStudioNavButton"', main_html)
+        self.assertIn('function openModelStudio()', app_js)
+        self.assertIn('window.location.assign("/model-studio")', app_js)
+        self.assertNotIn('window.open(url, "_blank"', app_js)
+        self.assertNotIn('window.open("/model-studio"', app_js)
+        self.assertIn('class="station-link" href="/"', studio_html)
+        self.assertNotIn('target="_blank"', studio_html)
+
     def test_single_delete_confirmation_uses_readonly_id_and_trimmed_input_value(self):
         js = (APP_DIR / "model_studio" / "static" / "model_studio.js").read_text(encoding="utf-8")
 

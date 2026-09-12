@@ -280,6 +280,44 @@
               <h3>光源检测 / Light Source Check</h3>
               <span>紫外与多波段光源</span>
             </div>
+            <section class="device-check-panel tungsten-test-panel">
+              <div class="device-check-head">
+                <div>
+                  <strong>钨灯手动测试</strong>
+                  <small>PB7/PB8 通过 LED_SET 位掩码限时点亮；开启前需要人工安全确认。</small>
+                </div>
+                <button class="test-button secondary danger" id="tungstenAllOffButton" type="button">全部钨灯关闭</button>
+              </div>
+              <div class="device-status-grid">
+                <span id="tungstenSerialState">串口: --</span>
+                <span id="tungstenMaskState">led_mask: --</span>
+                <span id="tungstenStatusAge">最近 STATUS: --</span>
+                <span id="tungstenErrorCode">故障码: --</span>
+              </div>
+              <div class="tungsten-channel-grid">
+                <div class="tungsten-channel">
+                  <strong>钨灯1 / PB7</strong>
+                  <span id="tungsten1State">状态: --</span>
+                  <span id="tungsten1Duty">led1_duty: --</span>
+                  <span id="tungsten1Countdown">自动关闭: --</span>
+                  <div class="control-grid compact-controls">
+                    <button class="test-button secondary" id="tungsten1OnButton" type="button">点亮5秒</button>
+                    <button class="test-button secondary danger" id="tungsten1OffButton" type="button">立即关闭</button>
+                  </div>
+                </div>
+                <div class="tungsten-channel">
+                  <strong>钨灯2 / PB8</strong>
+                  <span id="tungsten2State">状态: --</span>
+                  <span id="tungsten2Duty">led2_duty: --</span>
+                  <span id="tungsten2Countdown">自动关闭: --</span>
+                  <div class="control-grid compact-controls">
+                    <button class="test-button secondary" id="tungsten2OnButton" type="button">点亮5秒</button>
+                    <button class="test-button secondary danger" id="tungsten2OffButton" type="button">立即关闭</button>
+                  </div>
+                </div>
+              </div>
+              <p class="warning-text" id="tungstenSafetyWarning"></p>
+            </section>
             <div class="lamp-board">
               <button class="lamp active" data-band="370">370nm</button>
               <button class="lamp" data-band="460">460nm</button>

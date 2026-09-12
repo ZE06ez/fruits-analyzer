@@ -1780,10 +1780,10 @@ function renderHardwareStatus() {
   setText("deviceDoorState", `推杆: ${doorNames[hardware.door] || hardware.door || "--"}`);
   setText("deviceWheelState", `滤光轮: ${wheelText}`);
   setText("deviceRgbLedState", connected
-    ? `RGB LED: 1路${hardware.rgbLed1On ? "开" : "关"} / 2路${hardware.rgbLed2On ? "开" : "关"} / 3路${hardware.rgbLed3On ? "开" : "关"} (mask ${ledMask})`
-    : "RGB LED: --");
+    ? `LED3/PB9: ${hardware.rgbLed3On ? "开" : "关"} (mask ${ledMask})`
+    : "LED3/PB9: --");
   setText("deviceTungstenState", connected
-    ? `钨灯: 1路${hardware.tungsten1On ? "开" : "关"} / 2路${hardware.tungsten2On ? "开" : "关"}`
+    ? `钨灯: PB7 ${hardware.tungsten1On ? "开" : "关"} / PB8 ${hardware.tungsten2On ? "开" : "关"}`
     : "钨灯: --");
   setText("deviceErrorState", `故障码: ${hardware.errorCode ?? "--"}`);
   setText("deviceConnectionHint", connected
@@ -1820,7 +1820,38 @@ function renderHardwareStatus() {
   });
   $("#actuatorStop") && ($("#actuatorStop").disabled = !connected);
   $("#wheelStop") && ($("#wheelStop").disabled = !connected);
+  updateTungstenPanel(hardware, controlReady);
   updateSampleStageButtons(sampleStage);
+}
+
+function updateTungstenPanel(hardware = {}, controlReady = false) {
+  const connected = Boolean(hardware.connected);
+  const autoOff = hardware.tungstenAutoOff || {};
+  const warning = hardware.tungstenLastError || "";
+  setText("tungstenSerialState", `串口: ${hardware.port || "--"}`);
+  setText("tungstenMaskState", `led_mask: ${hardware.ledMask ?? "--"}`);
+  setText("tungstenStatusAge", `最近 STATUS: rev ${hardware.statusRevision ?? "--"}`);
+  setText("tungstenErrorCode", `故障码: ${hardware.errorCode ?? "--"}`);
+  setText("tungsten1State", `状态: ${hardware.tungsten1On ? "开启" : connected ? "关闭" : "--"}`);
+  setText("tungsten2State", `状态: ${hardware.tungsten2On ? "开启" : connected ? "关闭" : "--"}`);
+  setText("tungsten1Duty", `led1_duty: ${hardware.tungsten1Duty ?? "--"}`);
+  setText("tungsten2Duty", `led2_duty: ${hardware.tungsten2Duty ?? "--"}`);
+  setText("tungsten1Countdown", `自动关闭: ${formatCountdown(autoOff["1"]?.remainingMs)}`);
+  setText("tungsten2Countdown", `自动关闭: ${formatCountdown(autoOff["2"]?.remainingMs)}`);
+  setText("tungstenSafetyWarning", warning);
+  ["#tungsten1OnButton", "#tungsten2OnButton"].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = !controlReady || Boolean(hardware.tungsten1On || hardware.tungsten2On);
+  });
+  ["#tungsten1OffButton", "#tungsten2OffButton", "#tungstenAllOffButton"].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = !connected;
+  });
+}
+
+function formatCountdown(ms) {
+  if (ms == null || !Number.isFinite(Number(ms)) || Number(ms) <= 0) return "--";
+  return `${(Number(ms) / 1000).toFixed(1)}秒`;
 }
 
 function sampleStageAngleText(value) {
@@ -2409,6 +2440,34 @@ async function setFan(enabled) {
 async function setLed3(enabled) {
   await postHardwareAction("/api/device/led", { channel: 3, enabled }, (result) => (
     `LED3 ${enabled ? "开启" : "关闭"}命令已执行，fresh STATUS mask=${result.ledMask ?? "--"}。`
+  ));
+}
+
+function confirmTungstenSafety(channel) {
+  return window.confirm(
+    `确认点亮钨灯${channel} 5秒？\n\n请确认灯具固定、防护罩关闭、照射方向无人眼/皮肤暴露，12V负载线路/SSR/保险丝可靠，且可立即切断12V总电源。`
+  );
+}
+
+async function setTungsten(channel, enabled) {
+  const body = {
+    channel,
+    enabled,
+    durationMs: enabled ? 5000 : undefined,
+    operatorConfirmedSafety: enabled ? confirmTungstenSafety(channel) : false,
+  };
+  if (enabled && !body.operatorConfirmedSafety) return;
+  await postHardwareAction("/api/device/tungsten", body, (result) => {
+    if (result.safetyWarning) return result.safetyWarning;
+    return enabled
+      ? `钨灯${channel}已确认开启，后端将在 ${Math.round((result.durationMs || 0) / 1000)} 秒后自动关闭。`
+      : `钨灯${channel}关闭命令已确认，mask=${result.confirmedMask ?? "--"}。`;
+  });
+}
+
+async function tungstenAllOff() {
+  await postHardwareAction("/api/device/tungsten/all-off", {}, (result) => (
+    result.safetyWarning || `全部钨灯关闭已执行，LED3 保留状态，mask=${result.confirmedMask ?? "--"}。`
   ));
 }
 
@@ -4627,9 +4686,7 @@ function updateClock() {
 }
 
 function openModelStudio() {
-  const url = `${window.location.origin}/model-studio`;
-  window.open(url, "_blank", "noopener");
-  addLog("已打开模型训练与数据管理平台。");
+  window.location.assign("/model-studio");
 }
 
 async function shutdownApp() {
@@ -4774,6 +4831,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#fanOffButton")?.addEventListener("click", () => setFan(false).catch(() => {}));
   $("#led3OnButton")?.addEventListener("click", () => setLed3(true).catch(() => {}));
   $("#led3OffButton")?.addEventListener("click", () => setLed3(false).catch(() => {}));
+  $("#tungsten1OnButton")?.addEventListener("click", () => setTungsten(1, true).catch(() => {}));
+  $("#tungsten1OffButton")?.addEventListener("click", () => setTungsten(1, false).catch(() => {}));
+  $("#tungsten2OnButton")?.addEventListener("click", () => setTungsten(2, true).catch(() => {}));
+  $("#tungsten2OffButton")?.addEventListener("click", () => setTungsten(2, false).catch(() => {}));
+  $("#tungstenAllOffButton")?.addEventListener("click", () => tungstenAllOff().catch(() => {}));
   $("#actuatorExtend")?.addEventListener("click", () => runActuator("extend").catch(() => {}));
   $("#actuatorRetract")?.addEventListener("click", () => runActuator("retract").catch(() => {}));
   $("#actuatorStop")?.addEventListener("click", () => runActuator("stop").catch(() => {}));
