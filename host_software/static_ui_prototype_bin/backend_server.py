@@ -103,6 +103,7 @@ class SessionState:
             "camera": False,
             "calibration": False,
         }
+        self.sample_mode: str = "inspection"
         self.fruit_type: str = ""
         self.variety: str = "generic"
         self.selected_ssc_model_id: str = ""
@@ -141,6 +142,7 @@ class SessionState:
         sample_name = str(payload.get("sampleName") or payload.get("sample_name") or "").strip()
         if not sample_name:
             raise ValueError("sample_name is required")
+        sample_mode = normalize_sample_mode(payload.get("sampleMode") or payload.get("sample_mode") or "inspection")
         fruit_type = str(payload.get("fruitType") or payload.get("fruit_type") or "").strip()
         if not fruit_type:
             raise ValueError("fruit_type is required")
@@ -155,7 +157,11 @@ class SessionState:
         selected_ta = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or "")
         selected_ph = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or "")
         image_dirs = image_directory_names_from_payload(payload)
-        if model_resolver:
+        if sample_mode == "training_capture":
+            selected_ssc = ""
+            selected_ta = ""
+            selected_ph = ""
+        elif model_resolver:
             selected_ssc = model_resolver(fruit_type, variety, "ssc", selected_ssc) if selected_ssc else ""
             selected_ta = model_resolver(fruit_type, variety, "ta", selected_ta) if selected_ta else ""
             selected_ph = model_resolver(fruit_type, variety, "ph", selected_ph) if selected_ph else ""
@@ -168,6 +174,7 @@ class SessionState:
             self.sample_name = sample_name
             self.created_at = created_at
             self.save_root_dir = save_root_dir
+            self.sample_mode = sample_mode
             self.fruit_type = fruit_type
             self.variety = variety
             self.selected_ssc_model_id = selected_ssc
@@ -209,6 +216,9 @@ class SessionState:
         with self._lock:
             fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
             variety = str(metadata.get("variety") or "").strip()
+            sample_mode = metadata.get("sample_mode") or metadata.get("sampleMode")
+            if sample_mode:
+                self.sample_mode = normalize_sample_mode(sample_mode)
             if fruit_type:
                 self.fruit_type = fruit_type
             if variety:
@@ -240,6 +250,7 @@ class SessionState:
             selected_ph_model_id = self.selected_ph_model_id
             capture_rotation_plan = dict(self.capture_rotation_plan)
             device_prep = dict(self.device_prep)
+            sample_mode = self.sample_mode
             device_prepared = self._offline_prepared()
             true_capture_prepared = self._true_capture_prepared()
         current_path = Path(current).expanduser() if current else None
@@ -267,6 +278,7 @@ class SessionState:
             "devicePrep": device_prep,
             "devicePrepared": device_prepared,
             "trueCapturePrepared": true_capture_prepared,
+            "sampleMode": sample_mode,
             "fruitType": fruit_type,
             "variety": variety,
             "selectedSscModelId": selected_ssc_model_id,
@@ -315,6 +327,15 @@ def read_sample_metadata(dataset_dir: str | Path) -> dict:
     except Exception:
         return {}
     return metadata if isinstance(metadata, dict) else {}
+
+
+def normalize_sample_mode(value: object) -> str:
+    mode = str(value or "inspection").strip().lower().replace("-", "_")
+    if mode in {"training", "capture_only", "training_capture"}:
+        return "training_capture"
+    if mode in {"inspection", "detect", "detection", "normal"}:
+        return "inspection"
+    raise ValueError("sample_mode must be inspection or training_capture")
 
 
 IMAGE_DIR_DEFAULTS = {"rgb": "rgb", "multispectral": "multispectral"}
@@ -2737,6 +2758,7 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
         meta = {
             "sample_id": metadata.get("sampleId") or metadata.get("sample_id") or "",
             "sample_name": metadata.get("sampleName") or metadata.get("sample_name") or "",
+            "sample_mode": normalize_sample_mode(metadata.get("sampleMode") or metadata.get("sample_mode") or "inspection"),
             "fruit_type": metadata.get("fruitType") or metadata.get("fruit_type") or "",
             "variety": metadata.get("variety") or "generic",
             "selected_ssc_model_id": metadata.get("selectedSscModelId") or "",

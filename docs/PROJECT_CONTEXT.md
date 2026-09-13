@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-12
+更新时间：2026-09-13
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -129,22 +129,23 @@ UI
 当前 Model Studio 已有真实后端和 UI：
 
 1. 从主界面点击“模型训练”，打开 `/model-studio`。
-2. 新建 Dataset：填写名称、果种、品种；可选默认导入来源通过系统“选择文件夹”写入只读路径框；`ModelStudioService.create_dataset()` 在 SQLite 登记元数据，并创建本地托管目录 `model_studio_data/datasets/<dataset_id>/samples/` 与 `labels.csv`。
+2. 新建 Dataset：填写名称；果种、品种可手动填写，也可在导入第一批带 `metadata.json` 的 Sample 时由 Sample identity 建立；可选默认导入来源通过系统“选择文件夹”写入只读路径框；`ModelStudioService.create_dataset()` 在 SQLite 登记元数据，并创建本地托管目录 `model_studio_data/datasets/<dataset_id>/samples/` 与 `labels.csv`。
 3. 导入样品：用户通过系统“选择文件夹”选择主程序保存的 Sample Folder，后端先用 `validate_sample_folder()`/`inspect_sample_structure()` 检查 RGB、多光谱、暗/白校正和 `metadata.json`，返回 Valid/Warning/Invalid。
-4. 确认导入后，`import_samples()` 使用 COPY 把外部 Sample Folder 复制到 Dataset 本地仓库；SQLite `samples.storage_path`/`local_path` 指向本地副本，`source_path` 只记录原始来源。重复样品默认跳过，可作为新样品导入，不静默覆盖。
-5. 导入或录入实验标签：仍支持通过系统“选择文件”选择 `labels.csv`，格式为 `sample_id,ssc,ta,ph`；同时样品详情可手动输入 SSC/TA/pH，只有点击“保存标签”才写入 SQLite。
-6. 标签保存：`save_sample_label()` 校验数值，允许部分标签，更新 `labels` 表和 `samples.ssc/ta/ph`，同步 Dataset 本地 `labels.csv`，并标记 Dataset `dirty=1`。
-7. 数据质量检查：统计缺失波段、缺失校准、缺失标签、坏图、Excluded/Needs Review 样品。
-8. 创建数据集版本：对当前 Included 样品列表、本地路径和标签值生成 `sample_snapshot_json`/`label_snapshot_json` 与 hash；后续标签修改不会改变旧 Version 的历史含义。
-9. 生成特征：`generate_features()` 按 Dataset Version 快照中的本地 `local_path` 调用 `extract_feature_record()`，输出 `model_studio/artifacts/features/<version>_features.csv`。
-10. 创建训练实验：选择单一 target（SSC/TA/pH）、模型组合（PLSR/SVR/RF）、预处理组合（RAW/SNV/MSC）、验证方式（GroupKFold 或 TrainTestSplit）。
-11. 启动训练任务：后台线程运行 `_run_training_job()`，对每组预处理/模型组合调用 `training.train.train_one()`。
-12. 模型比较：训练结果按 RMSE 排序，模型注册为 `Candidate`，文件在 `model_studio/models/candidates/...`。
-13. 人工验证/发布：可标记 Validated，可手动 Publish。
-14. 设为默认：发布时选择 `setDefault` 或后续点击“设为默认”；只有此时模型才复制到 `trained_models/<target>/` 作为主程序 fallback。
-15. 主程序使用 Production/Default：`quality_prediction._select_registry_model()` 先查 Model Studio SQLite 中 Published/Default/Production 模型并校验果种/品种；没有指定/默认模型时才回落到 `trained_models/<target>`。
-16. Dataset 维护：Dataset List 和 Dataset Summary 均提供 Archive 与 Permanent Delete。Archive 只隐藏 active list，不删除样品、版本、实验、模型或 lineage；Permanent Delete 先读取 `/api/model-studio/datasets/<dataset_id>/references`，若有 Published/Default/Production 模型引用则阻止，否则可在 Dataset Name 确认后级联清理无生产价值的 Candidate/Validated/Archived 实验数据和受管文件。
-17. Model 维护：Model Card 提供“查看 / 重训 / 更多”。更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示 Validate、Publish、Set Default、Archive、Export、Delete Permanently 等合理操作；Default 和仍对应 legacy default bundle 的模型不能直接永久删除。
+4. 确认导入后，`import_samples()` 先读取每个 Sample 的 `metadata.json`，优先使用其中的 `sample_id`、`sample_name`、`fruit_type`、`variety`、`sample_mode` 和 capture time；只有旧数据缺少 fruit/variety 时才 fallback 到 Dataset scope。Dataset 为空 scope 且导入样品只有一个 fruit_type/variety 时，Dataset scope 自动继承 Sample identity；同一批或既有 Dataset 中混入多个 scope 会失败为 `DATASET_SAMPLE_SCOPE_CONFLICT`，不静默混合训练。
+5. `import_samples()` 使用 COPY 把外部 Sample Folder 复制到 Dataset 本地仓库；SQLite `samples.storage_path`/`local_path` 指向本地副本，`source_path` 只记录原始来源。重复样品默认跳过，可作为新样品导入，不静默覆盖。
+6. 导入或录入实验标签：仍支持通过系统“选择文件”选择 `labels.csv`，格式为 `sample_id,ssc,ta,ph`；同时样品详情可手动输入 SSC/TA/pH，只有点击“保存标签”才写入 SQLite。
+7. 标签保存：`save_sample_label()` 校验数值，允许部分标签，更新 `labels` 表和 `samples.ssc/ta/ph`，同步 Dataset 本地 `labels.csv`，并标记 Dataset `dirty=1`。
+8. 数据质量检查：统计缺失波段、缺失校准、缺失标签、坏图、Excluded/Needs Review 样品。
+9. 创建数据集版本：对当前 Included 样品列表、本地路径、Sample identity 和标签值生成 `sample_snapshot_json`/`label_snapshot_json` 与 hash；后续标签修改不会改变旧 Version 的历史含义。
+10. 生成特征：`generate_features()` 按 Dataset Version 快照中的本地 `local_path` 调用 `extract_feature_record()`，输出 `model_studio/artifacts/features/<version>_features.csv`。
+11. 创建训练实验：选择单一 target（SSC/TA/pH）、模型组合（PLSR/SVR/RF）、预处理组合（RAW/SNV/MSC）、验证方式（GroupKFold 或 TrainTestSplit）；Experiment scope 自动继承 Dataset/Version scope，不默认允许 override 成另一个水果/品种。
+12. 启动训练任务：后台线程运行 `_run_training_job()`，对每组预处理/模型组合调用 `training.train.train_one()`。
+13. 模型比较：训练结果按 RMSE 排序，模型注册为 `Candidate`，Candidate metadata 继续保存 Dataset/Experiment 继承的 `fruit_type`、`variety` 和 target，文件在 `model_studio/models/candidates/...`。
+14. 人工验证/发布：可标记 Validated，可手动 Publish。
+15. 设为默认：发布时选择 `setDefault` 或后续点击“设为默认”；只有此时模型才复制到 `trained_models/<target>/` 作为主程序 fallback。
+16. 主程序使用 Production/Default：`quality_prediction._select_registry_model()` 先查 Model Studio SQLite 中 Published/Default/Production 模型并校验果种/品种；没有指定/默认模型时才回落到 `trained_models/<target>`。
+17. Dataset 维护：Dataset List 和 Dataset Summary 均提供 Archive 与 Permanent Delete。Archive 只隐藏 active list，不删除样品、版本、实验、模型或 lineage；Permanent Delete 先读取 `/api/model-studio/datasets/<dataset_id>/references`，若有 Published/Default/Production 模型引用则阻止，否则可在 Dataset Name 确认后级联清理无生产价值的 Candidate/Validated/Archived 实验数据和受管文件。
+18. Model 维护：Model Card 提供“查看 / 重训 / 更多”。更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示 Validate、Publish、Set Default、Archive、Export、Delete Permanently 等合理操作；Default 和仍对应 legacy default bundle 的模型不能直接永久删除。
 
 ## 6. 模型系统
 
@@ -244,6 +245,7 @@ UI
 - 预处理支持 RAW / SNV / MSC。
 - 训练数据不足时必须失败，不能造假标签或伪造模型结果。
 - Production/Default 模型必须人工发布；系统不能自动替换正式模型。
+- Sample Identity 不依赖 Model Availability。主工作站支持 `sample_mode=training_capture` 在没有任何 Published/Default/Production 模型时创建训练采集样品，`fruit_type`/`variety` 写入 Sample metadata，SSC/TA/pH 选择模型 ID 合法保持为空。
 - 同一 fruit type + variety + target 只能有一个 Default；Model Studio 可从 Published/Production 模型切换 Default，旧 Default 自动保留为 Published，不删除。
 - 支持不同水果/品种使用不同模型，并允许 `generic` 品种兜底。
 - 本次拍摄目录可以自动进入分析流程。

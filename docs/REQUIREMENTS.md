@@ -65,6 +65,8 @@
 | 多视角采集必须保持同一个 sample_id 并复用同一个 CalibrationSet | 已实现 | P1B-7 metadata 中所有 View 保持相同 `sample_id`，并通过 sample 级 `calibrationId` 引用一次 Dark/White `CalibrationSet`；不会把每个 View 当独立样品，也不会每 View 重拍 Dark/White |
 | 样品台硬件模式不得伪造成功 | 已实现/协议未知 | P1B-7.5B 扩展 `sample_stage.py` 状态模型和 DeviceManager/API/UI 调试边界；默认硬件状态明确为 `SAMPLE_STAGE_PROTOCOL_UNKNOWN`，`protocolKnown=false`、`positionFeedbackSupported=false`，HOME/move/STOP 返回 unsupported。simulation 只用于 unittest/离线软件编排验证，不会自动 fallback 为硬件成功 |
 | 支持创建样品并保存元数据 | 已实现 | `/api/new-sample` 写 `metadata.json` |
+| 新建样品应区分正常检测和训练数据采集 | 已实现 | 主程序新增 `sample_mode=inspection/training_capture`。Inspection 继续依赖已发布模型目录做检测模型匹配；Training Capture 允许用户自由输入 fruit_type/variety，并在没有任何 Published/Default/Production 模型时创建样品 |
+| Sample Identity 不应依赖 Model Availability | 已实现 | `sample_id`、`sample_name`、`sample_mode`、`fruit_type`、`variety` 属于 Sample metadata；Training Capture 下 `selected_ssc_model_id`、`selected_ta_model_id`、`selected_ph_model_id` 为空是合法状态 |
 | 每次样品创建应生成唯一保存目录 | 已实现 | `create_unique_sample_folder()` |
 | 本次拍摄目录自动进入分析流程 | 部分实现/模拟 | 离线采集会设置 `analysisDataDir` |
 | 用户可手动选择其他样品目录分析 | 已实现 | 主 UI 支持当前/其他文件夹 |
@@ -90,12 +92,15 @@
 | Dataset 应支持后续继续添加样品并创建新版本 | 已实现 | `import_samples()` 可对已有 Dataset 执行 Add Samples；重复样品支持 Skip、Replace Working Copy、Create New Sample ID、Cancel，其中 Replace 会在样品已被历史 Version/Experiment/Model 引用时拒绝，避免破坏旧快照 |
 | Model Studio Dataset 应使用本地托管仓库，不直接依赖外部原始目录训练 | 已实现 | 样品导入会 COPY 到 `model_studio_data/datasets/<dataset_id>/samples/`，训练读取本地副本 |
 | Model Studio 导入样品前应验证 RGB、多光谱、校准和 metadata | 已实现 | `validate_sample_folder()` 返回 Valid/Warning/Invalid，复用当前目录完整性规则并补充 `metadata.json` 检查 |
+| Model Studio 导入应优先继承 Sample metadata scope | 已实现 | `import_samples()` 读取 Sample `metadata.json`，优先使用 `sample_id`、`sample_name`、`fruit_type`、`variety`、`sample_mode` 和 capture time；旧数据缺少 fruit/variety 时才 fallback 到 Dataset scope |
+| Dataset scope 冲突不得静默混合训练 | 已实现 | Dataset 空 scope 时可由唯一 Sample scope 初始化；同一导入批次或既有 Dataset 中出现多个 fruit_type/variety 时失败为 `DATASET_SAMPLE_SCOPE_CONFLICT` 并返回冲突 scopes 诊断 |
 | Model Studio 重复导入样品不得静默覆盖 | 已实现 | 默认跳过重复样品，可选择作为新样品导入 |
 | Model Studio 样品标签 SSC/TA/pH 应显式保存 | 已实现 | 标签输入是前端未保存状态，点击“保存标签”后才写 SQLite |
 | 标签保存后同步维护 Dataset 本地 `labels.csv` | 已实现 | `save_sample_label()` 和 `import_labels()` 都会重写本地 `labels.csv` |
 | Model Studio 数据准备页面应按 Workflow 展示操作顺序，避免按钮墙 | 已实现 | Dataset 页面按创建数据集、导入样品、标签录入、数据质量、创建版本组织；样品页以样品列表和选中样品 Ground Truth 为主 |
 | 允许部分标签参与对应目标训练 | 已实现 | 空 SSC/TA/pH 保存为 NULL，样品标签状态显示 Missing/Partial/Complete |
 | Dataset Version 应冻结样品和标签快照 | 已实现 | `sample_snapshot_json`/`label_snapshot_json` 记录版本创建时的本地路径和标签值 |
+| Dataset/Experiment/Model scope 应由 Sample identity 向后传递 | 已实现 | Dataset 从 Sample metadata 建立/校验 scope；Dataset Version snapshot 保留 Sample fruit_type/variety；Training Experiment 自动继承 Dataset scope；Candidate/Published/Default 模型 metadata 继续保存 `fruit_type`、`variety` 和 target |
 | 删除 Sample 时不得影响原始拍摄目录 | 已实现 | 可删除数据库记录，或二次确认后删除本地托管副本；不删除 `source_path` |
 | 噪声 Sample 应优先 Exclude 而不是 Delete | 已实现 | `include_status` 支持 Included / Needs Review / Excluded；Exclude reason 支持 Image Blur、Missing Band、Calibration Error、Label Error、Damaged Fruit、Outlier、Capture Error、Manual Exclusion、Other；Excluded 不进入新的 Dataset Version，但历史 Version 保持可复现 |
 | 被历史 Version / Experiment / Model 引用的 Sample 禁止永久删除 | 已实现 | `sample_references()` 会显示引用关系，`delete_sample()` 和 duplicate Replace 会拒绝破坏已有 lineage 的操作 |

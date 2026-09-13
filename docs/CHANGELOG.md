@@ -2,6 +2,15 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-13 P1D-1 Capture-Only Training Sample Workflow
+
+- 修改内容：主程序新建样品新增 `sample_mode=inspection/training_capture`。正常检测继续使用 `/api/quality-models`、Default 和 `generic` fallback 匹配模型；训练数据采集允许自由输入 Fruit Type / Variety，并可在没有任何 Published/Default/Production 模型时创建样品。
+- 修改内容：`SessionState` 与样品 `metadata.json` 明确保存 `sample_mode`、`sample_id`、`sample_name`、`fruit_type`、`variety`。Training Capture 下 `selected_ssc_model_id`、`selected_ta_model_id`、`selected_ph_model_id` 保持空字符串，不显示必须先发布模型的提示，也不伪造预测结果。
+- 修改内容：Model Studio `import_samples()` 改为优先读取 Sample `metadata.json` 中的 identity；旧样品 metadata 缺少 fruit/variety 时才 fallback 到 Dataset scope。Dataset 为空 scope 且导入样品只有一个 scope 时自动继承；发现多个 fruit_type/variety 时失败为 `DATASET_SAMPLE_SCOPE_CONFLICT` 并返回 scopes 诊断。
+- 修改内容：Dataset Version snapshot 增加 Sample identity，Training Experiment scope 自动继承 Dataset scope，Candidate Model metadata 继续记录 `fruit_type`、`variety` 和 target。Production/Default 仍只能人工发布/设置，不由训练自动替换。
+- 修改文件：`host_software/static_ui_prototype_bin/index.html`、`styles.css`、`app.js`、`backend_server.py`、`model_studio/service.py`、相关测试与项目文档。
+- 是否影响原有功能：不修改 STM32 firmware/protocol、DVP2/RGB adapter、滤光轮、样品台、Dark/White/ROI/Registration 算法或真实硬件 acceptance gate；Inspection 模型匹配和 generic fallback 保留。
+
 ## 2026-09-13 P1C-2B Registered Multispectral Conservative ROI
 
 - 修改内容：新增 `quality_algorithm/registered_roi.py`，复用 P1C-2A `RegistrationProfile`、`validate_profile_for_runtime()` 和 `warp_mask_rgb_to_multispectral()`，把 RGB Fruit Mask warp 到 DVP2 坐标后执行 post-warp conservative erosion，输出 ROI pixel counts、bbox、centroid、registration metrics、referenceBandNm、quality flags 和 timing diagnostics。

@@ -359,14 +359,32 @@
                 <span class="status-chip" id="sampleCreateStatus">等待创建</span>
               </div>
               <div class="sample-create-grid">
+                <label class="wide">样品用途
+                  <div class="sample-mode-toggle" role="radiogroup" aria-label="样品用途">
+                    <label>
+                      <input type="radio" name="sampleMode" value="inspection" checked />
+                      <span>正常检测</span>
+                    </label>
+                    <label>
+                      <input type="radio" name="sampleMode" value="training_capture" />
+                      <span>训练数据采集</span>
+                    </label>
+                  </div>
+                </label>
                 <label>样品名称 *
                   <input id="captureSampleName" placeholder="Duke成熟组03" />
                 </label>
-                <label>样品种类 *
+                <label class="inspection-scope-field">样品种类 *
                   <select id="qualityFruitType"></select>
                 </label>
-                <label>品种
+                <label class="inspection-scope-field">品种
                   <select id="qualityVariety"></select>
+                </label>
+                <label class="training-scope-field" hidden>样品种类 *
+                  <input id="trainingFruitType" placeholder="蓝莓" />
+                </label>
+                <label class="training-scope-field" hidden>品种
+                  <input id="trainingVariety" placeholder="Duke 或 generic" />
                 </label>
                 <label class="wide">保存位置 *
                   <div class="path-picker">
@@ -378,6 +396,7 @@
                   <input id="sampleFolderPath" placeholder="创建样品后自动生成本次样品目录" readonly />
                 </label>
               </div>
+              <p class="mode-explain training-scope-field" id="trainingCaptureHint" hidden>训练数据采集模式：此样品不要求已有预测模型。水果种类和品种将写入样品 metadata，供后续 Model Studio 建立数据集和训练模型。</p>
               <div class="rotation-capture-card" id="rotationCaptureCard">
                 <div class="rotation-capture-head">
                   <label class="toggle-line">
@@ -1080,17 +1099,35 @@
           <button id="closeSampleModal" type="button">关闭</button>
         </header>
         <div class="modal-grid">
+          <label class="wide">样品用途
+            <div class="sample-mode-toggle" role="radiogroup" aria-label="样品用途">
+              <label>
+                <input type="radio" name="modalSampleMode" value="inspection" checked />
+                <span>正常检测</span>
+              </label>
+              <label>
+                <input type="radio" name="modalSampleMode" value="training_capture" />
+                <span>训练数据采集</span>
+              </label>
+            </div>
+          </label>
           <label>样品名称 *
             <input id="newSampleName" placeholder="Duke成熟组03" />
           </label>
-          <label>Fruit Type *
+          <label class="modal-inspection-scope-field">Fruit Type *
             <select id="newSampleFruitType"></select>
           </label>
-          <label>Variety
+          <label class="modal-inspection-scope-field">Variety
             <select id="newSampleVariety"></select>
           </label>
+          <label class="modal-training-scope-field" hidden>Fruit Type *
+            <input id="newTrainingFruitType" placeholder="蓝莓" />
+          </label>
+          <label class="modal-training-scope-field" hidden>Variety
+            <input id="newTrainingVariety" placeholder="Duke 或 generic" />
+          </label>
         </div>
-        <p class="modal-note" id="newSampleHint">Fruit Type 和 Variety 来自已发布模型；具体糖酸模型在分析页面选择。</p>
+        <p class="modal-note" id="newSampleHint">正常检测使用已发布模型；训练数据采集可直接填写新的 Fruit Type 和 Variety。</p>
         <footer>
           <button id="cancelNewSample" type="button">取消</button>
           <button class="primary-action" id="createNewSample" type="button">创建样品</button>

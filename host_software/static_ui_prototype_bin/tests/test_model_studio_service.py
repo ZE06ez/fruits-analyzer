@@ -49,6 +49,15 @@ class ModelStudioServiceTests(unittest.TestCase):
                 Image.new("L", (24, 24), 0).save(dark / f"{band}.png")
                 Image.new("L", (24, 24), 255).save(white / f"{band}.png")
 
+    def _write_sample_metadata(self, folder_name: str, **values) -> None:
+        sample = self.samples_root / folder_name
+        metadata = {
+            "sample_id": values.get("sample_id", folder_name),
+            "sample_name": values.get("sample_name", folder_name),
+        }
+        metadata.update({key: value for key, value in values.items() if value is not None})
+        (sample / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
     def test_dataset_versions_are_snapshots_and_excluded_samples_are_not_included(self):
         dataset = self.service.create_dataset({
             "datasetName": "Blueberry_Versions",
@@ -133,6 +142,75 @@ class ModelStudioServiceTests(unittest.TestCase):
         self.assertTrue(deleted["sourceExists"])
         self.assertFalse(copied_path.exists())
         self.assertTrue(source_sample.exists())
+
+    def test_import_samples_prefers_sample_metadata_scope_and_initializes_dataset_scope(self):
+        self._write_sample_metadata(
+            "sample_000",
+            sample_id="Duke_001",
+            sample_name="Duke Training 001",
+            sample_mode="training_capture",
+            fruit_type="蓝莓",
+            variety="Duke",
+        )
+        dataset = self.service.create_dataset({
+            "datasetName": "Training Capture Import",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        imported = self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+
+        self.assertEqual(imported["imported"], 1)
+        self.assertEqual(imported["scope"]["source"], "sample_metadata")
+        dataset = self.service.get_dataset(dataset["dataset_id"])
+        self.assertEqual(dataset["fruit_type"], "蓝莓")
+        self.assertEqual(dataset["variety"], "Duke")
+        sample = self.service.get_sample(dataset["dataset_id"], "Duke_001")
+        self.assertEqual(sample["sample_name"], "Duke Training 001")
+        self.assertEqual(sample["fruit_type"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+
+    def test_import_samples_rejects_scope_conflicts(self):
+        self._write_sample_metadata("sample_000", fruit_type="蓝莓", variety="Duke")
+        self._write_sample_metadata("sample_001", fruit_type="苹果", variety="Fuji")
+        dataset = self.service.create_dataset({
+            "datasetName": "Mixed Scope",
+            "storagePath": str(self.samples_root),
+        })
+
+        with self.assertRaisesRegex(ModelStudioError, "DATASET_SAMPLE_SCOPE_CONFLICT") as ctx:
+            self.service.import_samples(dataset["dataset_id"], self.samples_root)
+
+        message = str(ctx.exception)
+        self.assertIn("蓝莓", message)
+        self.assertIn("苹果", message)
+        self.assertEqual(self.service.list_samples(dataset["dataset_id"])["total"], 0)
+
+    def test_import_samples_falls_back_to_dataset_scope_for_legacy_metadata(self):
+        self._write_sample_metadata("sample_000")
+        dataset = self.service.create_dataset({
+            "datasetName": "Legacy Scope",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+
+        sample = self.service.get_sample(dataset["dataset_id"], "sample_000")
+        self.assertEqual(sample["fruit_type"], "blueberry")
+        self.assertEqual(sample["variety"], "Duke")
+
+    def test_dataset_scope_conflict_blocks_import_into_existing_scope(self):
+        self._write_sample_metadata("sample_000", fruit_type="苹果", variety="Fuji")
+        dataset = self.service.create_dataset({
+            "datasetName": "Blueberry Existing Scope",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        with self.assertRaisesRegex(ModelStudioError, "DATASET_SAMPLE_SCOPE_CONFLICT"):
+            self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
 
     def test_referenced_sample_cannot_be_replaced_or_permanently_deleted(self):
         source_sample = self.samples_root / "sample_003"
@@ -507,6 +585,8 @@ class ModelStudioServiceTests(unittest.TestCase):
             "target": "ssc",
             "models": ["PLSR"],
             "preprocessing": ["RAW"],
+            "fruitType": "apple",
+            "variety": "Fuji",
         })
         ta = self.service.create_experiment_and_training_job({
             "datasetId": dataset["dataset_id"],
@@ -516,6 +596,8 @@ class ModelStudioServiceTests(unittest.TestCase):
             "preprocessing": ["RAW"],
         })
         self.assertNotEqual(ssc["experiment"]["experiment_id"], ta["experiment"]["experiment_id"])
+        self.assertEqual(ssc["experiment"]["fruit_type"], "blueberry")
+        self.assertEqual(ssc["experiment"]["variety"], "Duke")
         self.assertEqual(self.service.get_experiment(ta["experiment"]["experiment_id"])["target"], "ta")
         job = self._wait_studio_job(ta["job"]["job_id"])
         self.assertEqual(job["status"], "Completed", job.get("error") or job.get("message"))
@@ -541,6 +623,12 @@ class ModelStudioServiceTests(unittest.TestCase):
         job = self._wait_studio_job(result["job"]["job_id"])
         self.assertEqual(job["status"], "Completed", job.get("error") or job.get("message"))
         self.assertTrue(all(row.get("target") == "ph" for row in job["result"]["results"] if not row.get("error")))
+        model = [item for item in self.service.list_models() if item["target"] == "ph"][0]
+        self.assertEqual(model["fruit_type"], "blueberry")
+        self.assertEqual(model["variety"], "Duke")
+        metadata = json.loads((Path(model["model_dir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["fruit_type"], "blueberry")
+        self.assertEqual(metadata["variety"], "Duke")
 
     def test_dataset_import_labels_features_training_publish_and_predict(self):
         dataset = self.service.create_dataset({

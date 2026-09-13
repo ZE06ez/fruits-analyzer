@@ -93,6 +93,7 @@ const state = {
   trueCaptureStatus: null,
   captureRotationPlan: null,
   hasSample: false,
+  sampleMode: "inspection",
   sampleName: "",
   sampleId: "",
   sampleCreatedAt: "",
@@ -106,6 +107,7 @@ const state = {
   sampleSession: {
     sampleId: "",
     sampleName: "",
+    sampleMode: "inspection",
     analysisDataDir: "",
     rgbFiles: [],
     multispectralFiles: [],
@@ -3582,6 +3584,7 @@ function updateSampleSessionFromReport(report = {}) {
 function applyLoadedSampleMetadata(metadata = {}) {
   const fruitType = metadata.fruit_type || metadata.fruitType || "";
   const variety = metadata.variety || "";
+  const sampleMode = metadata.sample_mode || metadata.sampleMode || "";
   const sampleName = metadata.sample_name || metadata.sampleName || "";
   const sampleId = metadata.sample_id || metadata.sampleId || "";
   const imageDirs = metadata.image_directories || {};
@@ -3594,13 +3597,16 @@ function applyLoadedSampleMetadata(metadata = {}) {
   }
   if (fruitType) state.fruitType = fruitType;
   if (variety) state.variety = variety;
+  if (sampleMode) state.sampleMode = sampleMode === "training_capture" ? "training_capture" : "inspection";
   if (state.hasSample && !state.sampleName && sampleName) state.sampleName = sampleName;
   if (state.hasSample && !state.sampleId && sampleId) state.sampleId = sampleId;
   state.sampleSession.fruitType = state.fruitType;
   state.sampleSession.variety = state.variety;
+  state.sampleSession.sampleMode = state.sampleMode;
   if ($("#qualityFruitType") && fruitType) $("#qualityFruitType").value = fruitType;
   if ($("#qualityVariety") && variety) $("#qualityVariety").value = variety;
   if (fruitType || variety) {
+    updateSampleModeUi(state.sampleMode);
     renderCurrentSample();
     loadQualityModels().catch((error) => addLog(error.message, "WARN"));
   }
@@ -3764,6 +3770,13 @@ function renderModelOverview() {
   renderModelSummaryRow("modelSummarySsc", "ssc", state.selectedSscModelId);
   renderModelSummaryRow("modelSummaryTa", "ta", state.selectedTaModelId);
   renderModelSummaryRow("modelSummaryPh", "ph", state.selectedPhModelId);
+  if (state.sampleMode === "training_capture") {
+    setText("modelOverviewHint", "训练数据采集模式不绑定 SSC / TA / pH 模型；采集完成后到 Model Studio 导入样品并补充实测标签。");
+    const button = $("#toggleModelAdvanced");
+    if (button) button.textContent = state.modelAdvanced ? "隐藏高级" : "更换模型";
+    document.body.classList.toggle("model-advanced", state.modelAdvanced);
+    return;
+  }
   const missing = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
     .some((id) => document.getElementById(id)?.dataset.status === "missing");
   const generic = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
@@ -3780,12 +3793,58 @@ function renderModelOverview() {
   document.body.classList.toggle("model-advanced", state.modelAdvanced);
 }
 
+function getSampleModeFromControls() {
+  const modalOpen = !$("#sampleModal")?.hidden;
+  const modalMode = modalOpen ? document.querySelector("input[name='modalSampleMode']:checked")?.value : "";
+  const inlineMode = document.querySelector("input[name='sampleMode']:checked")?.value;
+  return modalMode || inlineMode || state.sampleMode || "inspection";
+}
+
+function setSampleModeControls(mode) {
+  const normalized = mode === "training_capture" ? "training_capture" : "inspection";
+  document.querySelectorAll("input[name='sampleMode'], input[name='modalSampleMode']").forEach((input) => {
+    input.checked = input.value === normalized;
+  });
+}
+
+function updateSampleModeUi(mode = getSampleModeFromControls()) {
+  state.sampleMode = mode === "training_capture" ? "training_capture" : "inspection";
+  setSampleModeControls(state.sampleMode);
+  const training = state.sampleMode === "training_capture";
+  document.querySelectorAll(".inspection-scope-field, .modal-inspection-scope-field").forEach((el) => { el.hidden = training; });
+  document.querySelectorAll(".training-scope-field, .modal-training-scope-field").forEach((el) => { el.hidden = !training; });
+  setText("newSampleHint", training
+    ? "训练数据采集模式：此样品不要求已有预测模型。Fruit Type 和 Variety 将写入样品 metadata。"
+    : "正常检测使用已发布模型；具体糖酸模型在分析页面选择。");
+  if (training) {
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+  }
+  renderModelOverview();
+}
+
+function currentSampleScopeInputs() {
+  const training = state.sampleMode === "training_capture";
+  if (training) {
+    return {
+      fruitType: ($("#trainingFruitType")?.value || $("#newTrainingFruitType")?.value || "").trim(),
+      variety: ($("#trainingVariety")?.value || $("#newTrainingVariety")?.value || "generic").trim() || "generic",
+    };
+  }
+  return {
+    fruitType: ($("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "").trim(),
+    variety: ($("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic").trim() || "generic",
+  };
+}
+
 function toggleModelAdvanced() {
   state.modelAdvanced = !state.modelAdvanced;
   renderModelOverview();
 }
 
 async function loadSampleTypeCatalog() {
+  if (state.sampleMode === "training_capture") return state.modelCatalog || {};
   const selectedFruit = $("#qualityFruitType")?.value.trim() || state.fruitType || "";
   const selectedVariety = $("#qualityVariety")?.value.trim() || state.variety || "generic";
   const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
@@ -3796,6 +3855,20 @@ async function loadSampleTypeCatalog() {
 }
 
 async function loadQualityModels() {
+  if (state.sampleMode === "training_capture") {
+    const empty = { fruitTypes: [], varieties: [], ssc: [], ta: [], ph: [], compatible: { ssc: [], ta: [], ph: [] }, defaults: {} };
+    state.modelCatalog = empty;
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+    fillModelSelect("#sscModelSelect", [], "", null);
+    fillModelSelect("#taModelSelect", [], "", null);
+    fillModelSelect("#phModelSelect", [], "", null);
+    updateAnalysisButtonStates();
+    renderModelOverview();
+    renderSelectedPredictionModels();
+    return empty;
+  }
   let fruitType = state.fruitType || "";
   let variety = state.variety || "generic";
   if (!fruitType) {
@@ -3844,13 +3917,17 @@ function closeSampleModal() {
 }
 
 async function loadNewSampleCatalog() {
+  if (state.sampleMode === "training_capture") {
+    updateSampleModeUi("training_capture");
+    return;
+  }
   const selectedFruit = $("#newSampleFruitType")?.value || state.fruitType || "";
   const selectedVariety = $("#newSampleVariety")?.value || state.variety || "generic";
   const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
   const fruitType = fillPlainSelect("#newSampleFruitType", payload.fruitTypes || [], selectedFruit);
   const varietyPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(selectedVariety)}`);
   fillPlainSelect("#newSampleVariety", varietyPayload.varieties || ["generic"], selectedVariety, "generic");
-  setText("newSampleHint", varietyPayload.fruitTypes?.length ? "样品种类和品种将保存到本次样品 metadata.json。" : "暂无 Published / Default 模型，请先在 Model Studio 发布模型。");
+  setText("newSampleHint", varietyPayload.fruitTypes?.length ? "样品种类和品种将保存到本次样品 metadata.json。" : "正常检测尚无可选模型；如需先采集训练数据，请选择“训练数据采集”。");
 }
 
 async function createNewSample() {
@@ -3873,12 +3950,25 @@ async function createNewSample() {
     return;
   }
   setText("sampleCreateStatus", "正在创建样品");
-  await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+  updateSampleModeUi(getSampleModeFromControls());
+  if (state.sampleMode !== "training_capture") {
+    await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+  }
+  const scope = currentSampleScopeInputs();
+  if (!scope.fruitType) {
+    setText("newSampleHint", "样品种类必须填写。");
+    setText("sampleCreateStatus", "请填写样品种类");
+    return;
+  }
   const payload = {
     sampleName,
     saveRootDir,
-    fruitType: $("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "",
-    variety: $("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic",
+    sampleMode: state.sampleMode,
+    fruitType: scope.fruitType,
+    variety: scope.variety,
+    selectedSscModelId: state.sampleMode === "training_capture" ? "" : ($("#sscModelSelect")?.value || state.selectedSscModelId || ""),
+    selectedTaModelId: state.sampleMode === "training_capture" ? "" : ($("#taModelSelect")?.value || state.selectedTaModelId || ""),
+    selectedPhModelId: state.sampleMode === "training_capture" ? "" : ($("#phModelSelect")?.value || state.selectedPhModelId || ""),
     sampleRotation: rotationSettings,
     rgbDirName: state.rgbDirName || "rgb",
     multispectralDirName: state.multispectralDirName || "multispectral",
@@ -3888,7 +3978,15 @@ async function createNewSample() {
   clearSampleDependentState();
   applySampleSessionState(response.sample || {});
   setStepStatus("sample", "done");
-  await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+  if (state.sampleMode === "training_capture") {
+    state.modelCatalog = { ssc: [], ta: [], ph: [], compatible: { ssc: [], ta: [], ph: [] }, defaults: {} };
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+    renderModelOverview();
+  } else {
+    await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+  }
   renderCurrentSample();
   await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
   closeSampleModal();
@@ -3910,6 +4008,7 @@ function applySampleSessionState(sample = {}) {
     otherImageDirs: sample.otherImageDirs || state.otherImageDirs || [],
   });
   state.captureStarted = Boolean(sample.captureStarted);
+  state.sampleMode = sample.sampleMode || "inspection";
   state.fruitType = sample.fruitType || "";
   state.variety = sample.variety || "generic";
   state.selectedSscModelId = sample.selectedSscModelId || "";
@@ -3918,10 +4017,16 @@ function applySampleSessionState(sample = {}) {
   state.captureRotationPlan = sample.captureRotationPlan || state.captureRotationPlan || buildCaptureRotationPlan(DEFAULT_ROTATION_SETTINGS);
   state.sampleSession.sampleId = state.sampleId;
   state.sampleSession.sampleName = state.sampleName;
+  state.sampleSession.sampleMode = state.sampleMode;
   state.sampleSession.fruitType = state.fruitType;
   state.sampleSession.variety = state.variety;
   if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
   if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+  if ($("#trainingFruitType")) $("#trainingFruitType").value = state.fruitType;
+  if ($("#trainingVariety")) $("#trainingVariety").value = state.variety;
+  if ($("#newTrainingFruitType")) $("#newTrainingFruitType").value = state.fruitType;
+  if ($("#newTrainingVariety")) $("#newTrainingVariety").value = state.variety;
+  updateSampleModeUi(state.sampleMode);
   renderRotationPlan(state.captureRotationPlan);
 }
 
@@ -4737,6 +4842,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   ["#qualityFruitType", "#qualityVariety"].forEach((selector) => {
     $(selector)?.addEventListener("change", async () => {
+      if (state.sampleMode === "training_capture") return;
       await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
       state.fruitType = $("#qualityFruitType")?.value || state.fruitType || "";
       state.variety = $("#qualityVariety")?.value || state.variety || "generic";
@@ -4799,6 +4905,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
+  document.querySelectorAll("input[name='sampleMode'], input[name='modalSampleMode']").forEach((input) => {
+    input.addEventListener("change", () => {
+      updateSampleModeUi(input.value);
+      if (state.sampleMode !== "training_capture") {
+        loadSampleTypeCatalog().then(loadQualityModels).catch((error) => addLog(error.message, "WARN"));
+      }
+    });
+  });
   [
     "#multiViewEnabled",
     "#rotationIntervalDeg",
