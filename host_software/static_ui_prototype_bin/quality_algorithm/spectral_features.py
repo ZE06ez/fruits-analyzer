@@ -11,6 +11,14 @@ from .calibration import CALIBRATED, UNCALIBRATED, load_grayscale_float, normali
 from .background_reference import BackgroundReference, load_background_reference, validate_background_reference
 from .background_segmenter import BackgroundReferenceSegmenter
 from .filters import FilterBand, enabled_bands, expected_wavelengths
+from .registered_roi import (
+    REGISTERED_ROI_TARGET_RESOLUTION_MISMATCH,
+    RegisteredRoiConfig,
+    RegisteredRoiError,
+    build_registered_multispectral_roi,
+    resolve_registration_profile,
+)
+from .registration import CameraRegistrationEndpoint, RegistrationProfile
 from .roi import apply_mask_to_image, build_rgb_fruit_mask
 from .segmentation import FruitSegmenter
 
@@ -151,6 +159,10 @@ def extract_feature_record(
     fruit_segmenter: FruitSegmenter | None = None,
     background_reference: BackgroundReference | str | Path | None = None,
     camera_metadata: dict | None = None,
+    registration_profile: RegistrationProfile | str | Path | None = None,
+    registration_rgb_endpoint: CameraRegistrationEndpoint | dict | None = None,
+    registration_multispectral_endpoint: CameraRegistrationEndpoint | dict | None = None,
+    registered_roi_config: RegisteredRoiConfig | None = None,
 ) -> FeatureRecord:
     root = Path(sample_dir).expanduser()
     bands = enabled_bands(filters)
@@ -184,6 +196,29 @@ def extract_feature_record(
     spectral_map = map_images_by_wavelength(root / spectral_dir)
     dark_map = map_images_by_wavelength(root / "calibration" / "dark")
     white_map = map_images_by_wavelength(root / "calibration" / "white")
+    registered_mask: np.ndarray | None = None
+    registered_roi_pixel_count = 0
+    if registration_mode == "calibrated":
+        try:
+            profile = resolve_registration_profile(registration_profile)
+            first_wavelength = sorted(bands, key=lambda item: item.wavelength_nm)[0].wavelength_nm
+            first_sample = load_grayscale_float(spectral_map[first_wavelength])
+            roi_result = build_registered_multispectral_roi(
+                rgb_mask=mask,
+                registration_profile=profile,
+                rgb_endpoint=registration_rgb_endpoint,
+                multispectral_endpoint=registration_multispectral_endpoint,
+                target_shape=first_sample.shape[:2],
+                config=registered_roi_config,
+            )
+        except RegisteredRoiError as exc:
+            raise FeatureExtractionError(str(exc)) from exc
+        if not roi_result.valid or roi_result.mask is None:
+            raise FeatureExtractionError(roi_result.errorCode or "REGISTERED_ROI_INVALID")
+        registered_mask = roi_result.mask
+        registered_roi_pixel_count = int(roi_result.erodedPixelCount)
+    elif registration_mode != "identity":
+        raise FeatureExtractionError(f"unsupported registration mode: {registration_mode}")
 
     values: list[float] = []
     wavelengths: list[int] = []
@@ -193,6 +228,12 @@ def extract_feature_record(
     for band in sorted(bands, key=lambda item: item.wavelength_nm):
         wavelength = band.wavelength_nm
         sample = load_grayscale_float(spectral_map[wavelength])
+        if registered_mask is not None and sample.shape[:2] != registered_mask.shape:
+            raise FeatureExtractionError(
+                f"{REGISTERED_ROI_TARGET_RESOLUTION_MISMATCH}: {wavelength} nm "
+                f"expected={registered_mask.shape[1]}x{registered_mask.shape[0]} "
+                f"actual={sample.shape[1]}x{sample.shape[0]}"
+            )
         if wavelength in dark_map and wavelength in white_map:
             image = reflectance_correction(sample, load_grayscale_float(dark_map[wavelength]), load_grayscale_float(white_map[wavelength]))
         else:
@@ -200,10 +241,14 @@ def extract_feature_record(
             if not allow_uncalibrated:
                 raise FeatureExtractionError(f"CALIBRATION_MISSING: {wavelength} nm")
             image = normalize_uncalibrated(sample)
-        pixels, band_mask = apply_mask_to_image(image, mask, registration_mode=registration_mode)
+        if registered_mask is not None:
+            pixels = image[registered_mask]
+            band_mask = registered_mask
+        else:
+            pixels, band_mask = apply_mask_to_image(image, mask, registration_mode=registration_mode)
         if pixels.size == 0:
             raise FeatureExtractionError(f"empty ROI for {wavelength} nm")
-        roi_pixel_count = max(roi_pixel_count, int(np.count_nonzero(band_mask)))
+        roi_pixel_count = registered_roi_pixel_count or max(roi_pixel_count, int(np.count_nonzero(band_mask)))
         values.append(float(np.mean(pixels.astype(np.float32))))
         wavelengths.append(wavelength)
 

@@ -27,10 +27,10 @@ def build_rgb_fruit_mask(rgb: np.ndarray) -> np.ndarray:
 def apply_mask_to_image(image: np.ndarray, mask: np.ndarray, *, registration_mode: str = "identity") -> tuple[np.ndarray, np.ndarray]:
     if registration_mode not in {"identity", "calibrated"}:
         raise ValueError(f"unsupported registration_mode: {registration_mode}")
-    if registration_mode == "calibrated":
-        raise NotImplementedError("calibrated RGB-to-multispectral registration is not connected yet")
+    if registration_mode == "calibrated" and mask.shape != image.shape[:2]:
+        raise ValueError("REGISTERED_ROI_TARGET_RESOLUTION_MISMATCH")
     target_mask = mask
-    if mask.shape != image.shape[:2]:
+    if registration_mode == "identity" and mask.shape != image.shape[:2]:
         pil = Image.fromarray(mask.astype(np.uint8) * 255)
         pil = pil.resize((image.shape[1], image.shape[0]), Image.Resampling.NEAREST)
         target_mask = np.asarray(pil) > 0
