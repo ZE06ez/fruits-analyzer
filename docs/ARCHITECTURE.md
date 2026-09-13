@@ -26,6 +26,7 @@ host_software/static_ui_prototype_bin/
   config/registration_profile.json (runtime, gitignored)
   config/background_reference.example.json
   runtime/background_reference/ (runtime, gitignored)
+  manual_registered_roi_output/ (runtime, gitignored)
   quality_prediction.py
   quality_algorithm/
   training/
@@ -86,6 +87,7 @@ launcher.py
 | Fruit Type 模型作用域 | `backend_server.py`, `model_studio/service.py` | sample/session/dataset/model `fruit_type` 字段 | 用户输入的 Fruit Type 字符串 | 仅作为 Dataset、Experiment、Model、Station catalog 的作用域；不要求英文、不生成 AI prompt、不维护固定水果 enum | sqlite3 |
 | 背景参考果实分割 | `quality_algorithm/background_reference.py`, `quality_algorithm/background_segmenter.py`, `quality_algorithm/segmentation.py`, `quality_algorithm/mask_quality.py` | `BackgroundReference`, `validate_background_reference()`, `BackgroundReferenceSegmenter`, `BackgroundSegmentationConfig`, `FruitSegmentationResult`, `compute_mask_iou()`, `compute_mask_dice()` | 空背景 RGB、样品 RGB、相机/光照 metadata、阈值与形态学配置 | RGB absolute difference + Lab distance、threshold/open/close/fill holes/connected components；输出 mask、bbox、centroid、component diagnostics、differenceStats、qualityFlags、referenceId；不伪造 ellipse fallback | numpy, PIL, OpenCV optional |
 | RGB-DVP2 几何配准标定 | `quality_algorithm/registration.py`, `manual_registration_test.py`, `config/registration_profile.example.json`, `config/registration_profile.json` | `RegistrationProfile`, `detect_checkerboard_corners()`, `estimate_planar_homography()`, `build_registration_profile()`, `validate_profile_for_runtime()`, `warp_mask_rgb_to_multispectral()` | RGB scientific checkerboard 图、DVP2 reference-band checkerboard 图、相机身份/分辨率、棋盘格规格 | RGB -> DVP2 planar homography profile、reprojection metrics、角点/warp/overlay/difference 可视化；运行时 profile 被 Git 忽略，example 不绑定真实设备 | OpenCV, numpy, json |
+| Registered multispectral ROI | `quality_algorithm/registered_roi.py`, `manual_registered_roi_test.py` | `RegisteredRoiConfig`, `RegisteredRoiResult`, `build_registered_multispectral_roi()` | RGB fruit mask、RegistrationProfile、runtime RGB/DVP2 endpoint、DVP2 target shape | RGB mask warp 到 DVP2 坐标、post-warp conservative erosion、bbox/centroid/pixel-count/metrics diagnostics；失败时不 fallback | numpy, OpenCV optional |
 | 特征提取 | `quality_algorithm/spectral_features.py` | `inspect_sample_structure()`, `extract_feature_record()` | 样品目录 | `FeatureRecord` | filters/calibration/roi |
 | 预处理 | `quality_algorithm/preprocessing.py` | `PreprocessorState`, `fit_transform_preprocessor()` | 特征矩阵 | RAW/SNV/MSC 后矩阵 | numpy |
 | 模型 IO | `quality_algorithm/model_io.py` | `save_model_bundle()`, `load_model_bundle()`, `predict_feature_record()` | 模型目录、FeatureRecord | 预测数值 | joblib, preprocessing |
@@ -578,6 +580,10 @@ multispectral/<wavelength>.png
 ```
 
 Background Reference 是当前正式 Fruit Mask 方向。背景参考 JSON 与背景图放在 `runtime/background_reference/` 或本机 `config/background_reference/`，均不提交真实设备 serial、绝对路径或真实参考图；`config/background_reference.example.json` 只描述 schema。兼容性校验覆盖 image sha256、分辨率、设备 identity、camera profile、camera settings 和 illumination，参考 age 不会单独导致失效。若背景与样品尺寸不一致，算法失败为 `BACKGROUND_REFERENCE_RESOLUTION_MISMATCH`，不会 resize 或伪造 calibrated registration。旧 `legacy_color` 仍只作为兼容/离线 fallback，不代表正式背景分割。
+
+P1C-2B 起 `registration_mode="calibrated"` 在 `extract_feature_record()` 中真实可运行：RGB segmentation 与 geometric registration 解耦，`legacy_color + calibrated` 和 `background_reference + calibrated` 都先得到 RGB mask，再通过 `RegistrationProfile` warp 到 DVP2 坐标。profile 必须由参数传入或路径加载，并使用 runtime RGB/DVP2 endpoint 做校验，不能用 profile 自己和自己“自验证”。registered ROI 只构建一次，并复用于所有 enabled bands；每张 band image 必须保持同一 DVP2 shape，否则失败为 `REGISTERED_ROI_TARGET_RESOLUTION_MISMATCH`。Dark/White reflectance correction 或 uncalibrated normalization 先按原公式执行，然后用最终 eroded DVP2 mask 取 ROI mean。`roi_pixel_count` 表示最终 eroded DVP2 ROI pixel count。
+
+P1C-2B 的 erosion 在 DVP2 coordinate space 执行，不在 RGB warp 前执行。原因是 P1C-2A 是 planar homography，而真实水果是 3D 物体，边缘区域最容易因 residual parallax 映射到背景、样品托盘或阴影。默认 erosion 是 engineering provisional default，不能当作科学验证阈值；真实机器仍需 RGB Fruit Mask -> DVP2 ROI overlay 人工验收，且未来若发现滤光片切换造成 band-to-band spatial shift，再另行增加 band-specific correction。
 
 `predict_feature_record()`：
 

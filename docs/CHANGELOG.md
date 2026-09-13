@@ -2,6 +2,15 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-13 P1C-2B Registered Multispectral Conservative ROI
+
+- 修改内容：新增 `quality_algorithm/registered_roi.py`，复用 P1C-2A `RegistrationProfile`、`validate_profile_for_runtime()` 和 `warp_mask_rgb_to_multispectral()`，把 RGB Fruit Mask warp 到 DVP2 坐标后执行 post-warp conservative erosion，输出 ROI pixel counts、bbox、centroid、registration metrics、referenceBandNm、quality flags 和 timing diagnostics。
+- 修改内容：`spectral_features.py` 的 `registration_mode="calibrated"` 现在要求显式 `registration_profile`、runtime RGB endpoint 和 runtime DVP2 endpoint；缺 profile、endpoint/profile mismatch、RGB mask resolution mismatch、DVP2 target resolution mismatch、warp empty、erosion empty/too small/retained ratio too low 均失败，不做 identity fallback、resize fallback 或 ellipse fallback。
+- 修改内容：同一个 DVP2 registered ROI 在一次 feature extraction 中只构建一次，并复用于所有 enabled spectral bands；每个 band 仍逐张检查 shape，某 band resolution mismatch 会失败。
+- 修改内容：保留原有 Dark/White `reflectance_correction()` 与 uncalibrated fallback 数学不变；calibrated mode 下 `roi_pixel_count` 表示最终 eroded DVP2 ROI pixel count。
+- 修改内容：新增 `manual_registered_roi_test.py`，可从 RGB binary mask、DVP2 grayscale image 和 registration profile 输出 `rgb_mask.png`、`warped_mask.png`、`eroded_mask.png`、`overlay_warped.png`、`overlay_eroded.png` 与 `diagnostics.json`，仅用于人工 alignment 检查。
+- 验收状态：P1C-2B SOFTWARE PASS 目标；planar homography 不是 3D fruit surface 的 pixel-perfect registration，post-warp erosion 只是降低边缘背景/托盘/阴影污染风险的 engineering provisional default。REAL HARDWARE ROI ACCEPTANCE PENDING，REAL BAND-TO-BAND SHIFT ACCEPTANCE PENDING。
+
 ## 2026-09-12 P1C-2A.5 Background Reference Fruit Segmentation
 
 - 修改内容：正式 Fruit Mask 方向从 SAM3 改为 Background Reference。原因：当前应用是固定暗箱/相机/光源环境，无训练数据、无 GPU 生产环境、不能引入大模型 checkpoint，也不希望为每种水果维护颜色阈值；背景参考差分更可解释、离线、低维护。

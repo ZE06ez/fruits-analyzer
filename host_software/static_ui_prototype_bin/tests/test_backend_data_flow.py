@@ -201,7 +201,8 @@ class BackendDataFlowTests(unittest.TestCase):
             )
 
     def wait_job(self, job_id: str) -> dict:
-        for _ in range(40):
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
             job = self.get_json(f"/api/jobs/{job_id}")["job"]
             if job["status"] in {"done", "failed", "cancelled"}:
                 return job

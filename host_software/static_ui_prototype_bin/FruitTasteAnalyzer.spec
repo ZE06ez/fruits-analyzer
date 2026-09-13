@@ -28,6 +28,7 @@ a = Analysis(
         'quality_algorithm.background_reference',
         'quality_algorithm.background_segmenter',
         'quality_algorithm.mask_quality',
+        'quality_algorithm.registered_roi',
         'quality_algorithm.spectral_features',
         'quality_algorithm.model_io',
         'quality_algorithm.preprocessing',
