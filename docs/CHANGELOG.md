@@ -2,6 +2,15 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-12 P1C-2A RGB-DVP2 Geometric Registration Calibration
+
+- 修改内容：新增 `quality_algorithm/registration.py`，实现 RGB -> DVP2 `planar_homography_v1` 标定 profile、3x3 homography validation、checkerboard corner detection、RANSAC 单应性估计、reprojection error metrics、profile save/load、runtime endpoint/resolution mismatch guard 和 nearest-neighbor mask warp helper。
+- 修改内容：新增 `manual_registration_test.py` 离线 CLI，可输入 RGB scientific checkerboard 图与 DVP2 reference-band checkerboard 图，输出 `registration_profile.json`、`diagnostics.json`、`rgb_corners.png`、`ms_corners.png`、`rgb_warped.png`、`overlay.png` 和 `difference.png`。
+- 修改内容：新增 `config/registration_profile.example.json` 作为可提交参考；运行时 `config/registration_profile.json` 和 `manual_registration_output/` 被 Git 忽略，不提交本机标定结果或真实设备绑定状态。
+- 修改内容：新增 registration 单元测试，覆盖 profile serialize/deserialize、矩阵校验、identity/translation/perspective homography、mask warp、设备/分辨率错用拦截、checkerboard failure、insufficient points、metrics、malformed profile、runtime profile gitignore 和现有 identity ROI path。
+- 修改文件：`.gitignore`、`host_software/static_ui_prototype_bin/quality_algorithm/registration.py`、`host_software/static_ui_prototype_bin/manual_registration_test.py`、`host_software/static_ui_prototype_bin/config/registration_profile.example.json`、`host_software/static_ui_prototype_bin/tests/test_registration.py`、项目文档。
+- 是否影响原有功能：不修改 UI，不修改 RGB scientific capture、preview restore、YUY2 policy、PNG metadata、DVP2、STM32、钨灯、滤光轮、Dark/White、Model Studio 或 prediction；`quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 仍未接入生产路径，待 P1C-2B。
+
 ## 2026-09-12 Two-Channel Tungsten Web Control
 
 - 修改内容：按 2026-09-11 实机确认映射修正光源语义：PB7/bit0/0x01 为钨灯1 SSR，PB8/bit1/0x02 为钨灯2 SSR，PB9/bit2/0x04 为 LED3，三路统一复用 current firmware `LED_SET=0x12` 和 STATUS `led_mask/led1_duty/led2_duty/led3_duty`，不新增或伪造 0x13 钨灯协议。

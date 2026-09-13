@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-10
+更新时间：2026-09-12
 
 ## 总体结构
 
@@ -22,6 +22,8 @@ host_software/static_ui_prototype_bin/
   camera_service/
   config/camera_settings.example.json
   config/camera_settings.json (runtime, gitignored)
+  config/registration_profile.example.json
+  config/registration_profile.json (runtime, gitignored)
   quality_prediction.py
   quality_algorithm/
   training/
@@ -79,6 +81,7 @@ launcher.py
 | 光谱配置 | `quality_algorithm/filters.py` | `FilterBand`, `load_filter_config()`, `enabled_bands()` | JSON 配置 | 启用波段列表 | json |
 | 校正 | `quality_algorithm/calibration.py` | `reflectance_correction()`, `normalize_uncalibrated()` | sample/dark/white 灰度图 | 反射率矩阵 | numpy, PIL |
 | ROI | `quality_algorithm/roi.py` | `build_rgb_fruit_mask()`, `apply_mask_to_image()` | RGB 图、光谱图 | mask 后像素 | numpy, PIL |
+| RGB-DVP2 几何配准标定 | `quality_algorithm/registration.py`, `manual_registration_test.py`, `config/registration_profile.example.json`, `config/registration_profile.json` | `RegistrationProfile`, `detect_checkerboard_corners()`, `estimate_planar_homography()`, `build_registration_profile()`, `validate_profile_for_runtime()`, `warp_mask_rgb_to_multispectral()` | RGB scientific checkerboard 图、DVP2 reference-band checkerboard 图、相机身份/分辨率、棋盘格规格 | RGB -> DVP2 planar homography profile、reprojection metrics、角点/warp/overlay/difference 可视化；运行时 profile 被 Git 忽略，example 不绑定真实设备 | OpenCV, numpy, json |
 | 特征提取 | `quality_algorithm/spectral_features.py` | `inspect_sample_structure()`, `extract_feature_record()` | 样品目录 | `FeatureRecord` | filters/calibration/roi |
 | 预处理 | `quality_algorithm/preprocessing.py` | `PreprocessorState`, `fit_transform_preprocessor()` | 特征矩阵 | RAW/SNV/MSC 后矩阵 | numpy |
 | 模型 IO | `quality_algorithm/model_io.py` | `save_model_bundle()`, `load_model_bundle()`, `predict_feature_record()` | 模型目录、FeatureRecord | 预测数值 | joblib, preprocessing |
@@ -126,6 +129,12 @@ restore state 固定为 `not_attempted/restored/partial/failed/device_mismatch`�
 P1C-1 起 RGB preview profile 与 RGB scientific profile 分开。Preview 默认 `3840x2160 @25fps MJPG`，只用于实时浏览器预览和 latest JPEG cache；Scientific 默认 `1920x1080 @5fps YUY2`，只用于正式 `CameraManager.capture_rgb_frame()`、CaptureCoordinator RGB PNG、RGB dataset、morphology、ROI 和后续 RGB ↔ multispectral registration。缺少运行时 `config/camera_settings.json` 时 store 会自动生成包含默认 `rgb.scientificProfile` 的本机配置；如果已有持久化文件缺少该字段或字段不完整，正式 capture 失败为 `RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED`，不得静默继承 preview MJPG。
 
 正式 RGB capture 流程为：暂停 preview worker，释放 preview camera handle，应用 scientific profile，读取 actual width/height/fps/FOURCC，按 actual transport 调用 `rgb_scientific.classify_rgb_scientific_transport()`，取 RGB frame，保存 lossless PNG，写 metadata，关闭 scientific capture，再恢复 preview profile 并在原先 preview 运行时重启 preview worker。`MJPG/MJPEG/JPEG/H264/H265` 直接判为 lossy 且 `scientificCaptureApproved=false`；`YUY2/YUYV/UYVY` 判为 `sourceCompression=uncompressed_but_chroma_subsampled`、`chromaSubsampling=4:2:2`、`scientificStrictLossless=false`、`scientificCaptureApproved=true`、`scientificQualityClass=uncompressed_422`；RAW Bayer/RGB24/BGR24 等完整未压缩 transport 才是 `scientificStrictLossless=true`、`scientificQualityClass=strict_lossless`。失败时在 PNG 保存前抛出 `RGB_SCIENTIFIC_TRANSPORT_LOSSY`、`RGB_SCIENTIFIC_LOSSLESS_UNAVAILABLE`、`RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED` 或 `RGB_SCIENTIFIC_PROFILE_MISMATCH`；`CaptureCoordinator` 也会读取 capture metadata 做第二层 guard。
+
+### RGB-DVP2 Geometric Registration
+
+P1C-2A 新增离线几何配准标定边界，不改变正式特征提取路径。`manual_registration_test.py` 从 RGB scientific checkerboard 图和 DVP2 reference-band checkerboard 图检测 OpenCV checkerboard inner corners，使用 `cv2.findHomography(..., RANSAC)` 估计 RGB pixel -> DVP2 pixel 的 `planar_homography_v1` 3x3 矩阵，并保存 `RegistrationProfile`。profile schema 记录 `schemaVersion`、`method`、RGB/DVP2 endpoint identity 与分辨率、`referenceBandNm`、棋盘格规格、`matrixRgbToMultispectral`、calibration plane 说明、`rmsePx/meanErrorPx/maxErrorPx/p95ErrorPx`、source pairs、createdAt 和 valid。
+
+运行时 profile 默认路径为 `config/registration_profile.json`，属于本机标定结果并被 Git 忽略；`config/registration_profile.example.json` 只作为可提交参考，不绑定真实 serial/stableId。`validate_profile_for_runtime()` 会校验 schema/method、3x3 矩阵有限且非奇异、RGB/DVP2 分辨率、输出尺寸，以及 profile 已记录的 stableId/serial/deviceIndex，错用不同设备或不同分辨率时抛出 `REGISTRATION_PROFILE_MISMATCH`。P1C-2A 只提供 `warp_mask_rgb_to_multispectral()` 和可视化/诊断工具，`quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 仍不接入生产路径，待 P1C-2B 完成。
 
 RGB frame metadata 增加或保留 `requestedFourcc`、`actualFourcc`、`requestedWidth`/`requestedHeight`/`requestedFps` 所在的 `requestedSettings`、`actualWidth`/`actualHeight`/`actualFps` 所在的 `actualSettings`、`sourcePixelFormat`、`sourceCompression`、`chromaSubsampling`、`scientificStrictLossless`、`scientificCaptureApproved`、`scientificQualityClass`、`outputFormat=PNG`、`outputLossless=true`、`previewProfile`、`scientificProfile`、`settingsSource` 和 device identity。`DeviceManager.capture_readiness()` 调用 `CameraManager.rgb_scientific_status()`，即使 preview PASS，只要 scientific capture 未 approved，True Capture readiness 仍 BLOCK。
 
