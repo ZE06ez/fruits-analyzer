@@ -101,6 +101,39 @@ class BackendDataFlowTests(unittest.TestCase):
         })["sample"]
         self.assertTrue(sample["hasSample"])
 
+    def test_training_capture_sample_can_be_created_without_models(self):
+        catalog = self.get_json("/api/quality-models")
+        self.assertEqual(catalog["fruitTypes"], [])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "Duke_001",
+            "sampleMode": "training_capture",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+
+        self.assertEqual(sample["sampleMode"], "training_capture")
+        self.assertEqual(sample["fruitType"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+        self.assertEqual(sample["selectedSscModelId"], "")
+        self.assertEqual(sample["selectedTaModelId"], "")
+        self.assertEqual(sample["selectedPhModelId"], "")
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["fruit_type"], "蓝莓")
+        self.assertEqual(metadata["variety"], "Duke")
+        self.assertEqual(metadata["sample_id"], sample["sampleId"])
+        self.assertEqual(metadata["sample_name"], "Duke_001")
+
+    def test_training_capture_frontend_does_not_block_on_missing_models(self):
+        app_js = (Path(__file__).resolve().parents[1] / "app.js").read_text(encoding="utf-8")
+        index_html = (Path(__file__).resolve().parents[1] / "index.html").read_text(encoding="utf-8")
+        self.assertIn('value="training_capture"', index_html)
+        self.assertIn("此样品不要求已有预测模型", index_html)
+        self.assertIn('sampleMode: state.sampleMode', app_js)
+        self.assertNotIn("暂无 Published / Default 模型，请先在 Model Studio 发布模型。", app_js)
+
     def test_true_capture_prepared_remains_false_until_capture_coordinator_exists(self):
         prep = self.post_json("/api/device-preparation", {
             "connect": True,

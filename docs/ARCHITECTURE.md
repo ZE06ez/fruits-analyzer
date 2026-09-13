@@ -421,6 +421,13 @@ app.js createNewSample()
 
 `metadata.json.image_directories` 保存本次实际使用的 RGB 与多光谱子目录名。`sample_rotation` 是样品台多视角计划；`filter_wheel_rotation` 是滤光片转轮波段切换说明。两者控制域独立，不能混用。
 
+P1D-1 起样品创建增加 `sample_mode`：
+
+- `inspection`：正常检测样品，继续通过 `/api/quality-models`、`resolve_model_id()`、Default 和 `generic` fallback 匹配 SSC/TA/pH 模型。
+- `training_capture`：训练数据采集样品，不要求任何 Published/Default/Production 模型存在；`fruit_type` 和 `variety` 来自用户输入并写入 Sample `metadata.json`，`selected_ssc_model_id`、`selected_ta_model_id`、`selected_ph_model_id` 保持空字符串是合法状态。
+
+Sample identity 的权威字段为 `sample_id`、`sample_name`、`sample_mode`、`fruit_type`、`variety`。Model availability 只影响 Inspection 的检测模型选择，不决定能否创建 Training Capture Sample。
+
 ### 路径选择
 
 ```text
@@ -634,6 +641,8 @@ host_software/static_ui_prototype_bin/model_studio_data/
 External Sample Folder
   -> validate_sample_folder()
   -> import_samples()
+     -> read Sample metadata identity first
+     -> validate / initialize Dataset scope
   -> COPY to model_studio_data/datasets/<dataset_id>/samples/<sample_id>
   -> samples.source_path = external source
   -> samples.local_path/storage_path = managed local copy
@@ -669,13 +678,16 @@ Dataset archive/delete
 Dataset local storage
   -> import_labels()
   -> create_dataset_version()
+     -> snapshot Sample identity + labels
   -> sample_snapshot_json + label_snapshot_json
   -> generate_features()
   -> model_studio/artifacts/features/<dataset_version>_features.csv
   -> create_experiment()
+     -> inherit Dataset scope
   -> create_training_job()
   -> training.train_one()
   -> model_studio/models/candidates/<experiment>/<target>_<pre>_<model>/
+  -> candidate metadata keeps fruit_type / variety / target
   -> models.status = Candidate
   -> Model Compare shows Algorithm + Preprocessing variants
   -> publish_model()
@@ -689,6 +701,7 @@ Dataset local storage
 模型发布约束：
 
 - Candidate 不会自动进入主程序。
+- Sample -> Dataset -> Dataset Version -> Training Experiment -> Model 是 fruit_type/variety 的传递方向。`import_samples()` 优先读取 Sample `metadata.json`；只有历史 Sample 缺少 fruit/variety 时才 fallback 到 Dataset scope。Dataset 空 scope 且导入样品只有一个 scope 时自动继承；出现多个 scope 时失败为 `DATASET_SAMPLE_SCOPE_CONFLICT`，不自动混合或拆分。
 - Published 可被主检测工作站手动选择，但 Default 才会作为对应 fruit_type/variety/target 的自动默认。
 - 同一 `fruit_type + variety + target` 后端只允许一个 Default；设置新 Default 时旧 Default 自动回到 Published，不删除原模型。
 - Archived 保留数据库记录、模型文件和 lineage，但不进入 `/api/quality-models`，因此不参与主检测工作站自动或手动选择。

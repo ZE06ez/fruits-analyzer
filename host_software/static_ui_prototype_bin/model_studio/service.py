@@ -35,6 +35,7 @@ EXCLUDE_REASONS = {
 PUBLISHED_STATUSES = {"Published", "Default", "Production"}
 MODEL_STATUSES_VISIBLE_TO_STATION = tuple(sorted(PUBLISHED_STATUSES))
 DATASET_PRODUCTION_REFERENCE_ERROR = "DATASET_HAS_PRODUCTION_MODEL_REFERENCES"
+DATASET_SAMPLE_SCOPE_CONFLICT = "DATASET_SAMPLE_SCOPE_CONFLICT"
 
 
 class ModelStudioError(RuntimeError):
@@ -589,6 +590,14 @@ class ModelStudioService:
         samples_root = local_root / "samples"
         samples_root.mkdir(parents=True, exist_ok=True)
         sample_dirs = self._sample_dirs(root)
+        import_reports = [(sample_dir, self._sample_import_report(sample_dir)) for sample_dir in sample_dirs]
+        identities = [
+            self._sample_identity_from_report(sample_dir, import_report, dataset)
+            for sample_dir, import_report in import_reports
+            if import_report["status"] != "Invalid"
+        ]
+        scope_info = self._resolve_dataset_scope_for_import(dataset, identities)
+        dataset = scope_info["dataset"]
         imported = 0
         new_count = 0
         existing_count = 0
@@ -597,14 +606,15 @@ class ModelStudioService:
         warnings: list[str] = []
         duplicates: list[dict] = []
         calibration_statuses: list[str] = []
-        for sample_dir in sample_dirs:
-            import_report = self._sample_import_report(sample_dir)
+        for sample_dir, import_report in import_reports:
             report = import_report["structure"]
             if import_report["status"] == "Invalid":
                 skipped += 1
                 warnings.append(f"{sample_dir.name}: " + "; ".join(import_report.get("warnings") or ["invalid sample folder"]))
                 continue
-            duplicate = self._find_duplicate_sample(dataset_id, sample_dir.name, sample_dir)
+            identity = self._sample_identity_from_report(sample_dir, import_report, dataset)
+            source_sample_id = identity["sample_id"]
+            duplicate = self._find_duplicate_sample(dataset_id, source_sample_id, sample_dir)
             if duplicate:
                 conflicts += 1
                 existing_count += 1
@@ -614,7 +624,7 @@ class ModelStudioService:
                     "localPath": duplicate.get("local_path") or duplicate.get("storage_path") or "",
                 })
                 if duplicate_policy == "cancel":
-                    raise ModelStudioError(f"sample already exists: {sample_dir.name}")
+                    raise ModelStudioError(f"sample already exists: {source_sample_id}")
                 if duplicate_policy == "skip":
                     skipped += 1
                     continue
@@ -623,7 +633,7 @@ class ModelStudioService:
                 refs = self.sample_references(dataset_id, duplicate["sample_id"])
                 if refs["blocked"]:
                     raise ModelStudioError(f"sample is referenced by historical artifacts and cannot be replaced: {duplicate['sample_id']}")
-            sample_id = sample_dir.name if not duplicate else (duplicate["sample_id"] if replacing else self._unique_sample_id(dataset_id, sample_dir.name))
+            sample_id = source_sample_id if not duplicate else (duplicate["sample_id"] if replacing else self._unique_sample_id(dataset_id, source_sample_id))
             local_sample_dir = Path(duplicate.get("local_path") or duplicate.get("storage_path")) if replacing else self._unique_sample_path(samples_root, sample_id)
             if replacing and local_sample_dir.exists():
                 local_root = (Path(dataset.get("local_path") or dataset["storage_path"]) / "samples").resolve()
@@ -636,9 +646,9 @@ class ModelStudioService:
             row = {
                 "dataset_id": dataset_id,
                 "sample_id": sample_id,
-                "sample_name": sample_dir.name,
-                "fruit_type": dataset.get("fruit_type") or "",
-                "variety": dataset.get("variety") or "",
+                "sample_name": identity["sample_name"],
+                "fruit_type": identity["fruit_type"],
+                "variety": identity["variety"],
                 "storage_path": str(local_sample_dir),
                 "source_path": str(sample_dir),
                 "local_path": str(local_sample_dir),
@@ -649,6 +659,7 @@ class ModelStudioService:
                 "available_bands": json.dumps(report.get("available_bands") or []),
                 "calibration_status": str(report["calibration_status"]),
                 "data_status": "complete" if report["complete"] else "incomplete",
+                "capture_time": identity["capture_time"],
                 "quality_json": json.dumps(import_report, ensure_ascii=False),
                 "created_at": _now(),
                 "imported_at": _now(),
@@ -670,6 +681,7 @@ class ModelStudioService:
             "skipped": skipped,
             "duplicates": duplicates[:50],
             "warnings": warnings[:50],
+            "scope": scope_info["scope"],
         }
 
     def import_labels(self, dataset_id: str, labels_csv: str | Path) -> dict:
@@ -960,6 +972,7 @@ class ModelStudioService:
             samples = [dict(row) for row in conn.execute(
                 """
                 SELECT sample_id,storage_path,source_path,local_path,include_status,ssc,ta,ph
+                ,fruit_type,variety,sample_name
                 FROM samples
                 WHERE dataset_id=? AND include_status!='Excluded'
                 ORDER BY sample_id
@@ -996,6 +1009,9 @@ class ModelStudioService:
                     "storage_path": sample.get("local_path") or sample.get("storage_path") or "",
                     "local_path": sample.get("local_path") or sample.get("storage_path") or "",
                     "source_path": sample.get("source_path") or "",
+                    "sample_name": sample.get("sample_name") or sample_id,
+                    "fruit_type": sample.get("fruit_type") or dataset.get("fruit_type") or "",
+                    "variety": _normalize_variety(sample.get("variety") or dataset.get("variety") or ""),
                     "ssc": label.get("ssc"),
                     "ta": label.get("ta"),
                     "ph": label.get("ph"),
@@ -1133,8 +1149,8 @@ class ModelStudioService:
                     payload.get("validation_method") or payload.get("validationMethod") or "GroupKFold",
                     "Created",
                     version["dataset_version_id"],
-                    payload.get("fruit_type") or payload.get("fruitType") or dataset.get("fruit_type") or "",
-                    _normalize_variety(payload.get("variety") or dataset.get("variety") or ""),
+                    dataset.get("fruit_type") or "",
+                    _normalize_variety(dataset.get("variety") or ""),
                     payload.get("parent_experiment_id") or payload.get("parentExperimentId") or None,
                     payload.get("parent_model_id") or payload.get("parentModelId") or None,
                     _now(),
@@ -1650,6 +1666,14 @@ class ModelStudioService:
         warnings = list(structure.get("warnings") or [])
         metadata_path = sample_dir / "metadata.json"
         metadata_status = "present" if metadata_path.exists() and metadata_path.is_file() else "missing"
+        metadata = {}
+        if metadata_status == "present":
+            try:
+                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                metadata = {}
+                warnings.append("metadata.json unreadable")
         if metadata_status == "missing":
             warnings.append("missing metadata.json")
         if not structure["valid"]:
@@ -1669,8 +1693,74 @@ class ModelStudioService:
             "white_count": _calibration_count(sample_dir, "white"),
             "calibration_status": structure.get("calibration_status") or "missing",
             "metadata_status": metadata_status,
+            "metadata": metadata,
             "warnings": warnings,
             "structure": structure,
+        }
+
+    def _sample_identity_from_report(self, sample_dir: Path, import_report: dict, dataset: dict) -> dict:
+        metadata = import_report.get("metadata") or {}
+        fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
+        variety = str(metadata.get("variety") or "").strip()
+        if not fruit_type:
+            fruit_type = str(dataset.get("fruit_type") or "").strip()
+        if not variety:
+            variety = str(dataset.get("variety") or "").strip()
+        return {
+            "sample_id": str(metadata.get("sample_id") or metadata.get("sampleId") or sample_dir.name).strip() or sample_dir.name,
+            "sample_name": str(metadata.get("sample_name") or metadata.get("sampleName") or sample_dir.name).strip() or sample_dir.name,
+            "sample_mode": str(metadata.get("sample_mode") or metadata.get("sampleMode") or "").strip(),
+            "fruit_type": fruit_type,
+            "variety": _normalize_variety(variety),
+            "capture_time": str(
+                metadata.get("capture_time")
+                or metadata.get("captureTime")
+                or metadata.get("captured_at")
+                or metadata.get("capturedAt")
+                or metadata.get("created_at")
+                or metadata.get("createdAt")
+                or ""
+            ).strip(),
+        }
+
+    def _resolve_dataset_scope_for_import(self, dataset: dict, identities: list[dict]) -> dict:
+        scoped = [
+            {"fruitType": item["fruit_type"], "variety": _normalize_variety(item["variety"])}
+            for item in identities
+            if item.get("fruit_type")
+        ]
+        counts: dict[tuple[str, str], dict] = {}
+        for item in scoped:
+            key = (item["fruitType"].casefold(), item["variety"].casefold())
+            counts.setdefault(key, {"fruitType": item["fruitType"], "variety": item["variety"], "count": 0})
+            counts[key]["count"] += 1
+        dataset_fruit = str(dataset.get("fruit_type") or "").strip()
+        dataset_variety = _normalize_variety(dataset.get("variety") or "")
+        if dataset_fruit:
+            expected = (dataset_fruit.casefold(), dataset_variety.casefold())
+            if any(key != expected for key in counts):
+                raise ModelStudioError(f"{DATASET_SAMPLE_SCOPE_CONFLICT}: {json.dumps({'scopes': list(counts.values())}, ensure_ascii=False)}")
+            return {
+                "dataset": dataset,
+                "scope": {"fruitType": dataset_fruit, "variety": dataset_variety, "source": "dataset"},
+            }
+        if len(counts) > 1:
+            raise ModelStudioError(f"{DATASET_SAMPLE_SCOPE_CONFLICT}: {json.dumps({'scopes': list(counts.values())}, ensure_ascii=False)}")
+        if len(counts) == 1:
+            scope = next(iter(counts.values()))
+            with self.connect() as conn:
+                conn.execute(
+                    "UPDATE datasets SET fruit_type=?, variety=?, updated_at=? WHERE dataset_id=?",
+                    (scope["fruitType"], scope["variety"], _now(), dataset["dataset_id"]),
+                )
+            updated = self.get_dataset(dataset["dataset_id"])
+            return {
+                "dataset": updated,
+                "scope": {"fruitType": scope["fruitType"], "variety": scope["variety"], "source": "sample_metadata"},
+            }
+        return {
+            "dataset": dataset,
+            "scope": {"fruitType": dataset_fruit, "variety": dataset_variety, "source": "unspecified"},
         }
 
     def _find_duplicate_sample(self, dataset_id: str, sample_id: str, source_path: Path) -> dict | None:
@@ -1749,9 +1839,11 @@ class ModelStudioService:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,sample_name,storage_path,source_path,local_path,rgb_count,multispectral_count,dark_count,white_count,available_bands,calibration_status,data_status,quality_json,created_at,imported_at)
-                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:sample_name,:storage_path,:source_path,:local_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:available_bands,:calibration_status,:data_status,:quality_json,:created_at,:imported_at)
+                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,sample_name,storage_path,source_path,local_path,rgb_count,multispectral_count,dark_count,white_count,available_bands,calibration_status,data_status,capture_time,quality_json,created_at,imported_at)
+                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:sample_name,:storage_path,:source_path,:local_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:available_bands,:calibration_status,:data_status,:capture_time,:quality_json,:created_at,:imported_at)
                 ON CONFLICT(dataset_id,sample_id) DO UPDATE SET
+                  fruit_type=excluded.fruit_type,
+                  variety=excluded.variety,
                   storage_path=excluded.storage_path,
                   source_path=excluded.source_path,
                   local_path=excluded.local_path,
@@ -1763,6 +1855,7 @@ class ModelStudioService:
                   available_bands=excluded.available_bands,
                   calibration_status=excluded.calibration_status,
                   data_status=excluded.data_status,
+                  capture_time=excluded.capture_time,
                   quality_json=excluded.quality_json,
                   imported_at=excluded.imported_at
                 """,

@@ -788,6 +788,10 @@ body.model-advanced .model-overview-panel {
   grid-column: 1 / -1;
 }
 
+.modal-grid .wide {
+  grid-column: 1 / -1;
+}
+
 .sample-create-grid label {
   min-width: 0;
 }
@@ -815,6 +819,39 @@ body.model-advanced .model-overview-panel {
 
 .sample-create-actions button:not(.primary-action) {
   flex: 0 1 120px;
+}
+
+.sample-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-width: 420px;
+}
+
+.sample-mode-toggle label {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  color: var(--soft);
+  background: rgba(15, 23, 42, 0.48);
+  cursor: pointer;
+}
+
+.sample-mode-toggle input {
+  width: auto;
+  accent-color: var(--blue);
+}
+
+.sample-mode-toggle label:has(input:checked) {
+  border-color: rgba(103, 232, 249, 0.62);
+  color: #f8fafc;
+  background: rgba(14, 165, 233, 0.16);
 }
 
 .rotation-capture-card {
