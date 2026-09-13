@@ -8,8 +8,11 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 from .calibration import CALIBRATED, UNCALIBRATED, load_grayscale_float, normalize_uncalibrated, reflectance_correction
+from .background_reference import BackgroundReference, load_background_reference, validate_background_reference
+from .background_segmenter import BackgroundReferenceSegmenter
 from .filters import FilterBand, enabled_bands, expected_wavelengths
 from .roi import apply_mask_to_image, build_rgb_fruit_mask
+from .segmentation import FruitSegmenter
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -143,6 +146,11 @@ def extract_feature_record(
     spectral_dir: str = "multispectral",
     allow_uncalibrated: bool = True,
     registration_mode: str = "identity",
+    segmentation_mode: str = "legacy_color",
+    fruit_type: str | dict | None = None,
+    fruit_segmenter: FruitSegmenter | None = None,
+    background_reference: BackgroundReference | str | Path | None = None,
+    camera_metadata: dict | None = None,
 ) -> FeatureRecord:
     root = Path(sample_dir).expanduser()
     bands = enabled_bands(filters)
@@ -156,7 +164,20 @@ def extract_feature_record(
     rgb_files = list_images(root / rgb_dir)
     with Image.open(rgb_files[0]) as image:
         rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-    mask = build_rgb_fruit_mask(rgb)
+    if segmentation_mode == "legacy_color":
+        mask = build_rgb_fruit_mask(rgb)
+    elif segmentation_mode == "background_reference":
+        reference = _resolve_background_reference(background_reference)
+        validation = validate_background_reference(reference, sample_shape=rgb.shape[:2], camera_metadata=camera_metadata or {})
+        if not validation.valid:
+            raise FeatureExtractionError(validation.errorCode or "BACKGROUND_REFERENCE_INVALID")
+        segmenter = fruit_segmenter or BackgroundReferenceSegmenter()
+        segmentation = segmenter.segment(rgb, background_reference=reference, camera_metadata=camera_metadata or {})
+        if not segmentation.valid or segmentation.mask is None:
+            raise FeatureExtractionError(segmentation.errorCode or "BACKGROUND_SEGMENTATION_FAILED")
+        mask = segmentation.mask
+    else:
+        raise FeatureExtractionError(f"unsupported segmentation mode: {segmentation_mode}")
     if np.count_nonzero(mask) == 0:
         raise FeatureExtractionError("empty ROI")
 
@@ -208,4 +229,15 @@ def _bad_images(files: list[Path], mode: str) -> list[str]:
         except Exception:
             bad.append(path.name)
     return bad
+
+
+def _resolve_background_reference(reference: BackgroundReference | str | Path | None) -> BackgroundReference:
+    if reference is None:
+        raise FeatureExtractionError("BACKGROUND_REFERENCE_MISSING")
+    if isinstance(reference, BackgroundReference):
+        return reference
+    try:
+        return load_background_reference(reference)
+    except Exception as exc:
+        raise FeatureExtractionError("BACKGROUND_REFERENCE_INVALID") from exc
 

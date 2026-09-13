@@ -12,6 +12,7 @@ a = Analysis(
         ('assets', 'assets'),
         ('sample_data', 'sample_data'),
         ('model_studio', 'model_studio'),
+        ('config', 'config'),
     ],
     hiddenimports=[
         'PIL',
@@ -23,6 +24,10 @@ a = Analysis(
         'training.train',
         'quality_algorithm.dataset',
         'quality_algorithm.filters',
+        'quality_algorithm.segmentation',
+        'quality_algorithm.background_reference',
+        'quality_algorithm.background_segmenter',
+        'quality_algorithm.mask_quality',
         'quality_algorithm.spectral_features',
         'quality_algorithm.model_io',
         'quality_algorithm.preprocessing',

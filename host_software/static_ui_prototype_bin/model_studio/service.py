@@ -227,6 +227,7 @@ class ModelStudioService:
                     resource_id TEXT,
                     message TEXT
                 );
+
                 """
             )
             self._migrate_schema(conn)
@@ -409,6 +410,7 @@ class ModelStudioService:
             self._write_labels_csv_file(labels_csv, [])
         now = _now()
         wavelengths = expected_wavelengths(load_filter_config())
+        fruit_type = str(payload.get("fruit_type") or payload.get("fruitType") or "").strip()
         with self.connect() as conn:
             conn.execute(
                 """
@@ -418,7 +420,7 @@ class ModelStudioService:
                 (
                     dataset_id,
                     name,
-                    payload.get("fruit_type") or payload.get("fruitType") or "",
+                    fruit_type,
                     _normalize_variety(payload.get("variety") or ""),
                     payload.get("description") or "",
                     now,

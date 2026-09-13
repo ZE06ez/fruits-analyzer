@@ -213,6 +213,8 @@ class BackendDataFlowTests(unittest.TestCase):
             self.post_json("/api/new-sample", {"sampleName": "", "fruitType": "blueberry", "saveRootDir": str(self.root / "FruitData")})
         with self.assertRaises(urllib.error.HTTPError):
             self.post_json("/api/new-sample", {"sampleName": "蓝莓01", "fruitType": "blueberry"})
+        localized = self.post_json("/api/new-sample", {"sampleName": "sample01", "fruitType": "蓝莓", "saveRootDir": str(self.root / "FruitData")})["sample"]
+        self.assertEqual(localized["fruitType"], "蓝莓")
         first = self.post_json("/api/new-sample", {
             "sampleName": "蓝莓实验A-第5颗",
             "fruitType": "blueberry",

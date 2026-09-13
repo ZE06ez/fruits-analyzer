@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "method": "planar_homography_v1",
+  "rgb": {
+    "stableId": "",
+    "deviceIndex": 1,
+    "serial": "",
+    "width": 1920,
+    "height": 1080
+  },
+  "multispectral": {
+    "stableId": "",
+    "deviceIndex": null,
+    "serial": "",
+    "width": 2048,
+    "height": 1200
+  },
+  "referenceBandNm": 560,
+  "target": {
+    "type": "checkerboard",
+    "innerCornersCols": 9,
+    "innerCornersRows": 6,
+    "squareSizeMm": 20.0
+  },
+  "matrixRgbToMultispectral": [
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0]
+  ],
+  "calibrationPlane": "Planar checkerboard placed near representative fruit center depth; planar homography is not a perfect 3D registration.",
+  "metrics": {
+    "pointCount": 54,
+    "rmsePx": 0.0,
+    "meanErrorPx": 0.0,
+    "maxErrorPx": 0.0,
+    "p95ErrorPx": 0.0
+  },
+  "createdAt": "1970-01-01T00:00:00Z",
+  "sourcePairs": [],
+  "valid": true
+}

@@ -1271,9 +1271,7 @@ class CameraServiceTests(unittest.TestCase):
         )
         manager.start_multispectral_preview({"width": 160, "height": 90, "fps": 15})
         self.assertTrue(manager._multispectral_preview_ready_event.wait(timeout=1.0))
-        deadline = time.time() + 1.0
-        while camera.capture_count < 3 and time.time() < deadline:
-            time.sleep(0.01)
+        self.assertTrue(self.wait_for_multispectral_preview_frame(manager, min_frame_id=3, timeout=1.0))
         manager._multispectral_preview_stop_event.set()
 
         data, meta = manager.multispectral_preview_jpeg()
@@ -1286,6 +1284,17 @@ class CameraServiceTests(unittest.TestCase):
         self.assertEqual(meta["sourceTimestamp"], 1000 + meta["frameId"])
         self.assertTrue(meta["lowLatency"])
         self.assertIn("droppedFrames", meta)
+
+    def wait_for_multispectral_preview_frame(self, manager: CameraManager, *, min_frame_id: int, timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with manager._multispectral_latest_lock:
+                cached = manager._multispectral_latest_jpeg
+                frame_id = (cached[1] or {}).get("frameId") if cached else None
+            if frame_id is not None and frame_id >= min_frame_id:
+                return True
+            time.sleep(0.01)
+        return False
 
     def test_multispectral_preview_polling_reads_cache_without_request_backlog(self):
         camera = LowLatencyPreviewCamera()

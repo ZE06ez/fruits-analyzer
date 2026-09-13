@@ -1,0 +1,37 @@
+{
+  "referenceId": "example_background_reference",
+  "imagePath": "runtime/background_reference/background.png",
+  "imageSha256": "replace-with-background-image-sha256",
+  "width": 3840,
+  "height": 2160,
+  "channels": 3,
+  "dtype": "uint8",
+  "capturedAt": "2026-01-01 00:00:00",
+  "device": {
+    "role": "rgb_scientific",
+    "stableId": "",
+    "deviceIndex": ""
+  },
+  "cameraProfile": {
+    "width": 3840,
+    "height": 2160,
+    "actualFourcc": "MJPG",
+    "qualityClass": "scientific_rgb"
+  },
+  "cameraSettings": {
+    "exposure": "",
+    "gain": "",
+    "autoExposure": "",
+    "whiteBalance": "",
+    "autoWhiteBalance": ""
+  },
+  "illumination": {
+    "captureConditionId": "",
+    "lightSource": "",
+    "intensity": ""
+  },
+  "stage": {
+    "backgroundOnly": true
+  },
+  "notes": "Example schema only; do not commit real device serials, absolute paths, or production reference hashes."
+}

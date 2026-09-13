@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-10
+更新时间：2026-09-12
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -92,7 +92,7 @@ UI
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
 - `host_software/static_ui_prototype_bin/quality_prediction.py`：`SampleSession`、`PredictionResult`、SSC/TA/pH 预测入口。
-- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、特征提取、预处理、模型 IO。
+- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、RGB-DVP2 几何配准标定、背景参考果实分割、特征提取、预处理、模型 IO。P1C-2A 后 `registration.py` 支持棋盘格角点检测、RGB -> DVP2 平面单应性估计、profile JSON 读写、reprojection metrics、设备/分辨率错用校验和可视化输出；运行时 `config/registration_profile.json` 被 Git 忽略，`config/registration_profile.example.json` 只作为不绑定真实设备的参考。P1C-2A.5 后正式 Fruit Mask 方向改为 Background Reference：`background_reference.py` 管理背景图 metadata、sha256 和相机/光照兼容性校验，`background_segmenter.py` 使用 RGB absolute difference + OpenCV Lab distance、固定阈值、形态学和连通域诊断生成 mask；SAM3 生产分割方向已放弃，不进入主程序依赖。
 - `host_software/static_ui_prototype_bin/training/`：特征 CSV 构建、PLSR/SVR/RF 训练、评估。
 - `host_software/static_ui_prototype_bin/model_studio/service.py`：SQLite 数据集、样品、标签、训练实验、候选模型、发布模型管理。
 - `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`：P1B 真实硬件与采集系统正式验收规范，逐项覆盖 RGB、DVP2、STM32、风扇、LED3、推杆、滤光轮、Dark/White、多波段、样品台、多视角、数据完整性、metadata、安全和 true capture gate；未现场验证项默认 `NOT TESTED`，真实样品台和完整 true capture 当前为 `BLOCKED`。
@@ -220,7 +220,7 @@ UI
 | 真实电机/滤光轮串口 | PARTIAL | 已有两字节串口层、滤光轮 HOME/相对旋转、状态查询和测试；P1B-5 已在 Coordinator sequence 中通过高层 API 调用 HOME/相对移动/位置查询；真实滤光轮现场验收和绝对定位 contract 仍待确认 |
 | 真实光源控制 | PARTIAL/REAL VERIFIED | PB7/PB8 两路钨灯 SSR 已通过 `manual_stm32_test.py --led-mask` 实机确认；主 UI 已提供安全手动测试入口，后端限时自动关闭并用 fresh STATUS 确认。PB9/LED3 仍可独立 on/off 且不会清除钨灯位。亮度闭环、双钨灯同时开启、RGB 正式照明映射、硬件级门联锁和最终光源验收仍未完成 |
 | 门控/急停/温度/报警 | PARTIAL/TODO | 升降门、急停、故障码已有控制/查询；温度和报警扩展未接入 |
-| 标定配准 | PARTIAL/TODO | 暗/白校正有；RGB 到多光谱 calibrated registration 未接入 |
+| 标定配准 | PARTIAL/SOFTWARE IMPLEMENTED | 暗/白校正有；P1C-2A 新增 RGB -> DVP2 平面单应性离线标定模块和 `manual_registration_test.py`，可保存 registration profile、reprojection error metrics 与角点/overlay/difference 可视化；`quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 生产路径仍未接入，待 P1C-2B |
 | 历史记录数据库/正式报告 | TODO/PARTIAL | Model Studio 有 SQLite；检测结果未持久化到历史库，报告为前端 TXT |
 
 ## 8. 关键设计决策
@@ -262,7 +262,8 @@ UI
 - 样品旋转平台已有角度计划、UI、metadata、离线模拟文件、P1B-7 `SampleStage` 软件抽象和 P1B-7.5B status/API/UI 调试边界；仓库内未找到独立样品台控制器协议，仍缺少真实控制板身份、通信方式、HOME、位置回读、稳定确认和报警/超时 contract 的硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、两路钨灯限时手动测试/立即关闭/全部钨灯关闭、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；P1B-7.5B 新增样品旋转台状态和调试按钮，但默认因 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 禁用真实动作。P1B-8 在样品采集页新增 True Hardware Capture 面板；RGB 与 DVP2 相机设置页预览已接入；真实样品台旋转、RGB 正式照明映射、双钨灯验收和完整多视角硬件同步仍未完成。
-- `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 明确抛出 `NotImplementedError`。
+- P1C-2A 已实现离线 RGB-DVP2 几何标定模块，但 `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 生产路径仍明确抛出 `NotImplementedError`，避免未验收 profile 被静默用于正式特征提取。
+- P1C-2A.5 已改为 Background Reference Fruit Segmentation：固定暗箱/相机/光源环境先采空背景，再对样品 RGB 做差分分割；该方向不需要训练、不依赖 GPU/AI checkpoint、不要求每个水果写颜色阈值，且可离线解释和低维护。当前只完成软件算法与 synthetic tests，真实背景采集、硬件兼容性 metadata 和人工 mask 验收仍为 REAL FRUIT SEGMENTATION ACCEPTANCE PENDING；不能声称覆盖所有水果或达到固定 Mean IoU 指标。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
 - Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。
@@ -292,7 +293,7 @@ Phase 2：接入硬件最小闭环
 
 Phase 3：提升算法、质量控制和产品化
 
-- 完成 RGB 与多光谱图像配准标定。
+- 将 P1C-2A 的 RGB 与多光谱图像配准 profile 接入生产 ROI/光谱特征路径，并增加保守 inward erosion 与真实样品深度误差边界。
 - 引入真实尺寸标定或三维方案，明确普通形态测算与三维建模边界。
 - 增加模型置信度/误差估计、异常样品检测和数据质量门槛。
 - 完善历史记录、批次管理、报告模板、权限和操作日志。
