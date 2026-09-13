@@ -30,8 +30,10 @@ __pycache__/
 **/runtime/
 **/manual_test_output/
 **/manual_registration_output/
+**/manual_background_segmentation_output/
 host_software/static_ui_prototype_bin/config/camera_settings.json
 host_software/static_ui_prototype_bin/config/registration_profile.json
+host_software/static_ui_prototype_bin/runtime/background_reference/
 临时文件/
 归档备份/
 archives/

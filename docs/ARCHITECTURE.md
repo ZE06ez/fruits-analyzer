@@ -24,6 +24,8 @@ host_software/static_ui_prototype_bin/
   config/camera_settings.json (runtime, gitignored)
   config/registration_profile.example.json
   config/registration_profile.json (runtime, gitignored)
+  config/background_reference.example.json
+  runtime/background_reference/ (runtime, gitignored)
   quality_prediction.py
   quality_algorithm/
   training/
@@ -81,6 +83,8 @@ launcher.py
 | 光谱配置 | `quality_algorithm/filters.py` | `FilterBand`, `load_filter_config()`, `enabled_bands()` | JSON 配置 | 启用波段列表 | json |
 | 校正 | `quality_algorithm/calibration.py` | `reflectance_correction()`, `normalize_uncalibrated()` | sample/dark/white 灰度图 | 反射率矩阵 | numpy, PIL |
 | ROI | `quality_algorithm/roi.py` | `build_rgb_fruit_mask()`, `apply_mask_to_image()` | RGB 图、光谱图 | mask 后像素 | numpy, PIL |
+| Fruit Type 模型作用域 | `backend_server.py`, `model_studio/service.py` | sample/session/dataset/model `fruit_type` 字段 | 用户输入的 Fruit Type 字符串 | 仅作为 Dataset、Experiment、Model、Station catalog 的作用域；不要求英文、不生成 AI prompt、不维护固定水果 enum | sqlite3 |
+| 背景参考果实分割 | `quality_algorithm/background_reference.py`, `quality_algorithm/background_segmenter.py`, `quality_algorithm/segmentation.py`, `quality_algorithm/mask_quality.py` | `BackgroundReference`, `validate_background_reference()`, `BackgroundReferenceSegmenter`, `BackgroundSegmentationConfig`, `FruitSegmentationResult`, `compute_mask_iou()`, `compute_mask_dice()` | 空背景 RGB、样品 RGB、相机/光照 metadata、阈值与形态学配置 | RGB absolute difference + Lab distance、threshold/open/close/fill holes/connected components；输出 mask、bbox、centroid、component diagnostics、differenceStats、qualityFlags、referenceId；不伪造 ellipse fallback | numpy, PIL, OpenCV optional |
 | RGB-DVP2 几何配准标定 | `quality_algorithm/registration.py`, `manual_registration_test.py`, `config/registration_profile.example.json`, `config/registration_profile.json` | `RegistrationProfile`, `detect_checkerboard_corners()`, `estimate_planar_homography()`, `build_registration_profile()`, `validate_profile_for_runtime()`, `warp_mask_rgb_to_multispectral()` | RGB scientific checkerboard 图、DVP2 reference-band checkerboard 图、相机身份/分辨率、棋盘格规格 | RGB -> DVP2 planar homography profile、reprojection metrics、角点/warp/overlay/difference 可视化；运行时 profile 被 Git 忽略，example 不绑定真实设备 | OpenCV, numpy, json |
 | 特征提取 | `quality_algorithm/spectral_features.py` | `inspect_sample_structure()`, `extract_feature_record()` | 样品目录 | `FeatureRecord` | filters/calibration/roi |
 | 预处理 | `quality_algorithm/preprocessing.py` | `PreprocessorState`, `fit_transform_preprocessor()` | 特征矩阵 | RAW/SNV/MSC 后矩阵 | numpy |
@@ -562,13 +566,18 @@ POST /api/predict-ssc 或 /api/predict-acid
 
 ```text
 rgb first image
-  -> RGB ROI mask
+  -> FruitSegmenter
+     default: legacy_color build_rgb_fruit_mask()
+     optional: background_reference validates compatible BackgroundReference
+               then runs BackgroundReferenceSegmenter
 multispectral/<wavelength>.png
   -> dark/white reflectance correction if matching files exist
   -> otherwise normalize_uncalibrated() when allowed
   -> ROI mean per enabled band
   -> FeatureRecord(wavelengths, features, calibrated, warnings)
 ```
+
+Background Reference 是当前正式 Fruit Mask 方向。背景参考 JSON 与背景图放在 `runtime/background_reference/` 或本机 `config/background_reference/`，均不提交真实设备 serial、绝对路径或真实参考图；`config/background_reference.example.json` 只描述 schema。兼容性校验覆盖 image sha256、分辨率、设备 identity、camera profile、camera settings 和 illumination，参考 age 不会单独导致失效。若背景与样品尺寸不一致，算法失败为 `BACKGROUND_REFERENCE_RESOLUTION_MISMATCH`，不会 resize 或伪造 calibrated registration。旧 `legacy_color` 仍只作为兼容/离线 fallback，不代表正式背景分割。
 
 `predict_feature_record()`：
 

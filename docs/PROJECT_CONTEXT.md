@@ -92,7 +92,7 @@ UI
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
 - `host_software/static_ui_prototype_bin/quality_prediction.py`：`SampleSession`、`PredictionResult`、SSC/TA/pH 预测入口。
-- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、RGB-DVP2 几何配准标定、特征提取、预处理、模型 IO。P1C-2A 后 `registration.py` 支持棋盘格角点检测、RGB -> DVP2 平面单应性估计、profile JSON 读写、reprojection metrics、设备/分辨率错用校验和可视化输出；运行时 `config/registration_profile.json` 被 Git 忽略，`config/registration_profile.example.json` 只作为不绑定真实设备的参考。
+- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、RGB-DVP2 几何配准标定、背景参考果实分割、特征提取、预处理、模型 IO。P1C-2A 后 `registration.py` 支持棋盘格角点检测、RGB -> DVP2 平面单应性估计、profile JSON 读写、reprojection metrics、设备/分辨率错用校验和可视化输出；运行时 `config/registration_profile.json` 被 Git 忽略，`config/registration_profile.example.json` 只作为不绑定真实设备的参考。P1C-2A.5 后正式 Fruit Mask 方向改为 Background Reference：`background_reference.py` 管理背景图 metadata、sha256 和相机/光照兼容性校验，`background_segmenter.py` 使用 RGB absolute difference + OpenCV Lab distance、固定阈值、形态学和连通域诊断生成 mask；SAM3 生产分割方向已放弃，不进入主程序依赖。
 - `host_software/static_ui_prototype_bin/training/`：特征 CSV 构建、PLSR/SVR/RF 训练、评估。
 - `host_software/static_ui_prototype_bin/model_studio/service.py`：SQLite 数据集、样品、标签、训练实验、候选模型、发布模型管理。
 - `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`：P1B 真实硬件与采集系统正式验收规范，逐项覆盖 RGB、DVP2、STM32、风扇、LED3、推杆、滤光轮、Dark/White、多波段、样品台、多视角、数据完整性、metadata、安全和 true capture gate；未现场验证项默认 `NOT TESTED`，真实样品台和完整 true capture 当前为 `BLOCKED`。
@@ -263,6 +263,7 @@ UI
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、两路钨灯限时手动测试/立即关闭/全部钨灯关闭、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；P1B-7.5B 新增样品旋转台状态和调试按钮，但默认因 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 禁用真实动作。P1B-8 在样品采集页新增 True Hardware Capture 面板；RGB 与 DVP2 相机设置页预览已接入；真实样品台旋转、RGB 正式照明映射、双钨灯验收和完整多视角硬件同步仍未完成。
 - P1C-2A 已实现离线 RGB-DVP2 几何标定模块，但 `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 生产路径仍明确抛出 `NotImplementedError`，避免未验收 profile 被静默用于正式特征提取。
+- P1C-2A.5 已改为 Background Reference Fruit Segmentation：固定暗箱/相机/光源环境先采空背景，再对样品 RGB 做差分分割；该方向不需要训练、不依赖 GPU/AI checkpoint、不要求每个水果写颜色阈值，且可离线解释和低维护。当前只完成软件算法与 synthetic tests，真实背景采集、硬件兼容性 metadata 和人工 mask 验收仍为 REAL FRUIT SEGMENTATION ACCEPTANCE PENDING；不能声称覆盖所有水果或达到固定 Mean IoU 指标。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
 - Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。

@@ -485,6 +485,12 @@ class ModelStudioServiceTests(unittest.TestCase):
             self.service.delete_dataset_permanently(dataset["dataset_id"], confirm=dataset["dataset_name"])
         self.assertTrue(self.samples_root.exists())
 
+    def test_create_dataset_keeps_dynamic_fruit_type_as_model_scope(self):
+        dataset = self.service.create_dataset({"datasetName": "Dragon Fruit", "fruitType": "  dragon   fruit "})
+        self.assertEqual(dataset["fruit_type"], "dragon   fruit")
+        localized = self.service.create_dataset({"datasetName": "Localized Fruit", "fruitType": "蓝莓"})
+        self.assertEqual(localized["fruit_type"], "蓝莓")
+
     def test_training_start_from_current_config_creates_target_specific_experiment(self):
         dataset = self.service.create_dataset({
             "datasetName": "Blueberry_Targets",

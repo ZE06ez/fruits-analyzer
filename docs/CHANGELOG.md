@@ -2,6 +2,17 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-12 P1C-2A.5 Background Reference Fruit Segmentation
+
+- 修改内容：正式 Fruit Mask 方向从 SAM3 改为 Background Reference。原因：当前应用是固定暗箱/相机/光源环境，无训练数据、无 GPU 生产环境、不能引入大模型 checkpoint，也不希望为每种水果维护颜色阈值；背景参考差分更可解释、离线、低维护。
+- 修改内容：新增 `quality_algorithm/background_reference.py`，定义 `BackgroundReference`、sha256、save/load、image metadata 和兼容性校验，错误码覆盖 missing image、hash mismatch、resolution/device/camera profile/settings/illumination mismatch 和 invalid reference。参考 age 不单独导致失效。
+- 修改内容：新增 `quality_algorithm/background_segmenter.py`，使用 RGB absolute difference + OpenCV Lab distance 加权，执行 threshold -> open -> close -> fill holes -> remove tiny components -> connected components，输出 `FruitSegmentationResult` 诊断字段和质量错误码。
+- 修改内容：重写 `quality_algorithm/segmentation.py` 为通用结果结构，保留 `LegacyColorSegmenter` 兼容路径；`mask_quality.py` 保留为通用 IoU/Dice 工具。
+- 修改内容：`spectral_features.py` 支持 `segmentation_mode="background_reference"`，要求传入兼容 `BackgroundReference`；背景/样品分辨率不一致时失败，不 resize、不伪造 calibrated registration。默认仍为 `legacy_color` 以保持旧流程兼容。
+- 修改内容：新增 `manual_background_segmentation_test.py`，输出 `background.png`、`sample.png`、`difference_map.png`、`raw_mask.png`、`clean_mask.png`、`overlay.png` 和 `diagnostics.json`；新增 `config/background_reference.example.json`，运行时真实参考图和 JSON 仍放在 gitignored runtime/config 路径。
+- 修改内容：移除 SAM3 生产入口、worker、checkpoint config、英文 Fruit Type/prompt 要求；Fruit Type 继续只是 Dataset/Model scope，可使用用户输入字符串。
+- 验收状态：REAL FRUIT SEGMENTATION ACCEPTANCE PENDING；当前只完成软件算法与 deterministic synthetic tests，不声称覆盖所有水果或达到固定 Mean IoU，真实硬件背景参考采集和人工 mask 验收仍待完成。
+
 ## 2026-09-12 P1C-2A RGB-DVP2 Geometric Registration Calibration
 
 - 修改内容：新增 `quality_algorithm/registration.py`，实现 RGB -> DVP2 `planar_homography_v1` 标定 profile、3x3 homography validation、checkerboard corner detection、RANSAC 单应性估计、reprojection error metrics、profile save/load、runtime endpoint/resolution mismatch guard 和 nearest-neighbor mask warp helper。
