@@ -95,14 +95,7 @@
           <details open>
             <summary>检测工作台</summary>
             <button class="task-step active" data-view="capture" data-step-key="sample"><span></span>样品与采集</button>
-            <button class="task-step" data-view="shape" data-step-key="load-rgbd"><span></span>智能分析</button>
-            <button class="task-step" data-view="taste" data-step-key="summary"><span></span>检测结果</button>
-          </details>
-          <details open>
-            <summary>样品与记录</summary>
-            <button class="task-step" data-view="shape" data-step-key="image-review"><span></span>样品图片</button>
-            <button class="task-step" data-view="shape" data-step-key="confirm"><span></span>数据完整性</button>
-            <button class="task-step" data-view="taste" data-step-key="export"><span></span>报告输出</button>
+            <button class="task-step" data-view="shape" data-step-key="preprocess"><span></span>分析详情</button>
           </details>
           <details open>
             <summary>设备与维护</summary>
@@ -114,14 +107,6 @@
           <details open>
             <summary>模型训练</summary>
             <button class="task-step" id="modelStudioNavButton" type="button"><span></span>打开 Model Studio</button>
-          </details>
-          <details>
-            <summary>分析详情</summary>
-            <button class="task-step" data-view="shape" data-step-key="preprocess"><span></span>数据预处理</button>
-            <button class="task-step" data-view="shape" data-step-key="filter"><span></span>ROI 与特征</button>
-            <button class="task-step" data-view="sugar" data-step-key="sugar"><span></span>糖度预测</button>
-            <button class="task-step" data-view="acid" data-step-key="acid"><span></span>酸度与 pH 分析</button>
-            <button class="task-step" data-view="taste" data-step-key="ratio"><span></span>糖酸比计算</button>
           </details>
           <details>
             <summary>系统设置</summary>
@@ -358,15 +343,43 @@
                 </div>
                 <span class="status-chip" id="sampleCreateStatus">等待创建</span>
               </div>
+              <div class="capture-status-summary" aria-label="采集状态摘要">
+                <div><span>模式</span><strong id="captureModeSummary">正常检测</strong></div>
+                <div><span>设备</span><strong id="captureDeviceSummary">等待检查</strong></div>
+                <div><span>Calibration</span><strong id="captureCalibrationSummary">未确认</strong></div>
+                <div><span>背景参考</span><strong id="captureBackgroundSummary">未设置</strong></div>
+              </div>
+              <div class="sample-mode-control" role="radiogroup" aria-label="样品模式">
+                <label class="sample-mode-option">
+                  <input type="radio" name="sampleMode" value="inspection" checked />
+                  <span>
+                    <strong>正常检测</strong>
+                    <small>需要 Production / Default 模型</small>
+                  </span>
+                </label>
+                <label class="sample-mode-option">
+                  <input type="radio" name="sampleMode" value="training_capture" />
+                  <span>
+                    <strong>训练数据采集</strong>
+                    <small>只采集图像和 metadata，不需要检测模型</small>
+                  </span>
+                </label>
+              </div>
               <div class="sample-create-grid">
                 <label>样品名称 *
                   <input id="captureSampleName" placeholder="Duke成熟组03" />
                 </label>
-                <label>样品种类 *
+                <label class="sample-scope-field inspection-scope-field">样品种类 *
                   <select id="qualityFruitType"></select>
                 </label>
-                <label>品种
+                <label class="sample-scope-field inspection-scope-field">品种
                   <select id="qualityVariety"></select>
+                </label>
+                <label class="sample-scope-field training-scope-field">Fruit Type *
+                  <input id="trainingFruitType" placeholder="蓝莓" />
+                </label>
+                <label class="sample-scope-field training-scope-field">Variety
+                  <input id="trainingVariety" placeholder="Duke" />
                 </label>
                 <label class="wide">保存位置 *
                   <div class="path-picker">
@@ -454,9 +467,10 @@
               </div>
               <div class="sample-create-actions">
                 <button class="primary-action" id="createSampleInline" type="button">新建样品</button>
+                <button id="openCaptureSettings" type="button">采集设置</button>
                 <button id="openCaptureFolder" type="button" disabled>打开文件夹</button>
               </div>
-              <p class="hint">样品种类和品种会写入 metadata.json；糖度、酸度和 pH 模型在对应分析页面选择。</p>
+              <p class="hint" id="sampleModeHint">样品种类和品种会写入 metadata.json；糖度、酸度和 pH 模型在对应分析页面选择。</p>
             </div>
             <div class="process-steps">
               <button data-step="1">1. 暗场与白板校正</button>
@@ -509,8 +523,15 @@
 
           <article class="view-page" data-page="shape">
             <div class="panel-title">
-              <h3>样品形态与表面分析 / Morphology & Surface</h3>
-              <span>当前使用 RGB 与多光谱图像进行二维形态测算</span>
+              <h3>分析详情 / Analysis Details</h3>
+              <span>数据预处理、ROI、模型预测和糖酸比</span>
+            </div>
+            <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
+              <button type="button" class="active" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
+              <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
+              <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
             </div>
             <div class="shape-layout">
               <div class="shape-visuals">
@@ -621,6 +642,13 @@
               <h3>样品糖度分析 / SSC Analysis</h3>
               <span id="sscModelStatus">模型预测待接入</span>
             </div>
+            <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
+              <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
+              <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
+            </div>
             <div class="prediction-layout">
               <section class="prediction-card prediction-main">
                 <span>SSC 预测值</span>
@@ -657,6 +685,13 @@
             <div class="panel-title">
               <h3>样品酸度分析 / TA Analysis</h3>
               <span id="acidModelStatus">模型预测待接入</span>
+            </div>
+            <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
+              <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
+              <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
             </div>
             <div class="prediction-layout">
               <section class="prediction-card acid-results">
@@ -703,6 +738,13 @@
             <div class="panel-title">
               <h3>样品口感分析 / Taste Evaluation</h3>
               <span>糖酸比与综合等级</span>
+            </div>
+            <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
+              <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
+              <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
             </div>
             <div class="taste-hero">
               <span>综合口感等级</span>
@@ -1079,15 +1121,31 @@
           </div>
           <button id="closeSampleModal" type="button">关闭</button>
         </header>
+        <div class="sample-mode-control modal-mode-control" role="radiogroup" aria-label="新建样品模式">
+          <label class="sample-mode-option">
+            <input type="radio" name="modalSampleMode" value="inspection" checked />
+            <span><strong>正常检测</strong><small>使用已发布模型范围</small></span>
+          </label>
+          <label class="sample-mode-option">
+            <input type="radio" name="modalSampleMode" value="training_capture" />
+            <span><strong>训练数据采集</strong><small>允许新的水果和品种</small></span>
+          </label>
+        </div>
         <div class="modal-grid">
           <label>样品名称 *
             <input id="newSampleName" placeholder="Duke成熟组03" />
           </label>
-          <label>Fruit Type *
+          <label class="inspection-scope-field">Fruit Type *
             <select id="newSampleFruitType"></select>
           </label>
-          <label>Variety
+          <label class="inspection-scope-field">Variety
             <select id="newSampleVariety"></select>
+          </label>
+          <label class="training-scope-field">Fruit Type *
+            <input id="newSampleTrainingFruitType" placeholder="蓝莓" />
+          </label>
+          <label class="training-scope-field">Variety
+            <input id="newSampleTrainingVariety" placeholder="Duke" />
           </label>
         </div>
         <p class="modal-note" id="newSampleHint">Fruit Type 和 Variety 来自已发布模型；具体糖酸模型在分析页面选择。</p>
@@ -1095,6 +1153,85 @@
           <button id="cancelNewSample" type="button">取消</button>
           <button class="primary-action" id="createNewSample" type="button">创建样品</button>
         </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="captureSettingsModal" hidden>
+      <section class="modal modal-wide capture-settings-modal">
+        <header>
+          <div>
+            <p class="eyebrow">Capture Settings</p>
+            <h3>采集设置</h3>
+          </div>
+          <button id="closeCaptureSettings" type="button">关闭</button>
+        </header>
+        <div class="capture-settings-body">
+          <section class="settings-section">
+            <div class="settings-section-head">
+              <div>
+                <strong>Calibration</strong>
+                <small>Dark / White 光谱参考，独立于背景分割参考图。</small>
+              </div>
+              <span class="status-chip" id="settingsCalibrationStatus">未确认</span>
+            </div>
+            <div class="settings-key-values">
+              <span>Calibration ID</span><strong id="settingsCalibrationId">--</strong>
+              <span>Dark Reference</span><strong id="settingsDarkReference">复用 True Capture 校正流程</strong>
+              <span>White Reference</span><strong id="settingsWhiteReference">复用 True Capture 校正流程</strong>
+            </div>
+            <p class="hint">重新采集 Dark / White 会通过真实采集流程执行；本面板不伪造 CalibrationSet。</p>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-head">
+              <div>
+                <strong>背景分割参考图</strong>
+                <small>用于 RGB 前景分割；不是 Dark Reference 或 White Reference。</small>
+              </div>
+              <span class="status-chip" id="settingsBackgroundStatus">未设置</span>
+            </div>
+            <div class="background-current">
+              <div class="background-thumb">
+                <img id="backgroundCurrentThumb" alt="当前背景参考图缩略图" hidden />
+                <span id="backgroundCurrentEmpty">未设置背景参考</span>
+              </div>
+              <div>
+                <strong id="backgroundCurrentName">未设置</strong>
+                <p id="backgroundCurrentMeta">请拍摄空样品台背景，或导入已有背景照片。</p>
+                <div class="button-row compact">
+                  <button id="captureBackgroundReference" type="button">拍摄背景</button>
+                  <button id="importBackgroundReference" type="button">选择照片</button>
+                  <button id="previewBackgroundReference" type="button" class="secondary" disabled>预览</button>
+                  <button id="clearBackgroundReference" type="button" class="secondary" disabled>取消使用</button>
+                </div>
+              </div>
+            </div>
+            <details class="background-library-block" open>
+              <summary>背景图库</summary>
+              <div class="background-library" id="backgroundLibraryList"></div>
+            </details>
+          </section>
+
+          <details class="settings-section settings-advanced">
+            <summary>Advanced</summary>
+            <pre id="backgroundReferenceTechnical">Background Reference 暂未加载。</pre>
+          </details>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="backgroundPreviewModal" hidden>
+      <section class="modal modal-wide">
+        <header>
+          <div>
+            <p class="eyebrow">Background Preview</p>
+            <h3 id="backgroundPreviewTitle">背景参考图</h3>
+          </div>
+          <button id="closeBackgroundPreview" type="button">关闭</button>
+        </header>
+        <div class="background-preview-frame">
+          <img id="backgroundPreviewImage" alt="背景参考图预览" />
+        </div>
       </section>
     </div>
 
