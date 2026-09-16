@@ -281,6 +281,51 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertTrue(Path(second["currentCaptureDir"]).exists())
         self.assertFalse(second["analysisDataDir"])
 
+    def test_training_capture_sample_does_not_require_models_and_writes_metadata_scope(self):
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "TrainingBlueberry01",
+            "sampleMode": "training_capture",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+            "selectedSscModelId": "should_not_persist",
+        })["sample"]
+
+        self.assertEqual(sample["sampleMode"], "training_capture")
+        self.assertEqual(sample["fruitType"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+        self.assertEqual(sample["selectedSscModelId"], "")
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["fruit_type"], "蓝莓")
+        self.assertEqual(metadata["variety"], "Duke")
+
+    def test_background_reference_import_persists_active_and_links_new_sample_metadata(self):
+        source = self.root / "empty_stage.png"
+        Image.new("RGB", (32, 24), (12, 18, 24)).save(source)
+
+        imported = self.post_json("/api/background-reference/import", {"path": str(source)})["backgroundReference"]
+        active = imported["active"]
+        self.assertTrue(active["active"])
+        self.assertEqual(active["source"], "Imported")
+        self.assertTrue(Path(active["managedPath"]).exists())
+        self.assertNotEqual(Path(active["managedPath"]), source)
+
+        status = self.get_json("/api/status")
+        self.assertEqual(status["backgroundReference"]["active"]["id"], active["id"])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "BackgroundLinked",
+            "sampleMode": "training_capture",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertIn("background_reference", metadata)
+        self.assertEqual(metadata["background_reference"]["backgroundReferenceId"], active["id"])
+        self.assertNotEqual(metadata["background_reference"]["backgroundReferenceId"], metadata.get("calibrationId", ""))
+
     def test_true_capture_not_ready_still_blocks_after_sample_creation_without_hardware(self):
         sample = self.post_json("/api/new-sample", {
             "sampleName": "NoHardwareFirst",

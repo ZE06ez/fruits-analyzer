@@ -109,6 +109,8 @@ class SessionState:
         self.selected_ssc_model_id: str = ""
         self.selected_ta_model_id: str = ""
         self.selected_ph_model_id: str = ""
+        self.sample_mode: str = "inspection"
+        self.background_reference: dict = {}
         self.capture_rotation_plan: dict = build_capture_rotation_plan({})
 
     def set_current_capture_dir(self, value: str | Path) -> None:
@@ -153,6 +155,9 @@ class SessionState:
         if not capture_dir:
             raise ValueError("capture_dir is required")
         variety = str(payload.get("variety") or "generic").strip() or "generic"
+        sample_mode = str(payload.get("sampleMode") or payload.get("sample_mode") or "inspection").strip() or "inspection"
+        if sample_mode not in {"inspection", "training_capture"}:
+            raise ValueError("sample_mode must be inspection or training_capture")
         selected_ssc = str(payload.get("selectedSscModelId") or payload.get("selected_ssc_model_id") or "")
         selected_ta = str(payload.get("selectedTaModelId") or payload.get("selected_ta_model_id") or "")
         selected_ph = str(payload.get("selectedPhModelId") or payload.get("selected_ph_model_id") or "")
@@ -177,9 +182,11 @@ class SessionState:
             self.sample_mode = sample_mode
             self.fruit_type = fruit_type
             self.variety = variety
+            self.sample_mode = sample_mode
             self.selected_ssc_model_id = selected_ssc
             self.selected_ta_model_id = selected_ta
             self.selected_ph_model_id = selected_ph
+            self.background_reference = dict(payload.get("backgroundReference") or {})
             self.capture_rotation_plan = rotation_plan
             self.current_capture_dir = capture_dir
             self.analysis_data_dir = ""
@@ -223,6 +230,12 @@ class SessionState:
                 self.fruit_type = fruit_type
             if variety:
                 self.variety = variety
+            sample_mode = str(metadata.get("sample_mode") or metadata.get("sampleMode") or "").strip()
+            if sample_mode in {"inspection", "training_capture"}:
+                self.sample_mode = sample_mode
+            background_reference = metadata.get("background_reference") or metadata.get("backgroundReference")
+            if isinstance(background_reference, dict):
+                self.background_reference = dict(background_reference)
             if not self.sample_name:
                 self.sample_name = str(metadata.get("sample_name") or metadata.get("sampleName") or "").strip()
             if not self.sample_id:
@@ -248,6 +261,8 @@ class SessionState:
             selected_ssc_model_id = self.selected_ssc_model_id
             selected_ta_model_id = self.selected_ta_model_id
             selected_ph_model_id = self.selected_ph_model_id
+            sample_mode = self.sample_mode
+            background_reference = dict(self.background_reference)
             capture_rotation_plan = dict(self.capture_rotation_plan)
             device_prep = dict(self.device_prep)
             sample_mode = self.sample_mode
@@ -281,6 +296,9 @@ class SessionState:
             "sampleMode": sample_mode,
             "fruitType": fruit_type,
             "variety": variety,
+            "sampleMode": sample_mode,
+            "sample_mode": sample_mode,
+            "backgroundReference": background_reference,
             "selectedSscModelId": selected_ssc_model_id,
             "selectedTaModelId": selected_ta_model_id,
             "selectedPhModelId": selected_ph_model_id,
@@ -336,6 +354,146 @@ def normalize_sample_mode(value: object) -> str:
     if mode in {"inspection", "detect", "detection", "normal"}:
         return "inspection"
     raise ValueError("sample_mode must be inspection or training_capture")
+
+
+class BackgroundReferenceStore:
+    INDEX_NAME = "background_references.json"
+
+    def __init__(self, app_dir: Path) -> None:
+        self.root = app_dir / "runtime" / "background_reference"
+        self.images_dir = self.root / "images"
+        self.index_path = self.root / self.INDEX_NAME
+        self._lock = threading.Lock()
+
+    def _ensure_dirs(self) -> None:
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_unlocked(self) -> dict:
+        self._ensure_dirs()
+        if not self.index_path.exists():
+            return {"activeId": "", "items": []}
+        try:
+            payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"activeId": "", "items": [], "warning": "BACKGROUND_REFERENCE_INDEX_INVALID"}
+        if not isinstance(payload, dict):
+            return {"activeId": "", "items": [], "warning": "BACKGROUND_REFERENCE_INDEX_INVALID"}
+        items = payload.get("items")
+        return {
+            "activeId": str(payload.get("activeId") or ""),
+            "items": items if isinstance(items, list) else [],
+        }
+
+    def _save_unlocked(self, payload: dict) -> None:
+        self._ensure_dirs()
+        tmp = self.index_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.index_path)
+
+    def _public_item(self, item: dict, active_id: str) -> dict:
+        managed_path = Path(str(item.get("managedPath") or ""))
+        return {
+            **item,
+            "active": bool(item.get("id") == active_id),
+            "missing": not managed_path.exists(),
+            "previewUrl": f"/api/local-image?path={quote(str(managed_path), safe='')}" if managed_path else "",
+        }
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            payload = self._load_unlocked()
+            active_id = str(payload.get("activeId") or "")
+            items = [self._public_item(dict(item), active_id) for item in payload.get("items", []) if isinstance(item, dict)]
+            active = next((item for item in items if item.get("id") == active_id), None)
+            if active and active.get("missing"):
+                active["status"] = "missing"
+            return {
+                "activeId": active_id,
+                "active": active,
+                "items": items,
+                "storageDir": str(self.root),
+                "segmentationInterface": "quality_algorithm.spectral_features.extract_feature_record(segmentation_mode='background_reference')",
+            }
+
+    def _new_item(self, source_path: Path, *, source: str, metadata: dict | None = None) -> dict:
+        self._ensure_dirs()
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        token = time.strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8]
+        filename = f"background_{token}.png"
+        target = self.images_dir / filename
+        with Image.open(source_path) as image:
+            image.convert("RGB").save(target, "PNG")
+        width = height = None
+        try:
+            with Image.open(target) as saved:
+                width, height = saved.size
+        except Exception:
+            pass
+        return {
+            "id": f"bg_{token}",
+            "managedPath": str(target),
+            "filename": filename,
+            "createdAt": created_at,
+            "source": source,
+            "originalPath": str(source_path) if source == "Imported" else "",
+            "width": width,
+            "height": height,
+            "metadata": metadata or {},
+        }
+
+    def import_image(self, source_path: str | Path) -> dict:
+        source = Path(source_path).expanduser()
+        if source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
+            raise ValueError("请选择 PNG/JPEG/BMP/TIFF 背景图片。")
+        if not source.exists() or not source.is_file():
+            raise ValueError("背景图片不存在。")
+        with self._lock:
+            payload = self._load_unlocked()
+            item = self._new_item(source, source="Imported")
+            payload.setdefault("items", []).insert(0, item)
+            payload["activeId"] = item["id"]
+            self._save_unlocked(payload)
+        return self.snapshot()
+
+    def add_captured_frame(self, frame, metadata: dict | None = None) -> dict:
+        self._ensure_dirs()
+        temp = self.root / f"_capture_{uuid.uuid4().hex}.png"
+        try:
+            Image.fromarray(frame.data).save(temp, "PNG")
+            with self._lock:
+                payload = self._load_unlocked()
+                item = self._new_item(temp, source="Camera Capture", metadata=metadata or {})
+                payload.setdefault("items", []).insert(0, item)
+                payload["activeId"] = item["id"]
+                self._save_unlocked(payload)
+            return self.snapshot()
+        finally:
+            try:
+                temp.unlink()
+            except Exception:
+                pass
+
+    def set_active(self, background_id: str) -> dict:
+        with self._lock:
+            payload = self._load_unlocked()
+            if background_id and not any(item.get("id") == background_id for item in payload.get("items", []) if isinstance(item, dict)):
+                raise ValueError("Background Reference 不存在。")
+            payload["activeId"] = background_id
+            self._save_unlocked(payload)
+        return self.snapshot()
+
+    def active_metadata(self) -> dict:
+        active = self.snapshot().get("active") or {}
+        if not active:
+            return {}
+        return {
+            "backgroundReferenceId": active.get("id") or "",
+            "backgroundReferencePath": active.get("managedPath") or "",
+            "backgroundReferenceFilename": active.get("filename") or "",
+            "backgroundReferenceCapturedAt": active.get("createdAt") or "",
+            "backgroundReferenceSource": active.get("source") or "",
+            "missing": bool(active.get("missing")),
+        }
 
 
 IMAGE_DIR_DEFAULTS = {"rgb": "rgb", "multispectral": "multispectral"}
@@ -497,6 +655,7 @@ def create_handler(
         device_manager = DeviceManager(
             registry=DeviceRegistry(app_dir / "runtime" / "hardware_profile.json")
         )
+    background_store = BackgroundReferenceStore(app_dir)
     model_studio_static = app_dir / "model_studio" / "static"
     try:
         from model_studio.service import ModelStudioService
@@ -606,7 +765,11 @@ def create_handler(
                     "sampleDatasets": {},
                     "defaultSaveRoot": default_save_root(app_dir),
                     **session_info,
+                    "backgroundReference": background_store.snapshot(),
                 })
+                return
+            if path == "/api/background-reference":
+                self.json_response({"ok": True, "backgroundReference": background_store.snapshot()})
                 return
             if path == "/api/device/ports":
                 try:
@@ -1376,6 +1539,18 @@ def create_handler(
             if parsed.path == "/api/device-preparation":
                 self.handle_device_preparation()
                 return
+            if parsed.path == "/api/background-reference/import":
+                self.handle_background_import()
+                return
+            if parsed.path == "/api/background-reference/capture":
+                self.handle_background_capture()
+                return
+            if parsed.path == "/api/background-reference/activate":
+                self.handle_background_activate()
+                return
+            if parsed.path == "/api/background-reference/clear":
+                self.handle_background_clear()
+                return
             if parsed.path == "/api/new-sample":
                 self.handle_new_sample()
                 return
@@ -1742,6 +1917,50 @@ def create_handler(
             except Exception as exc:
                 self.json_response({"ok": False, "error": str(exc)}, status=400)
 
+        def handle_background_import(self) -> None:
+            payload = self.read_json()
+            try:
+                path = payload.get("path") or payload.get("backgroundPath") or ""
+                snapshot = background_store.import_image(path)
+                self.json_response({"ok": True, "backgroundReference": snapshot})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_background_capture(self) -> None:
+            payload = self.read_json()
+            if not payload.get("operatorConfirmedEmptyStage"):
+                self.json_response({"ok": False, "error": "请先确认样品台为空、无水果。"}, status=400)
+                return
+            try:
+                camera_manager = getattr(device_manager, "camera_manager", None)
+                if camera_manager is None:
+                    raise RuntimeError("RGB CameraManager 不可用。")
+                frame, metadata = camera_manager.capture_rgb_frame()
+                snapshot = background_store.add_captured_frame(frame, metadata=metadata)
+                self.json_response({"ok": True, "backgroundReference": snapshot})
+            except CameraError as exc:
+                self.json_response({
+                    "ok": False,
+                    "error": exc.user_message,
+                    "technicalError": exc.technical_message,
+                }, status=503)
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=503)
+
+        def handle_background_activate(self) -> None:
+            payload = self.read_json()
+            try:
+                background_id = str(payload.get("backgroundId") or payload.get("id") or "")
+                self.json_response({"ok": True, "backgroundReference": background_store.set_active(background_id)})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_background_clear(self) -> None:
+            try:
+                self.json_response({"ok": True, "backgroundReference": background_store.set_active("")})
+            except Exception as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
         def handle_new_sample(self) -> None:
             payload = self.read_json()
             try:
@@ -1756,6 +1975,7 @@ def create_handler(
                 payload["captureDir"] = str(capture_dir)
                 payload["rgbDirName"] = image_dirs["rgb"]
                 payload["multispectralDirName"] = image_dirs["multispectral"]
+                payload["backgroundReference"] = background_store.active_metadata()
                 sample = session.create_sample(payload, self.resolve_model_id)
                 ensure_sample_capture_folder(capture_dir, sample)
                 self.json_response({"ok": True, "sample": sample})
@@ -2472,6 +2692,8 @@ def file_picker_title(purpose: str) -> str:
         "json": "选择 JSON 文件",
         "joblib": "选择模型文件",
         "model-bundle": "选择模型 Bundle 文件",
+        "background-image": "选择背景参考图片",
+        "image": "选择图片",
     }
     return titles.get(purpose, "选择文件")
 
@@ -2555,6 +2777,9 @@ def validate_file_path(value: str | Path, *, purpose: str = "file", app_dir: Pat
     elif purpose == "joblib" and path.suffix.lower() not in {".joblib", ".pkl"}:
         state = "无效"
         message = "请选择 .joblib 或 .pkl 模型文件"
+    elif purpose in {"background-image", "image"} and path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
+        state = "无效"
+        message = "请选择 PNG/JPEG/BMP/TIFF 图片"
     return {
         "path": str(path),
         "state": state,
@@ -2665,6 +2890,8 @@ def file_dialog_filters(purpose: str):
         return [("Model files", "*.joblib *.pkl"), ("All files", "*.*")]
     if purpose == "model-bundle":
         return [("Model bundles", "*.zip *.joblib *.pkl"), ("All files", "*.*")]
+    if purpose in {"background-image", "image"}:
+        return [("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")]
     return [("All files", "*.*")]
 
 
@@ -2677,6 +2904,8 @@ def select_file_with_powershell(title: str, initial_dir: str = "", purpose: str 
         "json": "JSON files (*.json)|*.json|All files (*.*)|*.*",
         "joblib": "Model files (*.joblib;*.pkl)|*.joblib;*.pkl|All files (*.*)|*.*",
         "model-bundle": "Model bundles (*.zip;*.joblib;*.pkl)|*.zip;*.joblib;*.pkl|All files (*.*)|*.*",
+        "background-image": "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff|All files (*.*)|*.*",
+        "image": "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff|All files (*.*)|*.*",
     }.get(purpose, "All files (*.*)|*.*")
     script = (
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
@@ -2779,6 +3008,16 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
             },
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        background_reference = metadata.get("backgroundReference") or metadata.get("background_reference") or {}
+        if isinstance(background_reference, dict) and background_reference:
+            meta["background_reference"] = {
+                "backgroundReferenceId": background_reference.get("backgroundReferenceId") or background_reference.get("id") or "",
+                "backgroundReferencePath": background_reference.get("backgroundReferencePath") or background_reference.get("managedPath") or "",
+                "backgroundReferenceFilename": background_reference.get("backgroundReferenceFilename") or background_reference.get("filename") or "",
+                "backgroundReferenceCapturedAt": background_reference.get("backgroundReferenceCapturedAt") or background_reference.get("createdAt") or "",
+                "backgroundReferenceSource": background_reference.get("backgroundReferenceSource") or background_reference.get("source") or "",
+                "missing": bool(background_reference.get("missing")),
+            }
         meta["capture_views"] = list((meta["sample_rotation"] or {}).get("views") or [])
         (capture_root / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         (capture_root / "views.json").write_text(json.dumps(meta["capture_views"], ensure_ascii=False, indent=2), encoding="utf-8")

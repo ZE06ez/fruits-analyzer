@@ -78,7 +78,7 @@ UI
 - `host_software/static_ui_prototype_bin/app.js`：前端状态机、全局系统状态派生、Operator Workbench 总览派生、采集/分析布局切换、样品流程、模型普通/高级展示、分析调用、结果渲染。
 - `docs/UI_ARCHITECTURE.md`：主检测软件 Operator/Engineer 工作区边界、一级导航和 Progressive Disclosure 约束。
 - `docs/UI_DESIGN_SYSTEM.md`：主检测软件 Dark Slate + Purple/Fuchsia/Cyan 视觉系统和控件状态契约。
-- `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
+- `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发，以及 `BackgroundReferenceStore` 管理 `runtime/background_reference/` 下的托管背景图、图库 JSON、active background 和样品 metadata 关联。
 - `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 串口服务，115200 8N1；保留旧两字节兼容 `send_command()`，并提供 raw `write_bytes()`/`read_bytes()` 给 current-firmware protocol adapter。
 - `host_software/static_ui_prototype_bin/stm32_protocol.py`：P1B-7.5A.1 AA55 current-firmware protocol 边界；包含 `CURRENT_STM32_FIRMWARE_PROFILE`、`CURRENT_FILTER_WHEEL_MAPPING`、`Stm32ProtocolProfile`、CRC16-CCITT-FALSE、AA55 codec、stream parser、STATUS/INFO decode 和 `FilterWheelMapping`。
 - `host_software/static_ui_prototype_bin/stm32_controller.py`：P1B-7.5A.2 STM32 current-firmware adapter；在单一 `SerialService` owner 上处理 ACK correlation、STATUS/INFO cache revision、handshake、PPR consistency diagnostic、command serialization、fresh STATUS mechanical verification、fan/LED/door/filter-wheel action 和 best-effort safe stop。
@@ -265,7 +265,7 @@ UI
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、两路钨灯限时手动测试/立即关闭/全部钨灯关闭、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；P1B-7.5B 新增样品旋转台状态和调试按钮，但默认因 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 禁用真实动作。P1B-8 在样品采集页新增 True Hardware Capture 面板；RGB 与 DVP2 相机设置页预览已接入；真实样品台旋转、RGB 正式照明映射、双钨灯验收和完整多视角硬件同步仍未完成。
 - P1C-2B 已把 P1C-2A 的 RGB-DVP2 profile 和 P1C-2A.5 的 RGB Fruit Mask 接入多光谱特征提取：calibrated mode 必须显式提供 RegistrationProfile 和 runtime RGB/DVP2 endpoint metadata，缺失或 mismatch 会失败；禁止 resize、identity fallback、ellipse fallback。Planar homography 不是 3D fruit surface 的 pixel-perfect registration，所以 post-warp erosion 在 DVP2 coordinate space 执行，用于降低边缘背景/托盘/阴影污染风险；REAL HARDWARE ROI ACCEPTANCE PENDING。
-- P1C-2A.5 已改为 Background Reference Fruit Segmentation：固定暗箱/相机/光源环境先采空背景，再对样品 RGB 做差分分割；该方向不需要训练、不依赖 GPU/AI checkpoint、不要求每个水果写颜色阈值，且可离线解释和低维护。当前只完成软件算法与 synthetic tests，真实背景采集、硬件兼容性 metadata 和人工 mask 验收仍为 REAL FRUIT SEGMENTATION ACCEPTANCE PENDING；不能声称覆盖所有水果或达到固定 Mean IoU 指标。
+- P1C-2A.5 已改为 Background Reference Fruit Segmentation：固定暗箱/相机/光源环境先采空背景，再对样品 RGB 做差分分割；该方向不需要训练、不依赖 GPU/AI checkpoint、不要求每个水果写颜色阈值，且可离线解释和低维护。主工作站已新增 Capture Settings / Background Reference 管理入口，可导入托管背景图、通过 RGB scientific capture 拍摄空样品台背景、预览、设为当前、持久化 active background，并在新建 Sample metadata 中独立记录 `background_reference`。现有算法已有 `extract_feature_record(segmentation_mode="background_reference")` 输入接口，但主工作站预测入口尚未自动切换消费 active background；真实硬件兼容性 metadata、人工 mask 验收和算法自动接入仍为 REAL FRUIT SEGMENTATION ACCEPTANCE PENDING，不能声称覆盖所有水果或达到固定 Mean IoU 指标。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
 - Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。

@@ -26,6 +26,8 @@ host_software/static_ui_prototype_bin/
   config/registration_profile.json (runtime, gitignored)
   config/background_reference.example.json
   runtime/background_reference/ (runtime, gitignored)
+    background_references.json
+    images/background_<timestamp>_<id>.png
   manual_registered_roi_output/ (runtime, gitignored)
   quality_prediction.py
   quality_algorithm/
@@ -35,6 +37,14 @@ host_software/static_ui_prototype_bin/
   trained_models/
   tests/
 ```
+
+Background Reference runtime store:
+
+- `backend_server.BackgroundReferenceStore` owns `runtime/background_reference/background_references.json` and managed PNG files under `runtime/background_reference/images/`.
+- Import copies/converts user-selected images into managed PNG files and never modifies or deletes the user original.
+- Camera capture uses `CameraManager.capture_rgb_frame()` scientific RGB capture and stores the resulting frame as managed PNG. It does not use browser preview JPEG.
+- Store snapshot exposes `activeId`, `active`, `items`, `missing` and `previewUrl`. Missing active files are reported as Missing instead of failing startup.
+- New Sample metadata writes `background_reference` independently from `calibrationId` / CalibrationSet.
 
 运行时结构：
 
@@ -57,6 +67,7 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
+| Background Reference 管理 | `backend_server.py`, `app.js` | `BackgroundReferenceStore`, `loadBackgroundReference()`, `renderBackgroundReference()` | RGB scientific capture 帧或用户选择的本地图片 | `runtime/background_reference/` 下的托管 PNG、图库 JSON、active background、Sample metadata `background_reference`；与 CalibrationSet/calibrationId 独立 | PIL, CameraManager |
 | 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `DeviceManager.capture_readiness()` | 连接/电机/光源/相机/标定检查状态与当前 true-capture plan | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用；P1B-8 后 `trueCapturePrepared` 来自当前 `TrueCapturePlan` readiness，不再硬编码 true，也不代表 hardware acceptance PASS | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证并接入正式 PNG 保存，DVP2 adapter 已接入 raw mono PNG、多波段、Dark/White、Sample MultiView；真实多视角仍被 SampleStage protocol gate 阻断 |
 | 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()`, `renderOperatorOverview()`, `runOperatorPrimaryAction()` | `state`、设备状态、相机状态、样品状态、形态任务、预测任务 | 顶栏“当前状态”与 Operator Workbench 总览卡；下一步 Primary Action 只转发到现有 UI 入口 | 前端派生状态，不新增后端状态源 |
 | STM32 串口 | `serial_service.py` | `SerialService` | 串口名、超时、旧两字节命令或 raw bytes | 串口 open/read/write/clear buffers、旧两字节 RESULT、异常 | pyserial |
@@ -109,10 +120,23 @@ GET /api/status
   -> CameraManager.status()
   -> CameraSettingsStore.snapshot()
   -> SessionState.snapshot()
+  -> BackgroundReferenceStore.snapshot()
   -> defaultSaveRoot
 ```
 
-输出包括 Python 依赖、设备准备状态、真实/离线设备状态、顶层 `cameras`、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。`device.cameras` 与顶层 `cameras` 保持同一状态来源。
+输出包括 Python 依赖、设备准备状态、真实/离线设备状态、顶层 `cameras`、当前样品、当前拍摄目录、分析目录、果种/品种、样品模式、已选模型和当前 Background Reference。`device.cameras` 与顶层 `cameras` 保持同一状态来源。
+
+### Background Reference
+
+```text
+GET  /api/background-reference
+POST /api/background-reference/import    body: {path}
+POST /api/background-reference/capture   body: {operatorConfirmedEmptyStage:true}
+POST /api/background-reference/activate  body: {backgroundId}
+POST /api/background-reference/clear
+```
+
+`import` 使用系统文件选择器返回的路径，把用户图片复制/转换到程序管理目录，不修改用户原文件。`capture` 要求操作员确认样品台为空，并调用 `CameraManager.capture_rgb_frame()`；如果 RGB scientific capture 未就绪则返回真实错误，不使用 preview JPEG。`activate` 保证同一时间只有一个 active background。新建 Sample 时，`ensure_sample_capture_folder()` 把 active background 写入 metadata 的 `background_reference`，不写入或复用 `calibrationId`。
 
 ### 相机参数持久化
 

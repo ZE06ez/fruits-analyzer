@@ -2,6 +2,14 @@
 
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
 
+## 2026-09-15 UI Workspace Simplification + Background Reference Management
+
+- 修改内容：检测工作台左侧导航收敛为“样品与采集 / 分析详情”，删除重复的“智能分析”、检测结果和样品记录入口；数据预处理、ROI 与特征、糖度预测、酸度与 pH、糖酸比保留为分析详情页顶部步骤导航。
+- 修改内容：样品与采集页新增当前任务摘要、正常检测/训练数据采集模式分流和低视觉权重“采集设置”入口；训练数据采集模式隐藏检测模型区块，不要求 Production/Default 模型，不伪造预测值。
+- 修改内容：新增 Background Reference 管理边界：`runtime/background_reference/` 持久化图库 JSON 与托管 PNG，支持导入本地背景图、使用 RGB scientific capture 拍摄背景、预览、设为当前、取消使用，并在新建 Sample metadata 中独立记录 `background_reference`。Background Reference 与 Dark/White CalibrationSet/calibrationId 保持独立。
+- 修改内容：新增 `/api/background-reference`、`/api/background-reference/import|capture|activate|clear`；拍摄背景只调用 `CameraManager.capture_rgb_frame()` 正式 RGB scientific capture，失败时如实返回 Not Ready/CameraError，不使用 preview JPEG 或模拟图片。
+- 验收状态：Background Reference 管理和 metadata 关联已实现；现有算法已有 `extract_feature_record(segmentation_mode="background_reference")` 接口，但主工作站预测入口尚未自动切换到该 segmentation mode，本轮不伪造“背景分割已完成”。
+
 ## 2026-09-13 P1D-1 Capture-Only Training Sample Workflow
 
 - 修改内容：主程序新建样品新增 `sample_mode=inspection/training_capture`。正常检测继续使用 `/api/quality-models`、Default 和 `generic` fallback 匹配模型；训练数据采集允许自由输入 Fruit Type / Variety，并可在没有任何 Published/Default/Production 模型时创建样品。
