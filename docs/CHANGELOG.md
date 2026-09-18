@@ -1,6 +1,52 @@
 # Changelog
 
+## 2026-09-19 P1E-6 Engineering & Productization Closure
+
+- 修改内容：新增 `runtime_support.py`，统一 `APP_VERSION`、冻结 EXE app data root、runtime directory bootstrap、atomic JSON write、SQLite backup/migration、rotation logging 与 config error 类型；Model Studio/Inspection 改为 schema version `2`，migration 使用 transaction、`schema_migrations` 和 migration 前 backup，旧结构仍增量补列而非 DROP/recreate。
+- 修改内容：进程重启时训练 `Queued/Preparing/Training` 标记 `Interrupted`，Inspection `CREATED/RUNNING` 标记 `FAILED_RECOVERABLE`；新增 `/api/health`，只报告 backend/database 软件就绪状态。launcher 在现有 Windows named-mutex 边界上增加 logging 与 best-effort server/device shutdown，不重写 single-instance 机制。
+- 修改内容：关键 metadata/background/registration/camera/runtime JSON 使用 atomic replace；Model Quality Policy example 首次 bootstrap 到 runtime config，后续不覆盖用户文件，损坏 JSON 以 `CONFIG_INVALID` 明确失败或由既有 camera store 返回 warning/default。requirements 收紧 numpy/scipy/scikit-learn/joblib/Pillow/PyInstaller 兼容区间；spec 不再错误排除 SciPy，并显式包含 P1E modules。新增 Windows GitHub Actions 无硬件 workflow、产品化 migration/recovery/config/health/spec tests 和部署说明。
+- 验收状态：software productization baseline complete；不代表 Production Ready，不代表真实相机/DVP2/STM32/滤光轮/样品台验收，也不代表 scientific validation 或 real Production model approval。
+
 本文档只记录能从 Git 历史或当前代码确认的阶段。无法确认具体日期的内容标记为“历史版本，具体日期待确认”。
+
+## 2026-09-19 P1E-5 Software-enforced Model Quality Gate
+
+- 新增 `quality_algorithm/model_quality.py`，提供可配置 `ModelQualityPolicy`、结构化 `ModelQualityReport` 和固定 PASS/WARN/FAIL/NOT_AVAILABLE 计算规则。
+- `publish_model()` 与 `set_default_model()` 保留既有 Production ModelInputContract gate，并新增质量 gate；失败返回 `MODEL_QUALITY_GATE_FAILED` 与 blocked checks。
+- 质量报告持久化到 Model Studio SQLite 和模型 metadata；新增质量查询 API 和 Model Card Quality 状态。
+- 训练 metadata 新增 feature statistics 与 target range，提供 deterministic feature range helper；不引入新的 ML OOD 算法。
+- 默认 policy 与 physical bounds 是 placeholder/software gate defaults，不等于 scientific accuracy validation、real Production approval 或 hardware acceptance。
+
+## 2026-09-18 P1E-4 Detection History & Traceability
+
+- 修改内容：新增独立 `inspection/inspection.sqlite`，将 Inspection 聚合记录与 Model Studio 数据库分离；保存 Sample、原始文件引用、软件版本、实际 pipeline contract/signature、Calibration、Background Reference、Registration 和模型 provenance。
+- 修改内容：主程序 SSC/TA/pH prediction 继续复用现有预测函数，后端在 orchestration 层事务性 upsert 到同一 Inspection；成功/失败混合时写 `PARTIAL`，失败值为 NULL 和稳定 error code，不重新读取当前 Default Model 或当前 Background Reference。
+- 修改内容：新增 `/api/inspections` 列表、详情和 archive API，支持分页、fruit/variety/status/date filters；结果区加入最小历史列表和详情查看。
+- 验收状态：P1E-4 软件持久化、失败记录、provenance 快照、列表/详情/归档和后端回归已测试；正式 PDF/科研报告、真实硬件采集和现场/科学验收仍未完成。本轮不进入 P1E-5，不修改硬件协议、STM32、Camera Adapter 或 Production 模型状态语义。
+
+## 2026-09-18 P1E-3 Software E2E Acceptance
+
+- 修改内容：新增 `tests/e2e_support.py` 与 `tests/test_software_e2e.py`，在临时目录、临时 SQLite 和 deterministic synthetic Sample 上调用真实 Model Studio service、shared production analysis pipeline、PLSR/RAW 训练、Candidate -> Validated -> Published -> Default lifecycle 和主程序 SSC prediction，完成训练到检测的软件闭环。
+- 修改内容：E2E happy path 使用 Dark/White calibration、Background Reference segmentation、calibrated registration、registered ROI 和完整波段；fault injection 覆盖 calibration、background reference、registration profile、ROI、feature schema、band、scope 和 model contract，不连接 RGB/DVP2/STM32/滤光轮/样品台。
+- 修改内容：修正 RegistrationProfile 文件路径的语义 digest、FilterBand 配置解析和 Background Reference semantic contract；新增 `MODEL_INPUT_CONTRACT_NOT_PRODUCTION`，禁止 legacy/development contract 进入 Published/Default。
+- 验收状态：`Software E2E Acceptance PASS`（fake/deterministic environment only）。这不代表 Hardware PASS、Scientific validation PASS 或 Production ready；真实背景参考、registration/ROI overlay、Dark/White 物理校正、硬件采集和真实生产模型仍待现场/科学验收。本轮不进入 P1E-4。
+
+## 2026-09-18 P1E-2 Pipeline Signature / Model Input Contract
+
+- 修改内容：`quality_algorithm.analysis_pipeline` 新增 `ModelInputContract`、canonical contract JSON 和 SHA-256 `pipeline_signature`。contract 只描述模型输入语义，包括 pipeline/schema version、calibration mode、segmentation algorithm/params、registration profile semantic digest、ordered wavelength/filter mapping digest、registered ROI params、feature schema/feature names 和 input modality；不包含 sample_id、job_id、时间戳、绝对路径或本次运行 provenance。
+- 修改内容：`run_feature_pipeline()` 生成的 `FeatureRecord` 现在携带 `model_input_contract` 与 `pipeline_signature`。Model Studio `generate_features()` 要求同一个 Dataset Version 内样品 signature 一致，并把 contract/signature 写入 feature generation 结果。
+- 修改内容：Model Studio training job 会把 `feature_pipeline`、`model_input_contract` 和 `pipeline_signature` 写入候选模型 `metadata.json`；`publish_model()` 与 `set_default_model()` 会阻止缺少或篡改 contract/signature 的模型进入 Published/Default。
+- 修改内容：`quality_prediction.py` 预测时不再对缺少契约的模型静默套用 production pipeline。新模型必须带 contract/signature；旧模型只有 metadata 明确 legacy/development compatibility 时才允许跳过新 contract gate。`predict_feature_record()` 在调用 `model.predict()` 前先执行 contract/signature 校验，mismatch 返回稳定 `MODEL_INPUT_MISMATCH` / `MODEL_INPUT_CONTRACT_MISSING`。
+- 验收状态：软件层 contract、signature、training metadata、publish/default guard、prediction preflight 和 P1E-3 deterministic software E2E 已通过；真实 Background Reference 质量、真实 registration profile、RGB->DVP2 ROI overlay、Dark/White 物理校正和硬件 acceptance 仍待现场验收。本轮不修改 UI、硬件协议、STM32、Camera Adapter 或 Production 模型状态语义。
+
+## 2026-09-16 P1E-1 Production Analysis Pipeline Unification
+
+- 修改内容：新增 `quality_algorithm/analysis_pipeline.py`，提供 `FeaturePipelineConfig` 和 `run_feature_pipeline()` 作为训练端与检测端共享的正式 FeatureRecord 入口。
+- 修改内容：Production pipeline 默认要求 Dark/White calibration、Background Reference segmentation、calibrated RGB->DVP2 registration、registered multispectral conservative ROI 和完整 enabled wavelength；缺少正式依赖时抛出稳定 `FeatureExtractionError`，不静默 fallback 到 `allow_uncalibrated=True`、`legacy_color` 或 `identity`。
+- 修改内容：Legacy/development 旧数据兼容保留为显式 `FeaturePipelineConfig.legacy()` / `development()`；底层 `extract_feature_record()` 和旧算法未删除。
+- 修改内容：Model Studio `generate_features()` 改为通过 shared pipeline 生成 feature CSV；训练 job 会把本次 `feature_pipeline` 写入候选模型 metadata。主程序 `quality_prediction.py` 预测前也通过同一 pipeline 生成 FeatureRecord，并优先使用模型 metadata 中记录的 pipeline 配置。P1E-2 后旧模型缺少正式输入契约时不再按 production 默认静默执行，必须显式 legacy/development compatibility。
+- 修改内容：`training/build_dataset.py` 改为通过 shared pipeline 构建 feature rows，默认保持显式 legacy 兼容。
+- 验收状态：软件统一入口和 production fallback guard 已由单元测试覆盖；真实 Background Reference 质量、真实 registration profile、RGB->DVP2 ROI overlay、Dark/White 物理校正和硬件 acceptance 仍待现场验收。本轮不进入 P1E-2/P1E-3，不修改 UI、硬件协议、STM32、Camera Adapter 或 Production 模型状态语义。
 
 ## 2026-09-15 UI Workspace Simplification + Background Reference Management
 
@@ -8,7 +54,7 @@
 - 修改内容：样品与采集页新增当前任务摘要、正常检测/训练数据采集模式分流和低视觉权重“采集设置”入口；训练数据采集模式隐藏检测模型区块，不要求 Production/Default 模型，不伪造预测值。
 - 修改内容：新增 Background Reference 管理边界：`runtime/background_reference/` 持久化图库 JSON 与托管 PNG，支持导入本地背景图、使用 RGB scientific capture 拍摄背景、预览、设为当前、取消使用，并在新建 Sample metadata 中独立记录 `background_reference`。Background Reference 与 Dark/White CalibrationSet/calibrationId 保持独立。
 - 修改内容：新增 `/api/background-reference`、`/api/background-reference/import|capture|activate|clear`；拍摄背景只调用 `CameraManager.capture_rgb_frame()` 正式 RGB scientific capture，失败时如实返回 Not Ready/CameraError，不使用 preview JPEG 或模拟图片。
-- 验收状态：Background Reference 管理和 metadata 关联已实现；现有算法已有 `extract_feature_record(segmentation_mode="background_reference")` 接口，但主工作站预测入口尚未自动切换到该 segmentation mode，本轮不伪造“背景分割已完成”。
+- 验收状态：Background Reference 管理和 metadata 关联已实现；当时算法已有 `extract_feature_record(segmentation_mode="background_reference")` 接口，但主工作站预测入口尚未自动切换到该 segmentation mode。P1E-1 后预测入口已通过 shared production analysis pipeline 使用 Background Reference，但真实硬件 mask 验收仍待完成。
 
 ## 2026-09-13 P1D-1 Capture-Only Training Sample Workflow
 

@@ -1122,6 +1122,17 @@
           <p class="status-note" id="statusNote">硬件未连接，当前仅用于界面调试与功能预留。</p>
           <button id="exportReport">导出结果</button>
         </section>
+
+        <section class="result-card inspection-history-card">
+          <div class="result-card-head">
+            <h2>检测记录</h2>
+            <button id="refreshInspectionHistory" type="button">刷新</button>
+          </div>
+          <div id="inspectionHistoryList" class="inspection-history-list">
+            <p class="status-note">暂无检测记录</p>
+          </div>
+          <div id="inspectionHistoryDetail" class="inspection-history-detail" hidden></div>
+        </section>
       </aside>
     </main>
 

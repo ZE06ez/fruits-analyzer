@@ -15,13 +15,15 @@ from .config import (
     RgbCameraConfig,
 )
 from .dvp2_mono import DEFAULT_DVP2_SERIAL
+from runtime_support import atomic_write_json, runtime_data_dir
 
 
 CAMERA_SETTINGS_VERSION = 1
 
 
 def default_camera_settings_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config" / "camera_settings.json"
+    app_dir = Path(__file__).resolve().parents[1]
+    return runtime_data_dir(app_dir) / "config" / "camera_settings.json"
 
 
 def utc_timestamp() -> str:
@@ -106,10 +108,7 @@ class CameraSettingsStore:
             "rgb": self.normalize_rgb((document or {}).get("rgb") or {}),
             "multispectral": self.normalize_multispectral((document or {}).get("multispectral") or {}),
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_name(f"{self.path.name}.tmp")
-        tmp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp_path, self.path)
+        atomic_write_json(self.path, normalized)
         print(f"[camera.settings] save path={self.path}", flush=True)
         return normalized
 

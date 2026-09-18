@@ -3837,6 +3837,50 @@ dd {
   font-weight: 650;
 }
 
+.result-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.result-card-head h2 {
+  margin: 0;
+}
+
+.inspection-history-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.inspection-history-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.inspection-history-item span,
+.inspection-history-item small,
+.inspection-history-detail p,
+.inspection-history-result {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.inspection-history-detail {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
 @media (max-width: 900px) {
   .tungsten-channel-grid,
   .compact-controls {

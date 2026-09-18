@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .filters import FilterBand, expected_wavelengths
-from .spectral_features import FeatureExtractionError, extract_feature_record
+from .analysis_pipeline import FeaturePipelineConfig, run_feature_pipeline
+from .spectral_features import FeatureExtractionError
 
 
 @dataclass
@@ -45,6 +46,7 @@ def build_feature_rows(
     *,
     filters: list[FilterBand] | None = None,
     allow_uncalibrated: bool = True,
+    pipeline_config: FeaturePipelineConfig | dict | None = None,
 ) -> list[dict]:
     root = Path(samples_root).expanduser()
     labels = read_labels_csv(labels_csv)
@@ -54,7 +56,8 @@ def build_feature_rows(
         if label is None:
             continue
         try:
-            record = extract_feature_record(sample_dir, filters=filters, allow_uncalibrated=allow_uncalibrated)
+            config = pipeline_config if pipeline_config is not None else FeaturePipelineConfig.legacy(filters=filters, require_calibration=not allow_uncalibrated)
+            record = run_feature_pipeline(sample_dir, config=config)
         except FeatureExtractionError:
             continue
         row = {"sample_id": record.sample_id}

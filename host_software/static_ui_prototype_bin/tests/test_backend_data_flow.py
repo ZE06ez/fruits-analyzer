@@ -11,6 +11,7 @@ from PIL import Image
 
 from backend_server import JobStore, SessionState, create_handler, create_offline_capture_dataset, validate_file_path, validate_folder_path
 from model_studio.service import ModelStudioService
+from quality_algorithm.analysis_pipeline import FeaturePipelineConfig, build_model_input_contract, pipeline_signature
 
 try:
     from .http_test_utils import InProcessHttpClient
@@ -685,20 +686,46 @@ class BackendDataFlowTests(unittest.TestCase):
 
     def test_model_studio_model_delete_route_updates_quality_models(self):
         model_id = "api_delete_model"
+        dataset = self.studio.create_dataset({"datasetName": "API Delete Dataset", "fruitType": "blueberry", "variety": "Duke"})
+        version = self.studio.create_dataset_version(dataset["dataset_id"], "API Delete Version")
         model_dir = self.studio.model_dir / "candidates" / "api" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         (model_dir / "model.joblib").write_bytes(b"fake")
+        config = FeaturePipelineConfig.production()
+        contract = build_model_input_contract(
+            config=config,
+            wavelengths=[450, 560, 670],
+            calibrated=True,
+            feature_names=["R450", "R560", "R670"],
+        ).to_dict()
         (model_dir / "metadata.json").write_text(json.dumps({
             "model_id": model_id,
             "target": "ssc",
             "model_type": "SVR",
             "preprocessing": "SNV",
-        }), encoding="utf-8")
+            "wavelengths_nm": [450, 560, 670],
+            "feature_names": ["R450", "R560", "R670"],
+            "preprocessing_state": {"method": "SNV"},
+            "calibration_required": False,
+            "dataset_id": dataset["dataset_id"],
+            "dataset_version_id": version["dataset_version_id"],
+            "fruit_type": "blueberry",
+            "variety": "Duke",
+            "sample_count": 10,
+            "validation_method": "GroupKFold_by_sample_id",
+            "r2": 0.8,
+            "rmse": 0.2,
+            "mae": 0.15,
+            "rpd": 2.0,
+            "feature_pipeline": config.to_dict(),
+            "model_input_contract": contract,
+            "pipeline_signature": pipeline_signature(contract),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
         with self.studio.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,model_dir,metadata_json,created_at,published_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,dataset_id,dataset_version_id,dataset_version_label,model_dir,metadata_json,created_at,published_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     model_id,
@@ -712,6 +739,9 @@ class BackendDataFlowTests(unittest.TestCase):
                     "v1",
                     "Published",
                     0,
+                    dataset["dataset_id"],
+                    version["dataset_version_id"],
+                    version["version_name"],
                     str(model_dir),
                     "{}",
                     "2026-01-01 00:00:00",
