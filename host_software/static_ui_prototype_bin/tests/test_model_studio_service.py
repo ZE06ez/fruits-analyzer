@@ -11,6 +11,15 @@ from PIL import Image
 
 import quality_prediction
 from model_studio.service import ModelStudioError, ModelStudioService
+from quality_algorithm.analysis_pipeline import FeaturePipelineConfig, build_model_input_contract, pipeline_signature
+from quality_algorithm.background_reference import create_background_reference, save_background_reference
+from quality_algorithm.registration import (
+    REGISTRATION_METHOD_PLANAR_HOMOGRAPHY_V1,
+    CameraRegistrationEndpoint,
+    CheckerboardTarget,
+    RegistrationMetrics,
+    RegistrationProfile,
+)
 from quality_prediction import build_sample_session, predict_ssc
 
 
@@ -19,6 +28,7 @@ class ModelStudioServiceTests(unittest.TestCase):
         self.app_dir = Path(tempfile.mkdtemp(prefix="fta_model_studio_app_"))
         self.samples_root = Path(tempfile.mkdtemp(prefix="fta_model_studio_samples_"))
         self.service = ModelStudioService(self.app_dir)
+        self.service.feature_pipeline_config = FeaturePipelineConfig.legacy()
         self._write_samples(9)
         self.labels_csv = self.samples_root / "labels.csv"
         with self.labels_csv.open("w", encoding="utf-8", newline="") as handle:
@@ -48,6 +58,62 @@ class ModelStudioServiceTests(unittest.TestCase):
                 Image.new("L", (24, 24), base + index * 3).save(ms / f"{band}.png")
                 Image.new("L", (24, 24), 0).save(dark / f"{band}.png")
                 Image.new("L", (24, 24), 255).save(white / f"{band}.png")
+
+    def _write_sample_metadata(self, folder_name: str, **values) -> None:
+        sample = self.samples_root / folder_name
+        metadata = {
+            "sample_id": values.get("sample_id", folder_name),
+            "sample_name": values.get("sample_name", folder_name),
+        }
+        metadata.update({key: value for key, value in values.items() if value is not None})
+        (sample / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    def _enable_production_pipeline(self) -> None:
+        resources = self.samples_root / "production_resources"
+        resources.mkdir(exist_ok=True)
+        background_path = resources / "background.png"
+        Image.new("RGB", (24, 24), (0, 0, 0)).save(background_path)
+        reference = create_background_reference(background_path, reference_id="test_background")
+        reference.capturedAt = "2026-01-01T00:00:00Z"
+        background_json = resources / "background_reference.json"
+        save_background_reference(reference, background_json)
+        rgb_endpoint = CameraRegistrationEndpoint(stableId="test-rgb", width=24, height=24)
+        ms_endpoint = CameraRegistrationEndpoint(stableId="test-ms", width=24, height=24)
+        profile = RegistrationProfile(
+            schemaVersion=1,
+            method=REGISTRATION_METHOD_PLANAR_HOMOGRAPHY_V1,
+            rgb=rgb_endpoint,
+            multispectral=ms_endpoint,
+            referenceBandNm=560,
+            target=CheckerboardTarget(innerCornersCols=2, innerCornersRows=2, squareSizeMm=10.0),
+            matrixRgbToMultispectral=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            calibrationPlane="test_plane",
+            metrics=RegistrationMetrics(pointCount=4, rmsePx=0.0, meanErrorPx=0.0, maxErrorPx=0.0, p95ErrorPx=0.0),
+            createdAt="2026-01-01T00:00:00Z",
+            valid=True,
+        )
+        profile_path = resources / "registration_profile.json"
+        profile.save_json(profile_path)
+        for sample in self.samples_root.glob("sample_*"):
+            metadata = {
+                "sample_id": sample.name,
+                "sample_name": sample.name,
+                "fruit_type": "blueberry",
+                "variety": "Duke",
+                "background_reference": str(background_json),
+                "analysis_pipeline": {
+                    "registration_profile": str(profile_path),
+                    "registration_rgb_endpoint": rgb_endpoint.to_dict(),
+                    "registration_multispectral_endpoint": ms_endpoint.to_dict(),
+                },
+            }
+            (sample / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        self.service.feature_pipeline_config = FeaturePipelineConfig.production(
+            background_reference=background_json,
+            registration_profile=profile_path,
+            registration_rgb_endpoint=rgb_endpoint,
+            registration_multispectral_endpoint=ms_endpoint,
+        )
 
     def test_dataset_versions_are_snapshots_and_excluded_samples_are_not_included(self):
         dataset = self.service.create_dataset({
@@ -134,6 +200,75 @@ class ModelStudioServiceTests(unittest.TestCase):
         self.assertFalse(copied_path.exists())
         self.assertTrue(source_sample.exists())
 
+    def test_import_samples_prefers_sample_metadata_scope_and_initializes_dataset_scope(self):
+        self._write_sample_metadata(
+            "sample_000",
+            sample_id="Duke_001",
+            sample_name="Duke Training 001",
+            sample_mode="training_capture",
+            fruit_type="蓝莓",
+            variety="Duke",
+        )
+        dataset = self.service.create_dataset({
+            "datasetName": "Training Capture Import",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        imported = self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+
+        self.assertEqual(imported["imported"], 1)
+        self.assertEqual(imported["scope"]["source"], "sample_metadata")
+        dataset = self.service.get_dataset(dataset["dataset_id"])
+        self.assertEqual(dataset["fruit_type"], "蓝莓")
+        self.assertEqual(dataset["variety"], "Duke")
+        sample = self.service.get_sample(dataset["dataset_id"], "Duke_001")
+        self.assertEqual(sample["sample_name"], "Duke Training 001")
+        self.assertEqual(sample["fruit_type"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+
+    def test_import_samples_rejects_scope_conflicts(self):
+        self._write_sample_metadata("sample_000", fruit_type="蓝莓", variety="Duke")
+        self._write_sample_metadata("sample_001", fruit_type="苹果", variety="Fuji")
+        dataset = self.service.create_dataset({
+            "datasetName": "Mixed Scope",
+            "storagePath": str(self.samples_root),
+        })
+
+        with self.assertRaisesRegex(ModelStudioError, "DATASET_SAMPLE_SCOPE_CONFLICT") as ctx:
+            self.service.import_samples(dataset["dataset_id"], self.samples_root)
+
+        message = str(ctx.exception)
+        self.assertIn("蓝莓", message)
+        self.assertIn("苹果", message)
+        self.assertEqual(self.service.list_samples(dataset["dataset_id"])["total"], 0)
+
+    def test_import_samples_falls_back_to_dataset_scope_for_legacy_metadata(self):
+        self._write_sample_metadata("sample_000")
+        dataset = self.service.create_dataset({
+            "datasetName": "Legacy Scope",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+
+        sample = self.service.get_sample(dataset["dataset_id"], "sample_000")
+        self.assertEqual(sample["fruit_type"], "blueberry")
+        self.assertEqual(sample["variety"], "Duke")
+
+    def test_dataset_scope_conflict_blocks_import_into_existing_scope(self):
+        self._write_sample_metadata("sample_000", fruit_type="苹果", variety="Fuji")
+        dataset = self.service.create_dataset({
+            "datasetName": "Blueberry Existing Scope",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "storagePath": str(self.samples_root / "sample_000"),
+        })
+
+        with self.assertRaisesRegex(ModelStudioError, "DATASET_SAMPLE_SCOPE_CONFLICT"):
+            self.service.import_samples(dataset["dataset_id"], self.samples_root / "sample_000")
+
     def test_referenced_sample_cannot_be_replaced_or_permanently_deleted(self):
         source_sample = self.samples_root / "sample_003"
         (source_sample / "metadata.json").write_text('{"sample_id":"sample_003"}', encoding="utf-8")
@@ -212,6 +347,7 @@ class ModelStudioServiceTests(unittest.TestCase):
         self.assertIn("archived", row)
 
     def test_multiple_published_models_and_one_default_per_scope(self):
+        self._enable_production_pipeline()
         dataset = self.service.create_dataset({
             "datasetName": "Blueberry_Defaults",
             "fruitType": "blueberry",
@@ -250,6 +386,7 @@ class ModelStudioServiceTests(unittest.TestCase):
         self.assertEqual(self.service.list_published_models(fruit_type="blueberry", variety="Duke", target="ssc")[0]["model_id"], second["model_id"])
 
     def test_model_catalog_filters_published_scope_and_generic_fallback(self):
+        self._enable_production_pipeline()
         blueberry = self.service.create_dataset({
             "datasetName": "Blueberry_Catalog",
             "fruitType": "blueberry",
@@ -507,6 +644,8 @@ class ModelStudioServiceTests(unittest.TestCase):
             "target": "ssc",
             "models": ["PLSR"],
             "preprocessing": ["RAW"],
+            "fruitType": "apple",
+            "variety": "Fuji",
         })
         ta = self.service.create_experiment_and_training_job({
             "datasetId": dataset["dataset_id"],
@@ -516,6 +655,8 @@ class ModelStudioServiceTests(unittest.TestCase):
             "preprocessing": ["RAW"],
         })
         self.assertNotEqual(ssc["experiment"]["experiment_id"], ta["experiment"]["experiment_id"])
+        self.assertEqual(ssc["experiment"]["fruit_type"], "blueberry")
+        self.assertEqual(ssc["experiment"]["variety"], "Duke")
         self.assertEqual(self.service.get_experiment(ta["experiment"]["experiment_id"])["target"], "ta")
         job = self._wait_studio_job(ta["job"]["job_id"])
         self.assertEqual(job["status"], "Completed", job.get("error") or job.get("message"))
@@ -541,11 +682,19 @@ class ModelStudioServiceTests(unittest.TestCase):
         job = self._wait_studio_job(result["job"]["job_id"])
         self.assertEqual(job["status"], "Completed", job.get("error") or job.get("message"))
         self.assertTrue(all(row.get("target") == "ph" for row in job["result"]["results"] if not row.get("error")))
+        model = [item for item in self.service.list_models() if item["target"] == "ph"][0]
+        self.assertEqual(model["fruit_type"], "blueberry")
+        self.assertEqual(model["variety"], "Duke")
+        metadata = json.loads((Path(model["model_dir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["fruit_type"], "blueberry")
+        self.assertEqual(metadata["variety"], "Duke")
 
     def test_dataset_import_labels_features_training_publish_and_predict(self):
+        self._enable_production_pipeline()
         dataset = self.service.create_dataset({
             "datasetName": "Blueberry_Test",
             "fruitType": "blueberry",
+            "variety": "Duke",
             "storagePath": str(self.samples_root),
         })
         imported = self.service.import_samples(dataset["dataset_id"])
@@ -560,6 +709,8 @@ class ModelStudioServiceTests(unittest.TestCase):
         features = self.service.generate_features(dataset["dataset_id"])
         self.assertEqual(features["rows"], 9)
         self.assertTrue(Path(features["featureCsv"]).exists())
+        self.assertTrue(features["modelInputContract"])
+        self.assertTrue(features["pipelineSignature"])
 
         experiment = self.service.create_experiment({
             "datasetId": dataset["dataset_id"],
@@ -582,12 +733,15 @@ class ModelStudioServiceTests(unittest.TestCase):
         production = self.service.publish_model(models[0]["model_id"], {"setDefault": True, "displayName": "Blueberry SSC Default"})
         self.assertEqual(production["status"], "Default")
         self.assertTrue((self.app_dir / "trained_models" / "ssc" / "model.joblib").exists())
+        production_metadata = json.loads((self.app_dir / "trained_models" / "ssc" / "metadata.json").read_text(encoding="utf-8"))
+        self.assertTrue(production_metadata["model_input_contract"])
+        self.assertEqual(production_metadata["pipeline_signature"], features["pipelineSignature"])
         self.assertEqual(len([m for m in self.service.list_models() if m["target"] == "ssc" and m["status"] == "Default"]), 1)
 
         old_root = quality_prediction.MODEL_ROOT
         try:
             quality_prediction.MODEL_ROOT = self.app_dir / "trained_models"
-            session, report = build_sample_session(self.samples_root / "sample_001", fruit_type="blueberry", variety="generic")
+            session, report = build_sample_session(self.samples_root / "sample_001", fruit_type="blueberry", variety="Duke")
             self.assertTrue(report["complete"])
             result = predict_ssc(session)
             self.assertEqual(result.status, "success")
@@ -614,6 +768,31 @@ class ModelStudioServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelStudioError, "没有样品"):
             self.service.create_training_job(experiment["experiment_id"])
 
+    def test_publish_and_default_block_models_without_input_contract(self):
+        candidate_id = self._insert_fake_model("missing_contract_candidate", status="Candidate", include_contract=False)
+        with self.assertRaisesRegex(ModelStudioError, "MODEL_INPUT_CONTRACT_MISSING"):
+            self.service.publish_model(candidate_id)
+
+        published_id = self._insert_fake_model("missing_contract_published", status="Published")
+        published_dir = Path(self.service.get_model(published_id)["model_dir"])
+        metadata = json.loads((published_dir / "metadata.json").read_text(encoding="utf-8"))
+        metadata.pop("model_input_contract", None)
+        metadata.pop("pipeline_signature", None)
+        (published_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self.assertRaisesRegex(ModelStudioError, "MODEL_INPUT_CONTRACT_MISSING"):
+            self.service.set_default_model(published_id)
+
+    def test_publish_and_default_block_legacy_contracts(self):
+        candidate_id = self._insert_fake_model("legacy_contract_candidate", status="Candidate", contract_mode="legacy")
+        with self.assertRaisesRegex(ModelStudioError, "MODEL_INPUT_CONTRACT_NOT_PRODUCTION"):
+            self.service.publish_model(candidate_id)
+
+        published_id = self._insert_fake_model("legacy_contract_published", status="Candidate", contract_mode="legacy")
+        with self.service.connect() as conn:
+            conn.execute("UPDATE models SET status='Published' WHERE model_id=?", (published_id,))
+        with self.assertRaisesRegex(ModelStudioError, "MODEL_INPUT_CONTRACT_NOT_PRODUCTION"):
+            self.service.set_default_model(published_id)
+
     def _wait_studio_job(self, job_id: str) -> dict:
         for _ in range(80):
             job = self.service.get_job(job_id)
@@ -632,17 +811,56 @@ class ModelStudioServiceTests(unittest.TestCase):
         dataset_version_id: str = "",
         experiment_id: str = "",
         job_id: str = "",
+        include_contract: bool = True,
+        contract_mode: str = "production",
     ) -> str:
+        if not dataset_id:
+            dataset = self.service.create_dataset({
+                "datasetName": f"Synthetic lineage {model_id}",
+                "fruitType": "blueberry",
+                "variety": "Duke",
+            })
+            dataset_id = dataset["dataset_id"]
+        if not dataset_version_id:
+            dataset_version_id = self.service.create_dataset_version(dataset_id, f"Synthetic lineage {model_id}")["dataset_version_id"]
         model_dir = self.service.model_dir / "candidates" / "fake" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         (model_dir / "model.joblib").write_bytes(b"fake")
-        (model_dir / "metadata.json").write_text(json.dumps({
+        metadata = {
             "model_id": model_id,
             "model_version": "v1",
             "target": target,
             "model_type": "PLSR",
             "preprocessing": "RAW",
-        }), encoding="utf-8")
+            "wavelengths_nm": [450, 560, 670],
+            "feature_names": ["R450", "R560", "R670"],
+            "preprocessing_state": {"method": "RAW"},
+            "calibration_required": False,
+            "dataset_id": dataset_id,
+            "dataset_version_id": dataset_version_id,
+            "fruit_type": "blueberry",
+            "variety": "Duke",
+            "sample_count": 10,
+            "validation_method": "GroupKFold_by_sample_id",
+            "r2": 0.8,
+            "rmse": 0.2,
+            "mae": 0.15,
+            "rpd": 2.0,
+        }
+        if include_contract:
+            config = FeaturePipelineConfig.legacy() if contract_mode == "legacy" else FeaturePipelineConfig.production()
+            contract = build_model_input_contract(
+                config=config,
+                wavelengths=[450, 560, 670],
+                calibrated=contract_mode != "legacy",
+                feature_names=["R450", "R560", "R670"],
+            ).to_dict()
+            metadata.update({
+                "feature_pipeline": config.to_dict(),
+                "model_input_contract": contract,
+                "pipeline_signature": pipeline_signature(contract),
+            })
+        (model_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         with self.service.connect() as conn:
             conn.execute(
                 """

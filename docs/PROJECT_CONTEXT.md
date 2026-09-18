@@ -1,6 +1,6 @@
 # Project Context
 
-更新时间：2026-09-12
+更新时间：2026-09-18
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -78,7 +78,7 @@ UI
 - `host_software/static_ui_prototype_bin/app.js`：前端状态机、全局系统状态派生、Operator Workbench 总览派生、采集/分析布局切换、样品流程、模型普通/高级展示、分析调用、结果渲染。
 - `docs/UI_ARCHITECTURE.md`：主检测软件 Operator/Engineer 工作区边界、一级导航和 Progressive Disclosure 约束。
 - `docs/UI_DESIGN_SYSTEM.md`：主检测软件 Dark Slate + Purple/Fuchsia/Cyan 视觉系统和控件状态契约。
-- `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发。
+- `host_software/static_ui_prototype_bin/backend_server.py`：HTTP API、样品会话、目录选择、离线采集、形态任务、预测接口、Model Studio API 转发，以及 `BackgroundReferenceStore` 管理 `runtime/background_reference/` 下的托管背景图、图库 JSON、active background 和样品 metadata 关联。
 - `host_software/static_ui_prototype_bin/serial_service.py`：STM32F407 串口服务，115200 8N1；保留旧两字节兼容 `send_command()`，并提供 raw `write_bytes()`/`read_bytes()` 给 current-firmware protocol adapter。
 - `host_software/static_ui_prototype_bin/stm32_protocol.py`：P1B-7.5A.1 AA55 current-firmware protocol 边界；包含 `CURRENT_STM32_FIRMWARE_PROFILE`、`CURRENT_FILTER_WHEEL_MAPPING`、`Stm32ProtocolProfile`、CRC16-CCITT-FALSE、AA55 codec、stream parser、STATUS/INFO decode 和 `FilterWheelMapping`。
 - `host_software/static_ui_prototype_bin/stm32_controller.py`：P1B-7.5A.2 STM32 current-firmware adapter；在单一 `SerialService` owner 上处理 ACK correlation、STATUS/INFO cache revision、handshake、PPR consistency diagnostic、command serialization、fresh STATUS mechanical verification、fan/LED/door/filter-wheel action 和 best-effort safe stop。
@@ -91,8 +91,8 @@ UI
 - `host_software/static_ui_prototype_bin/rotation_plan.py`：样品台多角度旋转采集计划；与滤光片转轮角度独立。
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
-- `host_software/static_ui_prototype_bin/quality_prediction.py`：`SampleSession`、`PredictionResult`、SSC/TA/pH 预测入口。
-- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、RGB-DVP2 几何配准标定、背景参考果实分割、特征提取、预处理、模型 IO。P1C-2A 后 `registration.py` 支持棋盘格角点检测、RGB -> DVP2 平面单应性估计、profile JSON 读写、reprojection metrics、设备/分辨率错用校验和可视化输出；运行时 `config/registration_profile.json` 被 Git 忽略，`config/registration_profile.example.json` 只作为不绑定真实设备的参考。P1C-2A.5 后正式 Fruit Mask 方向改为 Background Reference：`background_reference.py` 管理背景图 metadata、sha256 和相机/光照兼容性校验，`background_segmenter.py` 使用 RGB absolute difference + OpenCV Lab distance、固定阈值、形态学和连通域诊断生成 mask；SAM3 生产分割方向已放弃，不进入主程序依赖。
+- `host_software/static_ui_prototype_bin/quality_prediction.py`：`SampleSession`、`PredictionResult`、SSC/TA/pH 预测入口；P1E-1 后预测端不再直接决定 legacy/identity/uncalibrated 特征参数，而是通过 shared `quality_algorithm.analysis_pipeline.run_feature_pipeline()` 生成模型输入前的 `FeatureRecord`。P1E-2 后预测端会在 `model.predict()` 前校验模型 metadata 的 `model_input_contract` / `pipeline_signature`，缺失或不匹配时返回 `model_input_mismatch`，不生成假的 SSC/TA/pH；有 Model Studio 正式模型但 scope 不匹配时不再落到旧 target bundle。
+- `host_software/static_ui_prototype_bin/quality_algorithm/`：滤光片配置、暗/白校正、ROI、RGB-DVP2 几何配准标定、背景参考果实分割、registered DVP2 conservative ROI、统一分析管线、特征提取、预处理、模型 IO。P1C-2A 后 `registration.py` 支持棋盘格角点检测、RGB -> DVP2 平面单应性估计、profile JSON 读写、reprojection metrics、设备/分辨率错用校验和可视化输出；运行时 `config/registration_profile.json` 被 Git 忽略，`config/registration_profile.example.json` 只作为不绑定真实设备的参考。P1C-2A.5 后正式 Fruit Mask 方向改为 Background Reference：`background_reference.py` 管理背景图 metadata、sha256 和相机/光照兼容性校验，`background_segmenter.py` 使用 RGB absolute difference + OpenCV Lab distance、固定阈值、形态学和连通域诊断生成 mask；SAM3 生产分割方向已放弃，不进入主程序依赖。P1C-2B 后 `registered_roi.py` 把 RGB fruit mask 经 profile warp 到 DVP2 坐标，并在 DVP2 空间执行 conservative erosion 后供多光谱特征均值使用。P1E-1 后 `analysis_pipeline.py` 提供 `FeaturePipelineConfig` 和唯一正式入口，production 默认要求 Dark/White、Background Reference、calibrated registration 和 registered ROI；P1E-2 后同一入口还生成稳定 `ModelInputContract` 与 SHA-256 pipeline signature，且从实际解析的 profile/filter/background semantics 生成 Actual Contract；legacy/development 兼容必须显式配置。P1E-3 的 deterministic software E2E 已覆盖真实 service 闭环和 fault injection。
 - `host_software/static_ui_prototype_bin/training/`：特征 CSV 构建、PLSR/SVR/RF 训练、评估。
 - `host_software/static_ui_prototype_bin/model_studio/service.py`：SQLite 数据集、样品、标签、训练实验、候选模型、发布模型管理。
 - `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md`：P1B 真实硬件与采集系统正式验收规范，逐项覆盖 RGB、DVP2、STM32、风扇、LED3、推杆、滤光轮、Dark/White、多波段、样品台、多视角、数据完整性、metadata、安全和 true capture gate；未现场验证项默认 `NOT TESTED`，真实样品台和完整 true capture 当前为 `BLOCKED`。
@@ -129,22 +129,23 @@ UI
 当前 Model Studio 已有真实后端和 UI：
 
 1. 从主界面点击“模型训练”，打开 `/model-studio`。
-2. 新建 Dataset：填写名称、果种、品种；可选默认导入来源通过系统“选择文件夹”写入只读路径框；`ModelStudioService.create_dataset()` 在 SQLite 登记元数据，并创建本地托管目录 `model_studio_data/datasets/<dataset_id>/samples/` 与 `labels.csv`。
+2. 新建 Dataset：填写名称；果种、品种可手动填写，也可在导入第一批带 `metadata.json` 的 Sample 时由 Sample identity 建立；可选默认导入来源通过系统“选择文件夹”写入只读路径框；`ModelStudioService.create_dataset()` 在 SQLite 登记元数据，并创建本地托管目录 `model_studio_data/datasets/<dataset_id>/samples/` 与 `labels.csv`。
 3. 导入样品：用户通过系统“选择文件夹”选择主程序保存的 Sample Folder，后端先用 `validate_sample_folder()`/`inspect_sample_structure()` 检查 RGB、多光谱、暗/白校正和 `metadata.json`，返回 Valid/Warning/Invalid。
-4. 确认导入后，`import_samples()` 使用 COPY 把外部 Sample Folder 复制到 Dataset 本地仓库；SQLite `samples.storage_path`/`local_path` 指向本地副本，`source_path` 只记录原始来源。重复样品默认跳过，可作为新样品导入，不静默覆盖。
-5. 导入或录入实验标签：仍支持通过系统“选择文件”选择 `labels.csv`，格式为 `sample_id,ssc,ta,ph`；同时样品详情可手动输入 SSC/TA/pH，只有点击“保存标签”才写入 SQLite。
-6. 标签保存：`save_sample_label()` 校验数值，允许部分标签，更新 `labels` 表和 `samples.ssc/ta/ph`，同步 Dataset 本地 `labels.csv`，并标记 Dataset `dirty=1`。
-7. 数据质量检查：统计缺失波段、缺失校准、缺失标签、坏图、Excluded/Needs Review 样品。
-8. 创建数据集版本：对当前 Included 样品列表、本地路径和标签值生成 `sample_snapshot_json`/`label_snapshot_json` 与 hash；后续标签修改不会改变旧 Version 的历史含义。
-9. 生成特征：`generate_features()` 按 Dataset Version 快照中的本地 `local_path` 调用 `extract_feature_record()`，输出 `model_studio/artifacts/features/<version>_features.csv`。
-10. 创建训练实验：选择单一 target（SSC/TA/pH）、模型组合（PLSR/SVR/RF）、预处理组合（RAW/SNV/MSC）、验证方式（GroupKFold 或 TrainTestSplit）。
-11. 启动训练任务：后台线程运行 `_run_training_job()`，对每组预处理/模型组合调用 `training.train.train_one()`。
-12. 模型比较：训练结果按 RMSE 排序，模型注册为 `Candidate`，文件在 `model_studio/models/candidates/...`。
-13. 人工验证/发布：可标记 Validated，可手动 Publish。
-14. 设为默认：发布时选择 `setDefault` 或后续点击“设为默认”；只有此时模型才复制到 `trained_models/<target>/` 作为主程序 fallback。
-15. 主程序使用 Production/Default：`quality_prediction._select_registry_model()` 先查 Model Studio SQLite 中 Published/Default/Production 模型并校验果种/品种；没有指定/默认模型时才回落到 `trained_models/<target>`。
-16. Dataset 维护：Dataset List 和 Dataset Summary 均提供 Archive 与 Permanent Delete。Archive 只隐藏 active list，不删除样品、版本、实验、模型或 lineage；Permanent Delete 先读取 `/api/model-studio/datasets/<dataset_id>/references`，若有 Published/Default/Production 模型引用则阻止，否则可在 Dataset Name 确认后级联清理无生产价值的 Candidate/Validated/Archived 实验数据和受管文件。
-17. Model 维护：Model Card 提供“查看 / 重训 / 更多”。更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示 Validate、Publish、Set Default、Archive、Export、Delete Permanently 等合理操作；Default 和仍对应 legacy default bundle 的模型不能直接永久删除。
+4. 确认导入后，`import_samples()` 先读取每个 Sample 的 `metadata.json`，优先使用其中的 `sample_id`、`sample_name`、`fruit_type`、`variety`、`sample_mode` 和 capture time；只有旧数据缺少 fruit/variety 时才 fallback 到 Dataset scope。Dataset 为空 scope 且导入样品只有一个 fruit_type/variety 时，Dataset scope 自动继承 Sample identity；同一批或既有 Dataset 中混入多个 scope 会失败为 `DATASET_SAMPLE_SCOPE_CONFLICT`，不静默混合训练。
+5. `import_samples()` 使用 COPY 把外部 Sample Folder 复制到 Dataset 本地仓库；SQLite `samples.storage_path`/`local_path` 指向本地副本，`source_path` 只记录原始来源。重复样品默认跳过，可作为新样品导入，不静默覆盖。
+6. 导入或录入实验标签：仍支持通过系统“选择文件”选择 `labels.csv`，格式为 `sample_id,ssc,ta,ph`；同时样品详情可手动输入 SSC/TA/pH，只有点击“保存标签”才写入 SQLite。
+7. 标签保存：`save_sample_label()` 校验数值，允许部分标签，更新 `labels` 表和 `samples.ssc/ta/ph`，同步 Dataset 本地 `labels.csv`，并标记 Dataset `dirty=1`。
+8. 数据质量检查：统计缺失波段、缺失校准、缺失标签、坏图、Excluded/Needs Review 样品。
+9. 创建数据集版本：对当前 Included 样品列表、本地路径、Sample identity 和标签值生成 `sample_snapshot_json`/`label_snapshot_json` 与 hash；后续标签修改不会改变旧 Version 的历史含义。
+10. 生成特征：`generate_features()` 按 Dataset Version 快照中的本地 `local_path` 调用 shared `run_feature_pipeline()`，输出 `model_studio/artifacts/features/<version>_features.csv`，要求同一版本内样品 `pipeline_signature` 一致，并把本次 `FeaturePipelineConfig`、`model_input_contract`、`pipeline_signature` 写入后续候选模型 metadata，供检测端用同一特征语义生成并校验模型输入。
+11. 创建训练实验：选择单一 target（SSC/TA/pH）、模型组合（PLSR/SVR/RF）、预处理组合（RAW/SNV/MSC）、验证方式（GroupKFold 或 TrainTestSplit）；Experiment scope 自动继承 Dataset/Version scope，不默认允许 override 成另一个水果/品种。
+12. 启动训练任务：后台线程运行 `_run_training_job()`，对每组预处理/模型组合调用 `training.train.train_one()`。
+13. 模型比较：训练结果按 RMSE 排序，模型注册为 `Candidate`，Candidate metadata 继续保存 Dataset/Experiment 继承的 `fruit_type`、`variety` 和 target，文件在 `model_studio/models/candidates/...`。
+14. 人工验证/发布：可标记 Validated，可手动 Publish。
+15. 设为默认：发布时选择 `setDefault` 或后续点击“设为默认”；只有此时模型才复制到 `trained_models/<target>/` 作为主程序 fallback。
+16. 主程序使用 Production/Default：`quality_prediction._select_registry_model()` 先查 Model Studio SQLite 中 Published/Default/Production 模型并校验果种/品种；没有指定/默认模型时才回落到 `trained_models/<target>`。
+17. Dataset 维护：Dataset List 和 Dataset Summary 均提供 Archive 与 Permanent Delete。Archive 只隐藏 active list，不删除样品、版本、实验、模型或 lineage；Permanent Delete 先读取 `/api/model-studio/datasets/<dataset_id>/references`，若有 Published/Default/Production 模型引用则阻止，否则可在 Dataset Name 确认后级联清理无生产价值的 Candidate/Validated/Archived 实验数据和受管文件。
+18. Model 维护：Model Card 提供“查看 / 重训 / 更多”。更多菜单按 Candidate、Validated、Published、Default、Archived 状态显示 Validate、Publish、Set Default、Archive、Export、Delete Permanently 等合理操作；Default 和仍对应 legacy default bundle 的模型不能直接永久删除。
 
 ## 6. 模型系统
 
@@ -214,14 +215,17 @@ UI
 | Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、Sample 引用保护 Permanent Delete、Dataset Archive、带生产模型依赖保护的 Dataset Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、状态化 Archive/Delete、Retrain lineage；实际项目数据库暂无真实训练数据 |
 | Production 模型人工发布 | DONE | `publish_model()`/`set_default_model()`；复制到 `trained_models/<target>` |
 | 主程序按果种/品种选模型 | DONE | `/api/quality-models`、`resolve_model_id()`、`_select_registry_model()` |
-| SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；当前无生产模型时返回缺失 |
+| SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；P1E-1 后模型输入前的 FeatureRecord 通过 shared analysis pipeline 生成；P1E-2 后先校验 `model_input_contract` / `pipeline_signature` 再进入模型预测，缺少 production 分析依赖时返回 feature_error，缺少或不匹配 contract 时返回 model_input_mismatch，不伪造 SSC/TA/pH；当前无生产模型时返回缺失 |
 | 糖酸比/口感分析 | PARTIAL | 前端根据预测值计算，等级规则较简单 |
-| 真实相机 SDK | PARTIAL | RGB OpenCV/DirectShow adapter 已有并可预览；DVP2 已完成真实 SDK adapter、manual test 用户实机通过、网页预览/曝光/增益 API 已接入；RGB 单帧、DVP2 单帧、滤光轮+DVP2 多波段 sample sequence、Dark/White calibration sequence、Sample MultiView orchestration 和 P1B-8 单视角 `/api/capture/start` 软件入口已有；真实样品台、多视角硬件采集、hardware acceptance 和检测历史仍未完成 |
+| 真实相机 SDK | PARTIAL | RGB OpenCV/DirectShow adapter 已有并可预览；DVP2 已完成真实 SDK adapter、manual test 用户实机通过、网页预览/曝光/增益 API 已接入；RGB 单帧、DVP2 单帧、滤光轮+DVP2 多波段 sample sequence、Dark/White calibration sequence、Sample MultiView orchestration 和 P1B-8 单视角 `/api/capture/start` 软件入口已有；真实样品台、多视角硬件采集、hardware acceptance 和真实硬件检测验收仍未完成 |
 | 真实电机/滤光轮串口 | PARTIAL | 已有两字节串口层、滤光轮 HOME/相对旋转、状态查询和测试；P1B-5 已在 Coordinator sequence 中通过高层 API 调用 HOME/相对移动/位置查询；真实滤光轮现场验收和绝对定位 contract 仍待确认 |
 | 真实光源控制 | PARTIAL/REAL VERIFIED | PB7/PB8 两路钨灯 SSR 已通过 `manual_stm32_test.py --led-mask` 实机确认；主 UI 已提供安全手动测试入口，后端限时自动关闭并用 fresh STATUS 确认。PB9/LED3 仍可独立 on/off 且不会清除钨灯位。亮度闭环、双钨灯同时开启、RGB 正式照明映射、硬件级门联锁和最终光源验收仍未完成 |
 | 门控/急停/温度/报警 | PARTIAL/TODO | 升降门、急停、故障码已有控制/查询；温度和报警扩展未接入 |
-| 标定配准 | PARTIAL/SOFTWARE IMPLEMENTED | 暗/白校正有；P1C-2A 新增 RGB -> DVP2 平面单应性离线标定模块和 `manual_registration_test.py`，可保存 registration profile、reprojection error metrics 与角点/overlay/difference 可视化；`quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 生产路径仍未接入，待 P1C-2B |
-| 历史记录数据库/正式报告 | TODO/PARTIAL | Model Studio 有 SQLite；检测结果未持久化到历史库，报告为前端 TXT |
+| Production Analysis Pipeline | DONE/SOFTWARE IMPLEMENTED | P1E-1 新增 `quality_algorithm.analysis_pipeline.FeaturePipelineConfig` / `run_feature_pipeline()` 作为训练端和检测端共享入口。P1E-2 新增 `ModelInputContract` 和 `pipeline_signature`，训练生成并写入模型 metadata，发布/Default 和预测前校验；Published/Default 还要求 `model_input_contract.mode=production`。P1E-3 在临时 SQLite 与 deterministic synthetic data 上完成训练 -> 发布 -> 检测 software E2E PASS。Production 默认要求 Dark/White calibration、Background Reference segmentation、calibrated RGB->DVP2 registration、registered multispectral ROI 和完整波段；缺失依赖明确失败。Legacy/development 旧数据路径保留，但必须显式配置。真实硬件和科学验收仍未完成 |
+| 标定配准 | PARTIAL/SOFTWARE IMPLEMENTED | 暗/白校正有；P1C-2A 新增 RGB -> DVP2 平面单应性离线标定模块和 `manual_registration_test.py`；P1C-2B 新增 registered multispectral conservative ROI，把 RGB Fruit Mask warp 到 DVP2 坐标后 post-warp erosion，并接入 `extract_feature_record(registration_mode="calibrated")`；P1E-1 将该链路纳入 production analysis pipeline 默认要求。真实几何和 ROI overlay 仍待硬件验收 |
+| 历史记录数据库/正式报告 | DONE/PARTIAL | P1E-4 新增独立 `inspection/inspection.sqlite`、Inspection/Prediction Result schema、runtime provenance、列表/详情/归档 API 和结果区轻量历史查看；正式 PDF/科研报告仍未完成 |
+| Software-enforced Model Quality Gate | DONE/SOFTWARE IMPLEMENTED | P1E-5 新增可配置 `ModelQualityPolicy` / `ModelQualityReport` / `evaluate_model_quality()`；训练 metadata 保存 sample count、validation metrics、feature statistics 和 target range；Publish/Default 在既有 production contract gate 后执行质量门禁并持久化报告。默认值是 placeholder/software gate defaults，不等于 scientific accuracy validated、real Production model approved 或 hardware acceptance completed |
+| Software Productization Baseline | DONE/SOFTWARE IMPLEMENTED | P1E-6 提供 versioned SQLite migrations + pre-migration backup、restart reconciliation、runtime config bootstrap/validation、atomic JSON writes、rotating logs、health endpoint、Windows CI 与 PyInstaller smoke；冻结 EXE 的 mutable data 使用 `%LOCALAPPDATA%\FruitTasteAnalyzer\app_data`，不写入 Program Files/resource directory。该状态只代表 software productization baseline，不代表 Production Ready、hardware acceptance 或 scientific validation |
 
 ## 8. 关键设计决策
 
@@ -244,6 +248,7 @@ UI
 - 预处理支持 RAW / SNV / MSC。
 - 训练数据不足时必须失败，不能造假标签或伪造模型结果。
 - Production/Default 模型必须人工发布；系统不能自动替换正式模型。
+- Sample Identity 不依赖 Model Availability。主工作站支持 `sample_mode=training_capture` 在没有任何 Published/Default/Production 模型时创建训练采集样品，`fruit_type`/`variety` 写入 Sample metadata，SSC/TA/pH 选择模型 ID 合法保持为空。
 - 同一 fruit type + variety + target 只能有一个 Default；Model Studio 可从 Published/Production 模型切换 Default，旧 Default 自动保留为 Published，不删除。
 - 支持不同水果/品种使用不同模型，并允许 `generic` 品种兜底。
 - 本次拍摄目录可以自动进入分析流程。
@@ -262,13 +267,14 @@ UI
 - 样品旋转平台已有角度计划、UI、metadata、离线模拟文件、P1B-7 `SampleStage` 软件抽象和 P1B-7.5B status/API/UI 调试边界；仓库内未找到独立样品台控制器协议，仍缺少真实控制板身份、通信方式、HOME、位置回读、稳定确认和报警/超时 contract 的硬件实现。
 - `create_offline_capture_dataset()` 会写模拟 RGB/多光谱/暗白图片，只能用于离线验证。
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、两路钨灯限时手动测试/立即关闭/全部钨灯关闭、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；P1B-7.5B 新增样品旋转台状态和调试按钮，但默认因 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 禁用真实动作。P1B-8 在样品采集页新增 True Hardware Capture 面板；RGB 与 DVP2 相机设置页预览已接入；真实样品台旋转、RGB 正式照明映射、双钨灯验收和完整多视角硬件同步仍未完成。
-- P1C-2A 已实现离线 RGB-DVP2 几何标定模块，但 `quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 生产路径仍明确抛出 `NotImplementedError`，避免未验收 profile 被静默用于正式特征提取。
-- P1C-2A.5 已改为 Background Reference Fruit Segmentation：固定暗箱/相机/光源环境先采空背景，再对样品 RGB 做差分分割；该方向不需要训练、不依赖 GPU/AI checkpoint、不要求每个水果写颜色阈值，且可离线解释和低维护。当前只完成软件算法与 synthetic tests，真实背景采集、硬件兼容性 metadata 和人工 mask 验收仍为 REAL FRUIT SEGMENTATION ACCEPTANCE PENDING；不能声称覆盖所有水果或达到固定 Mean IoU 指标。
+- P1C-2B 已把 P1C-2A 的 RGB-DVP2 profile 和 P1C-2A.5 的 RGB Fruit Mask 接入多光谱特征提取：calibrated mode 必须显式提供 RegistrationProfile 和 runtime RGB/DVP2 endpoint metadata，缺失或 mismatch 会失败；禁止 resize、identity fallback、ellipse fallback。Planar homography 不是 3D fruit surface 的 pixel-perfect registration，所以 post-warp erosion 在 DVP2 coordinate space 执行，用于降低边缘背景/托盘/阴影污染风险；REAL HARDWARE ROI ACCEPTANCE PENDING。
+- P1E-1 已把 Model Studio feature generation、training feature CSV、主程序 SSC/TA/pH 预测入口统一到 `run_feature_pipeline()`。P1E-2 已加入稳定模型输入 contract/signature，训练 metadata、发布/Default 和预测前校验均覆盖；P1E-3 software E2E 已在 fake/deterministic environment 下 PASS。Production 默认不再静默 fallback 到 uncalibrated、legacy color segmentation、identity registration 或无 contract 旧模型；历史/离线数据仍可通过显式 `FeaturePipelineConfig.legacy()` / `development()` 或 legacy compatibility policy 处理。真实 Background Reference 兼容性 metadata、registration profile 现场采集、ROI overlay 人工验收仍为硬件/算法验收待办，不能声称覆盖所有水果或达到固定 Mean IoU 指标。
 - 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
+- P1E-5 的 Model Quality Gate 只建立可配置的软件检查机制。当前默认 policy 不写死最终科研 R²/RMSE/MAE/RPD 标准；真实水果实验、科学阈值、OOD 现场验证和 Production approval 仍待完成。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
 - Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。
 - `model_studio/database/model_studio.sqlite` 当前为空/待初始化，没有真实数据集和模型记录。
-- 主程序检测结果没有正式历史记录数据库，仅 UI 状态和文本报告。
+- P1E-4 后主程序检测结果写入独立 `inspection/inspection.sqlite`；记录 Sample、原始文件引用、Calibration、Background Reference、Registration、实际 pipeline contract/signature、模型 provenance 和 SSC/TA/pH 结果。历史记录是软件运行事实快照，不跟随当前 Default Model 或 Background Reference 变化；正式 PDF/科研报告仍未完成。
 - 报告导出是前端 TXT，不是正式 PDF/数据库记录。
 - 形态分析当前以像素尺度为主，未完成真实尺寸标定和三维硬件方案。
 - 旧 `pipeline_v2.py` 和 `pointcloud_service.py` 中仍有兼容 RGB-D/点云的遗留路径，需避免误认为当前主硬件已经有深度相机。

@@ -12,13 +12,27 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from runtime_support import (
+    DatabaseMigrationError,
+    RuntimeConfigurationError,
+    RuntimePaths,
+    backup_sqlite_database,
+    atomic_write_json,
+    bootstrap_config,
+    load_json_config,
+    migrate_sqlite,
+)
 from quality_algorithm.dataset import InsufficientTrainingDataset, read_labels_csv
+from quality_algorithm.analysis_pipeline import FeaturePipelineConfig, run_feature_pipeline
 from quality_algorithm.filters import expected_wavelengths, load_filter_config
-from quality_algorithm.spectral_features import extract_feature_record, inspect_sample_structure
+from quality_algorithm.model_io import ModelInputMismatch, validate_model_metadata_contract, validate_production_model_metadata_contract
+from quality_algorithm.model_quality import ModelQualityPolicy, evaluate_model_quality, resolve_quality_policy
+from quality_algorithm.spectral_features import inspect_sample_structure
 from training.train import train_one
 
 
 TARGETS = {"ssc", "ta", "ph"}
+MODEL_STUDIO_SCHEMA_VERSION = 2
 MODEL_ALIASES = {"PLSR": "PLSR", "SVR": "SVR", "RF": "RF", "Random Forest": "RF"}
 PREPROCESSING = {"RAW", "SNV", "MSC"}
 EXCLUDE_REASONS = {
@@ -35,6 +49,7 @@ EXCLUDE_REASONS = {
 PUBLISHED_STATUSES = {"Published", "Default", "Production"}
 MODEL_STATUSES_VISIBLE_TO_STATION = tuple(sorted(PUBLISHED_STATUSES))
 DATASET_PRODUCTION_REFERENCE_ERROR = "DATASET_HAS_PRODUCTION_MODEL_REFERENCES"
+DATASET_SAMPLE_SCOPE_CONFLICT = "DATASET_SAMPLE_SCOPE_CONFLICT"
 
 
 class ModelStudioError(RuntimeError):
@@ -42,23 +57,29 @@ class ModelStudioError(RuntimeError):
 
 
 class ModelStudioService:
-    def __init__(self, app_dir: str | Path) -> None:
+    def __init__(self, app_dir: str | Path, *, quality_policy: ModelQualityPolicy | dict | None = None) -> None:
         self.app_dir = Path(app_dir).resolve()
+        self.runtime_paths = RuntimePaths.for_app(self.app_dir)
         self.root = self.app_dir / "model_studio"
-        self.data_dir = self.app_dir / "model_studio_data"
+        development_layout = self.runtime_paths.root == self.app_dir
+        self.data_dir = (self.app_dir / "model_studio_data") if development_layout else (self.runtime_paths.root / "model_studio_data")
         self.dataset_store_dir = self.data_dir / "datasets"
-        self.database_dir = self.root / "database"
-        self.artifact_dir = self.root / "artifacts"
-        self.model_dir = self.root / "models"
-        self.production_dir = self.app_dir / "trained_models"
+        self.database_dir = (self.root / "database") if development_layout else self.runtime_paths.database_dir
+        self.artifact_dir = (self.root / "artifacts") if development_layout else (self.runtime_paths.root / "model_studio_artifacts")
+        self.model_dir = (self.root / "models") if development_layout else (self.runtime_paths.root / "model_studio_models")
+        self.production_dir = (self.app_dir / "trained_models") if development_layout else (self.runtime_paths.root / "trained_models")
         self.database_path = self.database_dir / "model_studio.sqlite"
+        self.quality_policy_source = quality_policy if quality_policy is not None else self._load_quality_policy_config()
+        self.feature_pipeline_config = FeaturePipelineConfig.production()
         self._lock = threading.Lock()
         self.database_dir.mkdir(parents=True, exist_ok=True)
         self.dataset_store_dir.mkdir(parents=True, exist_ok=True)
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.production_dir.mkdir(parents=True, exist_ok=True)
+        self.migration_backup_path: Path | None = None
         self.init_db()
+        self.reconcile_interrupted_jobs()
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.database_path)
@@ -66,8 +87,12 @@ class ModelStudioService:
         return conn
 
     def init_db(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
+        existing = self.database_path.exists() and self.database_path.stat().st_size > 0
+        if existing and self._schema_version_before_init() < MODEL_STUDIO_SCHEMA_VERSION:
+            self.migration_backup_path = backup_sqlite_database(self.database_path, self.runtime_paths.root / "backups")
+        try:
+            with self.connect() as conn:
+                conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS datasets (
                     dataset_id TEXT PRIMARY KEY,
@@ -215,6 +240,7 @@ class ModelStudioService:
                     rpd REAL,
                     model_dir TEXT NOT NULL,
                     metadata_json TEXT,
+                    quality_report_json TEXT,
                     created_at TEXT NOT NULL,
                     published_at TEXT
                 );
@@ -230,7 +256,26 @@ class ModelStudioService:
 
                 """
             )
-            self._migrate_schema(conn)
+                self.schema_version = migrate_sqlite(
+                    conn,
+                    database_name="model_studio",
+                    migrations=[(1, self._migrate_schema), (2, self._migration_v2)],
+                )
+        except (sqlite3.Error, DatabaseMigrationError) as exc:
+            raise ModelStudioError(f"DATABASE_MIGRATION_FAILED: model_studio") from exc
+
+    def _schema_version_before_init(self) -> int:
+        try:
+            with sqlite3.connect(self.database_path) as conn:
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
+                return int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]) if exists else 0
+        except sqlite3.Error as exc:
+            raise ModelStudioError("DATABASE_MIGRATION_FAILED: model_studio") from exc
+
+    @staticmethod
+    def _migration_v2(conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_models_scope ON models(target, fruit_type, variety, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         migrations = {
@@ -267,7 +312,7 @@ class ModelStudioService:
                 "run_number": "INTEGER DEFAULT 1",
                 "dataset_version_id": "TEXT",
             },
-            "models": {
+                "models": {
                 "display_name": "TEXT",
                 "fruit_type": "TEXT",
                 "variety": "TEXT",
@@ -279,8 +324,9 @@ class ModelStudioService:
                 "description": "TEXT",
                 "tags": "TEXT",
                 "notes": "TEXT",
-                "deleted_at": "TEXT",
-            },
+                    "deleted_at": "TEXT",
+                    "quality_report_json": "TEXT",
+                },
         }
         for table, columns in migrations.items():
             existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -296,6 +342,20 @@ class ModelStudioService:
         conn.execute("UPDATE datasets SET updated_at=created_at WHERE updated_at IS NULL OR updated_at=''")
         conn.execute("UPDATE models SET display_name=model_name WHERE display_name IS NULL OR display_name=''")
         conn.execute("UPDATE models SET is_default=0 WHERE is_default IS NULL")
+
+    def reconcile_interrupted_jobs(self) -> int:
+        """Daemon worker threads cannot survive a restart, so never leave them RUNNING."""
+        with self.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE jobs SET status='Interrupted', step='Interrupted', progress=100,
+                    message='Training interrupted by application restart',
+                    error=COALESCE(error, 'PROCESS_RESTARTED'), finished_at=COALESCE(finished_at, ?)
+                WHERE status IN ('Queued','Preparing','Training')
+                """,
+                (_now(),),
+            )
+        return int(result.rowcount)
 
     def dashboard(self) -> dict:
         with self.connect() as conn:
@@ -589,6 +649,14 @@ class ModelStudioService:
         samples_root = local_root / "samples"
         samples_root.mkdir(parents=True, exist_ok=True)
         sample_dirs = self._sample_dirs(root)
+        import_reports = [(sample_dir, self._sample_import_report(sample_dir)) for sample_dir in sample_dirs]
+        identities = [
+            self._sample_identity_from_report(sample_dir, import_report, dataset)
+            for sample_dir, import_report in import_reports
+            if import_report["status"] != "Invalid"
+        ]
+        scope_info = self._resolve_dataset_scope_for_import(dataset, identities)
+        dataset = scope_info["dataset"]
         imported = 0
         new_count = 0
         existing_count = 0
@@ -597,14 +665,15 @@ class ModelStudioService:
         warnings: list[str] = []
         duplicates: list[dict] = []
         calibration_statuses: list[str] = []
-        for sample_dir in sample_dirs:
-            import_report = self._sample_import_report(sample_dir)
+        for sample_dir, import_report in import_reports:
             report = import_report["structure"]
             if import_report["status"] == "Invalid":
                 skipped += 1
                 warnings.append(f"{sample_dir.name}: " + "; ".join(import_report.get("warnings") or ["invalid sample folder"]))
                 continue
-            duplicate = self._find_duplicate_sample(dataset_id, sample_dir.name, sample_dir)
+            identity = self._sample_identity_from_report(sample_dir, import_report, dataset)
+            source_sample_id = identity["sample_id"]
+            duplicate = self._find_duplicate_sample(dataset_id, source_sample_id, sample_dir)
             if duplicate:
                 conflicts += 1
                 existing_count += 1
@@ -614,7 +683,7 @@ class ModelStudioService:
                     "localPath": duplicate.get("local_path") or duplicate.get("storage_path") or "",
                 })
                 if duplicate_policy == "cancel":
-                    raise ModelStudioError(f"sample already exists: {sample_dir.name}")
+                    raise ModelStudioError(f"sample already exists: {source_sample_id}")
                 if duplicate_policy == "skip":
                     skipped += 1
                     continue
@@ -623,7 +692,7 @@ class ModelStudioService:
                 refs = self.sample_references(dataset_id, duplicate["sample_id"])
                 if refs["blocked"]:
                     raise ModelStudioError(f"sample is referenced by historical artifacts and cannot be replaced: {duplicate['sample_id']}")
-            sample_id = sample_dir.name if not duplicate else (duplicate["sample_id"] if replacing else self._unique_sample_id(dataset_id, sample_dir.name))
+            sample_id = source_sample_id if not duplicate else (duplicate["sample_id"] if replacing else self._unique_sample_id(dataset_id, source_sample_id))
             local_sample_dir = Path(duplicate.get("local_path") or duplicate.get("storage_path")) if replacing else self._unique_sample_path(samples_root, sample_id)
             if replacing and local_sample_dir.exists():
                 local_root = (Path(dataset.get("local_path") or dataset["storage_path"]) / "samples").resolve()
@@ -636,9 +705,9 @@ class ModelStudioService:
             row = {
                 "dataset_id": dataset_id,
                 "sample_id": sample_id,
-                "sample_name": sample_dir.name,
-                "fruit_type": dataset.get("fruit_type") or "",
-                "variety": dataset.get("variety") or "",
+                "sample_name": identity["sample_name"],
+                "fruit_type": identity["fruit_type"],
+                "variety": identity["variety"],
                 "storage_path": str(local_sample_dir),
                 "source_path": str(sample_dir),
                 "local_path": str(local_sample_dir),
@@ -649,6 +718,7 @@ class ModelStudioService:
                 "available_bands": json.dumps(report.get("available_bands") or []),
                 "calibration_status": str(report["calibration_status"]),
                 "data_status": "complete" if report["complete"] else "incomplete",
+                "capture_time": identity["capture_time"],
                 "quality_json": json.dumps(import_report, ensure_ascii=False),
                 "created_at": _now(),
                 "imported_at": _now(),
@@ -670,6 +740,7 @@ class ModelStudioService:
             "skipped": skipped,
             "duplicates": duplicates[:50],
             "warnings": warnings[:50],
+            "scope": scope_info["scope"],
         }
 
     def import_labels(self, dataset_id: str, labels_csv: str | Path) -> dict:
@@ -894,15 +965,18 @@ class ModelStudioService:
             "needsReview": needs_review,
         }
 
-    def generate_features(self, dataset_id: str, dataset_version_id: str | None = None) -> dict:
+    def generate_features(self, dataset_id: str, dataset_version_id: str | None = None, pipeline_config: FeaturePipelineConfig | dict | None = None) -> dict:
         version = self.resolve_dataset_version(dataset_id, dataset_version_id)
         dataset_id = version["dataset_id"]
         wavelengths = expected_wavelengths(load_filter_config())
+        config = pipeline_config if isinstance(pipeline_config, FeaturePipelineConfig) else FeaturePipelineConfig.from_dict(pipeline_config) if pipeline_config else self.feature_pipeline_config
         feature_dir = self.artifact_dir / "features"
         feature_dir.mkdir(parents=True, exist_ok=True)
         output_csv = feature_dir / f"{version['dataset_version_id']}_features.csv"
         rows = []
         failures = []
+        model_input_contract: dict | None = None
+        pipeline_signature = ""
         sample_ids = json.loads(version["sample_ids"] or "[]")
         samples = json.loads(version.get("sample_snapshot_json") or "[]")
         if not samples:
@@ -920,7 +994,14 @@ class ModelStudioService:
                 continue
             try:
                 sample_path = sample.get("local_path") or sample.get("storage_path")
-                record = extract_feature_record(sample_path, sample_id=sample["sample_id"], allow_uncalibrated=True)
+                record = run_feature_pipeline(sample_path, sample_id=sample["sample_id"], config=config)
+                if not isinstance(record.model_input_contract, dict) or not record.pipeline_signature:
+                    raise ModelStudioError("MODEL_INPUT_CONTRACT_MISSING: feature pipeline did not return model input contract")
+                if pipeline_signature and record.pipeline_signature != pipeline_signature:
+                    raise ModelStudioError("MODEL_INPUT_MISMATCH: training sample pipeline signature mismatch")
+                if not pipeline_signature:
+                    pipeline_signature = record.pipeline_signature
+                    model_input_contract = record.model_input_contract
                 row = {"sample_id": record.sample_id}
                 for wavelength, value in zip(record.wavelengths, record.features):
                     row[f"R{wavelength}"] = value
@@ -945,6 +1026,9 @@ class ModelStudioService:
             "wavelengths": wavelengths,
             "datasetVersionId": version["dataset_version_id"],
             "datasetVersion": version["version_name"],
+            "pipelineConfig": config.to_dict(),
+            "modelInputContract": model_input_contract or {},
+            "pipelineSignature": pipeline_signature,
         }
 
     def list_dataset_versions(self, dataset_id: str) -> list[dict]:
@@ -960,6 +1044,7 @@ class ModelStudioService:
             samples = [dict(row) for row in conn.execute(
                 """
                 SELECT sample_id,storage_path,source_path,local_path,include_status,ssc,ta,ph
+                ,fruit_type,variety,sample_name
                 FROM samples
                 WHERE dataset_id=? AND include_status!='Excluded'
                 ORDER BY sample_id
@@ -996,6 +1081,9 @@ class ModelStudioService:
                     "storage_path": sample.get("local_path") or sample.get("storage_path") or "",
                     "local_path": sample.get("local_path") or sample.get("storage_path") or "",
                     "source_path": sample.get("source_path") or "",
+                    "sample_name": sample.get("sample_name") or sample_id,
+                    "fruit_type": sample.get("fruit_type") or dataset.get("fruit_type") or "",
+                    "variety": _normalize_variety(sample.get("variety") or dataset.get("variety") or ""),
                     "ssc": label.get("ssc"),
                     "ta": label.get("ta"),
                     "ph": label.get("ph"),
@@ -1133,8 +1221,8 @@ class ModelStudioService:
                     payload.get("validation_method") or payload.get("validationMethod") or "GroupKFold",
                     "Created",
                     version["dataset_version_id"],
-                    payload.get("fruit_type") or payload.get("fruitType") or dataset.get("fruit_type") or "",
-                    _normalize_variety(payload.get("variety") or dataset.get("variety") or ""),
+                    dataset.get("fruit_type") or "",
+                    _normalize_variety(dataset.get("variety") or ""),
                     payload.get("parent_experiment_id") or payload.get("parentExperimentId") or None,
                     payload.get("parent_model_id") or payload.get("parentModelId") or None,
                     _now(),
@@ -1272,6 +1360,92 @@ class ModelStudioService:
             rows = [dict(row) for row in conn.execute("SELECT * FROM models WHERE deleted_at IS NULL ORDER BY created_at DESC")]
         return [self._enrich_model(row) for row in rows]
 
+    def get_model_quality(self, model_id: str, policy: ModelQualityPolicy | dict | None = None) -> dict:
+        with self._lock:
+            model = self._raw_model(model_id)
+            metadata = self._read_model_metadata(model)
+            report = self._evaluate_model_quality(model, metadata, policy=policy)
+            self._persist_quality_report(model, metadata, report)
+            return report
+
+    def _load_quality_policy_config(self) -> dict | None:
+        path = bootstrap_config(
+            self.app_dir / "config" / "model_quality_policy.example.json",
+            self.runtime_paths.config_dir / "model_quality_policy.json",
+        )
+        try:
+            return load_json_config(path)
+        except RuntimeConfigurationError as exc:
+            raise ModelStudioError(str(exc)) from exc
+
+    def _raw_model(self, model_id: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM models WHERE model_id=? AND deleted_at IS NULL", (model_id,)).fetchone()
+        if not row:
+            raise ModelStudioError(f"model not found: {model_id}")
+        return dict(row)
+
+    @staticmethod
+    def _read_model_metadata(model: dict) -> dict:
+        try:
+            value = json.loads((Path(model["model_dir"]) / "metadata.json").read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError, KeyError):
+            try:
+                value = json.loads(model.get("metadata_json") or "{}")
+                return value if isinstance(value, dict) else {}
+            except (TypeError, ValueError):
+                return {}
+
+    def _evaluate_model_quality(self, model: dict, metadata: dict, *, policy: ModelQualityPolicy | dict | None = None) -> dict:
+        target = str(metadata.get("target") or model.get("target") or "ssc").lower()
+        selected_policy = resolve_quality_policy(policy if policy is not None else self.quality_policy_source, target)
+        dataset_version = None
+        if model.get("dataset_version_id"):
+            try:
+                dataset_version = self.get_dataset_version(model["dataset_version_id"])
+            except ModelStudioError:
+                dataset_version = None
+        validation_method = ""
+        if model.get("experiment_id"):
+            try:
+                validation_method = self.get_experiment(model["experiment_id"]).get("validation_method") or ""
+            except ModelStudioError:
+                validation_method = ""
+        return evaluate_model_quality(
+            metadata,
+            model=model,
+            policy=selected_policy,
+            dataset_version=dataset_version,
+            validation_method=validation_method,
+        ).to_dict()
+
+    def _persist_quality_report(self, model: dict, metadata: dict, report: dict) -> None:
+        metadata["quality_report"] = report
+        metadata["quality_policy_version"] = report.get("policy_version") or ""
+        metadata_path = Path(model["model_dir"]) / "metadata.json"
+        atomic_write_json(metadata_path, metadata)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE models SET quality_report_json=?, metadata_json=? WHERE model_id=?",
+                (json.dumps(report, ensure_ascii=False), json.dumps(metadata, ensure_ascii=False), model["model_id"]),
+            )
+
+    @staticmethod
+    def _quality_gate_error(report: dict) -> str:
+        blocked = [
+            name for name, check in (report.get("checks") or {}).items()
+            if check.get("enabled") and check.get("blocking") and check.get("status") in {"FAIL", "NOT_AVAILABLE"}
+        ]
+        warnings = [
+            name for name, check in (report.get("checks") or {}).items()
+            if check.get("enabled") and (
+                check.get("status") in {"WARN", "NOT_AVAILABLE"}
+                or (check.get("status") == "FAIL" and not check.get("blocking"))
+            )
+        ]
+        return f"MODEL_QUALITY_GATE_FAILED: {json.dumps({'overall_status': report.get('overall_status'), 'failed_checks': blocked, 'warning_checks': warnings}, ensure_ascii=False)}"
+
     def validate_model(self, model_id: str, payload: dict | None = None) -> dict:
         payload = payload or {}
         with self.connect() as conn:
@@ -1312,12 +1486,22 @@ class ModelStudioService:
                 target = model["target"]
                 if target not in TARGETS:
                     raise ModelStudioError("invalid target")
+                metadata = json.loads((src / "metadata.json").read_text(encoding="utf-8"))
+                try:
+                    validate_production_model_metadata_contract(metadata)
+                except ModelInputMismatch as exc:
+                    raise ModelStudioError(str(exc)) from exc
+                quality_report = self._evaluate_model_quality(model, metadata)
+                if quality_report["overall_status"] == "FAIL" or (
+                    quality_report["overall_status"] == "WARN" and not quality_report.get("policy", {}).get("allow_warn_publish", False)
+                ):
+                    self._persist_quality_report(model, metadata, quality_report)
+                    raise ModelStudioError(self._quality_gate_error(quality_report))
                 dst = self.production_dir / "published" / model_id
                 if dst.exists():
                     shutil.rmtree(dst)
                 dst.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src / "model.joblib", dst / "model.joblib")
-                metadata = json.loads((src / "metadata.json").read_text(encoding="utf-8"))
                 display_name = payload.get("displayName") or payload.get("display_name") or model.get("display_name") or model["model_name"]
                 version = payload.get("version") or model.get("version") or metadata.get("model_version") or ""
                 metadata.update({
@@ -1329,8 +1513,10 @@ class ModelStudioService:
                     "source_model_dir": str(src),
                     "fruit_type": model.get("fruit_type") or "",
                     "variety": _normalize_variety(model.get("variety") or ""),
+                    "quality_report": quality_report,
+                    "quality_policy_version": quality_report.get("policy_version") or "",
                 })
-                (dst / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+                atomic_write_json(dst / "metadata.json", metadata)
                 set_default = bool(payload.get("setDefault") or payload.get("set_default"))
                 status = "Default" if set_default else "Published"
                 if set_default:
@@ -1349,7 +1535,7 @@ class ModelStudioService:
                       description=COALESCE(NULLIF(?, ''), description),
                       tags=COALESCE(NULLIF(?, ''), tags),
                       notes=COALESCE(NULLIF(?, ''), notes),
-                      metadata_json=?
+                      metadata_json=?, quality_report_json=?
                     WHERE model_id=?
                     """,
                     (
@@ -1363,6 +1549,7 @@ class ModelStudioService:
                         payload.get("tags") or "",
                         payload.get("notes") or "",
                         json.dumps(metadata, ensure_ascii=False),
+                        json.dumps(quality_report, ensure_ascii=False),
                         model_id,
                     ),
                 )
@@ -1434,9 +1621,28 @@ class ModelStudioService:
                 model = dict(row)
                 if model["status"] not in {"Published", "Default", "Production"}:
                     raise ModelStudioError("only published models can be set as default")
-                self._clear_default_in_scope(conn, model)
-                conn.execute("UPDATE models SET status='Default', is_default=1 WHERE model_id=?", (model_id,))
                 src = Path(model["model_dir"])
+                if not (src / "model.joblib").exists() or not (src / "metadata.json").exists():
+                    raise ModelStudioError("model files are incomplete")
+                metadata = json.loads((src / "metadata.json").read_text(encoding="utf-8"))
+                try:
+                    validate_production_model_metadata_contract(metadata)
+                except ModelInputMismatch as exc:
+                    raise ModelStudioError(str(exc)) from exc
+                quality_report = self._evaluate_model_quality(model, metadata)
+                if quality_report["overall_status"] == "FAIL" or (
+                    quality_report["overall_status"] == "WARN" and not quality_report.get("policy", {}).get("allow_warn_publish", False)
+                ):
+                    self._persist_quality_report(model, metadata, quality_report)
+                    raise ModelStudioError(self._quality_gate_error(quality_report))
+                metadata["quality_report"] = quality_report
+                metadata["quality_policy_version"] = quality_report.get("policy_version") or ""
+                self._clear_default_in_scope(conn, model)
+                conn.execute(
+                    "UPDATE models SET status='Default', is_default=1, metadata_json=?, quality_report_json=? WHERE model_id=?",
+                    (json.dumps(metadata, ensure_ascii=False), json.dumps(quality_report, ensure_ascii=False), model_id),
+                )
+                atomic_write_json(src / "metadata.json", metadata)
                 legacy = self.production_dir / model["target"]
                 if legacy.exists():
                     shutil.rmtree(legacy)
@@ -1512,11 +1718,7 @@ class ModelStudioService:
         return {"modelId": model_id, "bundlePath": str(zip_path)}
 
     def get_model(self, model_id: str) -> dict:
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM models WHERE model_id=? AND deleted_at IS NULL", (model_id,)).fetchone()
-        if not row:
-            raise ModelStudioError(f"model not found: {model_id}")
-        return self._enrich_model(dict(row))
+        return self._enrich_model(self._raw_model(model_id))
 
     def model_registry(self, *, query: str = "", fruit_type: str = "", variety: str = "", target: str = "", status: str = "", algorithm: str = "", preprocessing: str = "") -> dict:
         params: list[object] = []
@@ -1593,7 +1795,14 @@ class ModelStudioService:
                         model_type=model_type,
                         output_dir=model_output,
                         validation_method=experiment["validation_method"],
+                        calibration_required=bool((feature_info.get("modelInputContract") or {}).get("calibration", {}).get("required")),
                     )
+                    metadata = result.setdefault("metadata", {})
+                    metadata["feature_pipeline"] = feature_info.get("pipelineConfig") or FeaturePipelineConfig.production().to_dict()
+                    metadata["model_input_contract"] = feature_info.get("modelInputContract") or {}
+                    metadata["pipeline_signature"] = feature_info.get("pipelineSignature") or ""
+                    validate_model_metadata_contract(metadata)
+                    atomic_write_json(model_output / "metadata.json", metadata)
                     model_row = self._register_candidate_model(experiment, result, model_output, job_id)
                     result_row = {k: v for k, v in result.items() if k != "metadata"}
                     result_row["model_id"] = model_row["model_id"]
@@ -1650,6 +1859,14 @@ class ModelStudioService:
         warnings = list(structure.get("warnings") or [])
         metadata_path = sample_dir / "metadata.json"
         metadata_status = "present" if metadata_path.exists() and metadata_path.is_file() else "missing"
+        metadata = {}
+        if metadata_status == "present":
+            try:
+                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                metadata = {}
+                warnings.append("metadata.json unreadable")
         if metadata_status == "missing":
             warnings.append("missing metadata.json")
         if not structure["valid"]:
@@ -1669,8 +1886,74 @@ class ModelStudioService:
             "white_count": _calibration_count(sample_dir, "white"),
             "calibration_status": structure.get("calibration_status") or "missing",
             "metadata_status": metadata_status,
+            "metadata": metadata,
             "warnings": warnings,
             "structure": structure,
+        }
+
+    def _sample_identity_from_report(self, sample_dir: Path, import_report: dict, dataset: dict) -> dict:
+        metadata = import_report.get("metadata") or {}
+        fruit_type = str(metadata.get("fruit_type") or metadata.get("fruitType") or "").strip()
+        variety = str(metadata.get("variety") or "").strip()
+        if not fruit_type:
+            fruit_type = str(dataset.get("fruit_type") or "").strip()
+        if not variety:
+            variety = str(dataset.get("variety") or "").strip()
+        return {
+            "sample_id": str(metadata.get("sample_id") or metadata.get("sampleId") or sample_dir.name).strip() or sample_dir.name,
+            "sample_name": str(metadata.get("sample_name") or metadata.get("sampleName") or sample_dir.name).strip() or sample_dir.name,
+            "sample_mode": str(metadata.get("sample_mode") or metadata.get("sampleMode") or "").strip(),
+            "fruit_type": fruit_type,
+            "variety": _normalize_variety(variety),
+            "capture_time": str(
+                metadata.get("capture_time")
+                or metadata.get("captureTime")
+                or metadata.get("captured_at")
+                or metadata.get("capturedAt")
+                or metadata.get("created_at")
+                or metadata.get("createdAt")
+                or ""
+            ).strip(),
+        }
+
+    def _resolve_dataset_scope_for_import(self, dataset: dict, identities: list[dict]) -> dict:
+        scoped = [
+            {"fruitType": item["fruit_type"], "variety": _normalize_variety(item["variety"])}
+            for item in identities
+            if item.get("fruit_type")
+        ]
+        counts: dict[tuple[str, str], dict] = {}
+        for item in scoped:
+            key = (item["fruitType"].casefold(), item["variety"].casefold())
+            counts.setdefault(key, {"fruitType": item["fruitType"], "variety": item["variety"], "count": 0})
+            counts[key]["count"] += 1
+        dataset_fruit = str(dataset.get("fruit_type") or "").strip()
+        dataset_variety = _normalize_variety(dataset.get("variety") or "")
+        if dataset_fruit:
+            expected = (dataset_fruit.casefold(), dataset_variety.casefold())
+            if any(key != expected for key in counts):
+                raise ModelStudioError(f"{DATASET_SAMPLE_SCOPE_CONFLICT}: {json.dumps({'scopes': list(counts.values())}, ensure_ascii=False)}")
+            return {
+                "dataset": dataset,
+                "scope": {"fruitType": dataset_fruit, "variety": dataset_variety, "source": "dataset"},
+            }
+        if len(counts) > 1:
+            raise ModelStudioError(f"{DATASET_SAMPLE_SCOPE_CONFLICT}: {json.dumps({'scopes': list(counts.values())}, ensure_ascii=False)}")
+        if len(counts) == 1:
+            scope = next(iter(counts.values()))
+            with self.connect() as conn:
+                conn.execute(
+                    "UPDATE datasets SET fruit_type=?, variety=?, updated_at=? WHERE dataset_id=?",
+                    (scope["fruitType"], scope["variety"], _now(), dataset["dataset_id"]),
+                )
+            updated = self.get_dataset(dataset["dataset_id"])
+            return {
+                "dataset": updated,
+                "scope": {"fruitType": scope["fruitType"], "variety": scope["variety"], "source": "sample_metadata"},
+            }
+        return {
+            "dataset": dataset,
+            "scope": {"fruitType": dataset_fruit, "variety": dataset_variety, "source": "unspecified"},
         }
 
     def _find_duplicate_sample(self, dataset_id: str, sample_id: str, source_path: Path) -> dict | None:
@@ -1749,9 +2032,11 @@ class ModelStudioService:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,sample_name,storage_path,source_path,local_path,rgb_count,multispectral_count,dark_count,white_count,available_bands,calibration_status,data_status,quality_json,created_at,imported_at)
-                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:sample_name,:storage_path,:source_path,:local_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:available_bands,:calibration_status,:data_status,:quality_json,:created_at,:imported_at)
+                INSERT INTO samples(dataset_id,sample_id,fruit_type,variety,sample_name,storage_path,source_path,local_path,rgb_count,multispectral_count,dark_count,white_count,available_bands,calibration_status,data_status,capture_time,quality_json,created_at,imported_at)
+                VALUES(:dataset_id,:sample_id,:fruit_type,:variety,:sample_name,:storage_path,:source_path,:local_path,:rgb_count,:multispectral_count,:dark_count,:white_count,:available_bands,:calibration_status,:data_status,:capture_time,:quality_json,:created_at,:imported_at)
                 ON CONFLICT(dataset_id,sample_id) DO UPDATE SET
+                  fruit_type=excluded.fruit_type,
+                  variety=excluded.variety,
                   storage_path=excluded.storage_path,
                   source_path=excluded.source_path,
                   local_path=excluded.local_path,
@@ -1763,6 +2048,7 @@ class ModelStudioService:
                   available_bands=excluded.available_bands,
                   calibration_status=excluded.calibration_status,
                   data_status=excluded.data_status,
+                  capture_time=excluded.capture_time,
                   quality_json=excluded.quality_json,
                   imported_at=excluded.imported_at
                 """,
@@ -1806,6 +2092,15 @@ class ModelStudioService:
             metadata = json.loads(model.get("metadata_json") or "{}")
         except Exception:
             metadata = {}
+        try:
+            quality_report = json.loads(model.get("quality_report_json") or "{}")
+        except Exception:
+            quality_report = {}
+        if not quality_report:
+            quality_report = metadata.get("quality_report") if isinstance(metadata.get("quality_report"), dict) else {}
+        model["qualityReport"] = quality_report
+        model["qualityStatus"] = quality_report.get("overall_status") or "NOT_AVAILABLE"
+        model["qualityPolicyVersion"] = quality_report.get("policy_version") or ""
         sample_count = metadata.get("sample_count")
         if sample_count is None and model.get("dataset_version_id"):
             try:
@@ -1820,6 +2115,10 @@ class ModelStudioService:
             warnings.append("Calibration Incomplete")
         if model.get("status") == "Candidate":
             warnings.append("Experimental")
+        if model["qualityStatus"] in {"WARN", "NOT_AVAILABLE"}:
+            warnings.append(f"Quality {model['qualityStatus']}")
+        elif model["qualityStatus"] == "FAIL":
+            warnings.append("Quality FAIL")
         model["qualityWarnings"] = warnings
         model["lineage"] = {
             "datasetId": model.get("dataset_id") or "",
@@ -1942,8 +2241,7 @@ class ModelStudioService:
             "variety": _normalize_variety(experiment.get("variety") or ""),
             "parent_model_id": experiment.get("parent_model_id") or "",
         })
-        with (model_output / "metadata.json").open("w", encoding="utf-8") as handle:
-            json.dump(metadata, handle, ensure_ascii=False, indent=2)
+        atomic_write_json(model_output / "metadata.json", metadata)
         with self.connect() as conn:
             conn.execute(
                 """

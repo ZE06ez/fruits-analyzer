@@ -11,6 +11,7 @@ from PIL import Image
 
 from backend_server import JobStore, SessionState, create_handler, create_offline_capture_dataset, validate_file_path, validate_folder_path
 from model_studio.service import ModelStudioService
+from quality_algorithm.analysis_pipeline import FeaturePipelineConfig, build_model_input_contract, pipeline_signature
 
 try:
     from .http_test_utils import InProcessHttpClient
@@ -100,6 +101,39 @@ class BackendDataFlowTests(unittest.TestCase):
             "saveRootDir": str(self.root / "FruitData"),
         })["sample"]
         self.assertTrue(sample["hasSample"])
+
+    def test_training_capture_sample_can_be_created_without_models(self):
+        catalog = self.get_json("/api/quality-models")
+        self.assertEqual(catalog["fruitTypes"], [])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "Duke_001",
+            "sampleMode": "training_capture",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+
+        self.assertEqual(sample["sampleMode"], "training_capture")
+        self.assertEqual(sample["fruitType"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+        self.assertEqual(sample["selectedSscModelId"], "")
+        self.assertEqual(sample["selectedTaModelId"], "")
+        self.assertEqual(sample["selectedPhModelId"], "")
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["fruit_type"], "蓝莓")
+        self.assertEqual(metadata["variety"], "Duke")
+        self.assertEqual(metadata["sample_id"], sample["sampleId"])
+        self.assertEqual(metadata["sample_name"], "Duke_001")
+
+    def test_training_capture_frontend_does_not_block_on_missing_models(self):
+        app_js = (Path(__file__).resolve().parents[1] / "app.js").read_text(encoding="utf-8")
+        index_html = (Path(__file__).resolve().parents[1] / "index.html").read_text(encoding="utf-8")
+        self.assertIn('value="training_capture"', index_html)
+        self.assertIn("此样品不要求已有预测模型", index_html)
+        self.assertIn('sampleMode: state.sampleMode', app_js)
+        self.assertNotIn("暂无 Published / Default 模型，请先在 Model Studio 发布模型。", app_js)
 
     def test_true_capture_prepared_remains_false_until_capture_coordinator_exists(self):
         prep = self.post_json("/api/device-preparation", {
@@ -201,7 +235,8 @@ class BackendDataFlowTests(unittest.TestCase):
             )
 
     def wait_job(self, job_id: str) -> dict:
-        for _ in range(40):
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
             job = self.get_json(f"/api/jobs/{job_id}")["job"]
             if job["status"] in {"done", "failed", "cancelled"}:
                 return job
@@ -246,6 +281,51 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertNotEqual(Path(second["currentCaptureDir"]), first_dir)
         self.assertTrue(Path(second["currentCaptureDir"]).exists())
         self.assertFalse(second["analysisDataDir"])
+
+    def test_training_capture_sample_does_not_require_models_and_writes_metadata_scope(self):
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "TrainingBlueberry01",
+            "sampleMode": "training_capture",
+            "fruitType": "蓝莓",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+            "selectedSscModelId": "should_not_persist",
+        })["sample"]
+
+        self.assertEqual(sample["sampleMode"], "training_capture")
+        self.assertEqual(sample["fruitType"], "蓝莓")
+        self.assertEqual(sample["variety"], "Duke")
+        self.assertEqual(sample["selectedSscModelId"], "")
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["fruit_type"], "蓝莓")
+        self.assertEqual(metadata["variety"], "Duke")
+
+    def test_background_reference_import_persists_active_and_links_new_sample_metadata(self):
+        source = self.root / "empty_stage.png"
+        Image.new("RGB", (32, 24), (12, 18, 24)).save(source)
+
+        imported = self.post_json("/api/background-reference/import", {"path": str(source)})["backgroundReference"]
+        active = imported["active"]
+        self.assertTrue(active["active"])
+        self.assertEqual(active["source"], "Imported")
+        self.assertTrue(Path(active["managedPath"]).exists())
+        self.assertNotEqual(Path(active["managedPath"]), source)
+
+        status = self.get_json("/api/status")
+        self.assertEqual(status["backgroundReference"]["active"]["id"], active["id"])
+
+        sample = self.post_json("/api/new-sample", {
+            "sampleName": "BackgroundLinked",
+            "sampleMode": "training_capture",
+            "fruitType": "blueberry",
+            "variety": "Duke",
+            "saveRootDir": str(self.root / "FruitData"),
+        })["sample"]
+        metadata = json.loads((Path(sample["currentCaptureDir"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertIn("background_reference", metadata)
+        self.assertEqual(metadata["background_reference"]["backgroundReferenceId"], active["id"])
+        self.assertNotEqual(metadata["background_reference"]["backgroundReferenceId"], metadata.get("calibrationId", ""))
 
     def test_true_capture_not_ready_still_blocks_after_sample_creation_without_hardware(self):
         sample = self.post_json("/api/new-sample", {
@@ -606,20 +686,46 @@ class BackendDataFlowTests(unittest.TestCase):
 
     def test_model_studio_model_delete_route_updates_quality_models(self):
         model_id = "api_delete_model"
+        dataset = self.studio.create_dataset({"datasetName": "API Delete Dataset", "fruitType": "blueberry", "variety": "Duke"})
+        version = self.studio.create_dataset_version(dataset["dataset_id"], "API Delete Version")
         model_dir = self.studio.model_dir / "candidates" / "api" / model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         (model_dir / "model.joblib").write_bytes(b"fake")
+        config = FeaturePipelineConfig.production()
+        contract = build_model_input_contract(
+            config=config,
+            wavelengths=[450, 560, 670],
+            calibrated=True,
+            feature_names=["R450", "R560", "R670"],
+        ).to_dict()
         (model_dir / "metadata.json").write_text(json.dumps({
             "model_id": model_id,
             "target": "ssc",
             "model_type": "SVR",
             "preprocessing": "SNV",
-        }), encoding="utf-8")
+            "wavelengths_nm": [450, 560, 670],
+            "feature_names": ["R450", "R560", "R670"],
+            "preprocessing_state": {"method": "SNV"},
+            "calibration_required": False,
+            "dataset_id": dataset["dataset_id"],
+            "dataset_version_id": version["dataset_version_id"],
+            "fruit_type": "blueberry",
+            "variety": "Duke",
+            "sample_count": 10,
+            "validation_method": "GroupKFold_by_sample_id",
+            "r2": 0.8,
+            "rmse": 0.2,
+            "mae": 0.15,
+            "rpd": 2.0,
+            "feature_pipeline": config.to_dict(),
+            "model_input_contract": contract,
+            "pipeline_signature": pipeline_signature(contract),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
         with self.studio.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,model_dir,metadata_json,created_at,published_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO models(model_id,model_name,display_name,target,fruit_type,variety,model_type,preprocessing,version,status,is_default,dataset_id,dataset_version_id,dataset_version_label,model_dir,metadata_json,created_at,published_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     model_id,
@@ -633,6 +739,9 @@ class BackendDataFlowTests(unittest.TestCase):
                     "v1",
                     "Published",
                     0,
+                    dataset["dataset_id"],
+                    version["dataset_version_id"],
+                    version["version_name"],
                     str(model_dir),
                     "{}",
                     "2026-01-01 00:00:00",

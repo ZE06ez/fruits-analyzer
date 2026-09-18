@@ -93,11 +93,18 @@ const state = {
   trueCaptureStatus: null,
   captureRotationPlan: null,
   hasSample: false,
+  sampleMode: "inspection",
   sampleName: "",
   sampleId: "",
   sampleCreatedAt: "",
   fruitType: "",
   variety: "generic",
+  sampleMode: "inspection",
+  backgroundReference: {
+    activeId: "",
+    active: null,
+    items: [],
+  },
   selectedSscModelId: "",
   selectedTaModelId: "",
   selectedPhModelId: "",
@@ -106,6 +113,7 @@ const state = {
   sampleSession: {
     sampleId: "",
     sampleName: "",
+    sampleMode: "inspection",
     analysisDataDir: "",
     rgbFiles: [],
     multispectralFiles: [],
@@ -167,7 +175,7 @@ const titles = {
   "reserved-1": "预留功能",
   "reserved-2": "预留功能",
   capture: "检测工作台",
-  shape: "智能分析",
+  shape: "分析详情",
   sugar: "糖度预测",
   acid: "酸度与 pH 分析",
   taste: "检测结果",
@@ -344,6 +352,37 @@ function normalizeAngleDeg(value) {
 function formatAngleDeg(value) {
   const rounded = Number(Number(value).toFixed(6));
   return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function isTrainingCaptureMode() {
+  return state.sampleMode === "training_capture";
+}
+
+function currentSampleModeFromUi() {
+  return document.querySelector('input[name="sampleMode"]:checked')?.value
+    || document.querySelector('input[name="modalSampleMode"]:checked')?.value
+    || state.sampleMode
+    || "inspection";
+}
+
+function setSampleMode(mode = "inspection") {
+  state.sampleMode = mode === "training_capture" ? "training_capture" : "inspection";
+  document.querySelectorAll('input[name="sampleMode"]').forEach((input) => {
+    input.checked = input.value === state.sampleMode;
+  });
+  document.querySelectorAll('input[name="modalSampleMode"]').forEach((input) => {
+    input.checked = input.value === state.sampleMode;
+  });
+  document.body.classList.toggle("training-capture-mode", isTrainingCaptureMode());
+  document.body.classList.toggle("inspection-mode", !isTrainingCaptureMode());
+  setText("captureModeSummary", isTrainingCaptureMode() ? "训练数据采集" : "正常检测");
+  setText(
+    "sampleModeHint",
+    isTrainingCaptureMode()
+      ? "训练数据采集只保存图像和 metadata；Fruit Type / Variety 在新建样品时写入 metadata，不需要检测模型。"
+      : "样品种类和品种会写入 metadata.json；糖度、酸度和 pH 模型在对应分析页面选择。"
+  );
+  renderModelOverview();
 }
 
 function viewToken(angle, closure = false) {
@@ -2388,6 +2427,7 @@ async function syncDevicePreparation() {
 }
 
 function renderCurrentSample() {
+  document.body.classList.toggle("sample-created", hasActiveSample());
   setText("currentSampleName", state.sampleName || "未创建样品");
   setText("currentSampleId", state.sampleId ? `${state.sampleId} · ${state.fruitType || "--"} / ${state.variety || "generic"}` : "请先创建当前样品");
   setText("resultSampleName", state.sampleName || "--");
@@ -2412,7 +2452,132 @@ function renderCurrentSample() {
   updateDevicePreparationControls();
   updateAnalysisButtonStates();
   updateShapeMode();
+  renderCaptureSummary();
   renderSystemStatus();
+}
+
+function renderCaptureSummary() {
+  const deviceReady = [state.devicePrep.connect, state.devicePrep.motor, state.devicePrep.light].filter(Boolean).length;
+  setText("captureDeviceSummary", `${deviceReady}/3 Ready`);
+  setText("captureCalibrationSummary", state.calibrationStatus === "passed" ? "已确认" : "未确认");
+  const active = state.backgroundReference?.active || null;
+  const backgroundText = active
+    ? active.missing
+      ? "Missing"
+      : active.filename || active.id || "已设置"
+    : "未设置";
+  setText("captureBackgroundSummary", backgroundText);
+  setText("settingsCalibrationStatus", state.calibrationStatus === "passed" ? "已确认" : "未确认");
+  setText("settingsCalibrationId", $("#trueCalibrationId")?.value || "--");
+}
+
+function applyBackgroundReference(payload = {}) {
+  state.backgroundReference = payload || { activeId: "", active: null, items: [] };
+  renderBackgroundReference();
+}
+
+function renderBackgroundReference() {
+  const background = state.backgroundReference || {};
+  const active = background.active || null;
+  const hasActive = Boolean(active);
+  setText("settingsBackgroundStatus", hasActive ? active.missing ? "Missing" : "已设置" : "未设置");
+  setText("backgroundCurrentName", hasActive ? active.filename || active.id || "当前背景" : "未设置");
+  setText(
+    "backgroundCurrentMeta",
+    hasActive
+      ? `${active.source || "--"} · ${active.createdAt || "--"}${active.missing ? " · Missing" : ""}`
+      : "请确认样品台为空后拍摄背景，或导入已有背景照片。"
+  );
+  setPreviewImage("#backgroundCurrentThumb", "#backgroundCurrentEmpty", hasActive && !active.missing ? active.previewUrl : "");
+  $("#previewBackgroundReference") && ($("#previewBackgroundReference").disabled = !hasActive || active.missing);
+  $("#clearBackgroundReference") && ($("#clearBackgroundReference").disabled = !hasActive);
+  setText("backgroundReferenceTechnical", JSON.stringify({
+    activeId: background.activeId || "",
+    segmentationInterface: background.segmentationInterface || "",
+    active,
+  }, null, 2));
+  const list = $("#backgroundLibraryList");
+  if (list) {
+    const items = background.items || [];
+    list.innerHTML = items.length
+      ? items.map((item) => `
+        <div class="background-library-item${item.active ? " active" : ""}${item.missing ? " missing" : ""}">
+          <img src="${item.previewUrl || ""}" alt="${escapeHtml(item.filename || "背景图")}" ${item.missing ? "hidden" : ""} />
+          <div>
+            <strong>${escapeHtml(item.filename || item.id || "--")}</strong>
+            <small>${escapeHtml(item.createdAt || "--")} · ${escapeHtml(item.source || "--")}${item.missing ? " · Missing" : ""}</small>
+          </div>
+          <button type="button" data-background-id="${escapeHtml(item.id || "")}" ${item.active ? "disabled" : ""}>${item.active ? "当前使用" : "设为当前"}</button>
+        </div>
+      `).join("")
+      : `<p class="hint">暂无背景参考图。</p>`;
+    list.querySelectorAll("[data-background-id]").forEach((button) => {
+      button.addEventListener("click", () => activateBackgroundReference(button.dataset.backgroundId));
+    });
+  }
+  renderCaptureSummary();
+}
+
+async function loadBackgroundReference() {
+  const payload = await api("/api/background-reference");
+  applyBackgroundReference(payload.backgroundReference || {});
+}
+
+function openCaptureSettings() {
+  const modal = $("#captureSettingsModal");
+  if (modal) modal.hidden = false;
+  renderCalibrationStatus();
+  renderBackgroundReference();
+}
+
+function closeCaptureSettings() {
+  const modal = $("#captureSettingsModal");
+  if (modal) modal.hidden = true;
+}
+
+async function captureBackgroundReference() {
+  const ok = window.confirm("请确认样品台为空、无水果后拍摄背景。此操作会使用 RGB scientific capture，不使用预览 JPEG。");
+  if (!ok) return;
+  const payload = await api("/api/background-reference/capture", {
+    method: "POST",
+    body: JSON.stringify({ operatorConfirmedEmptyStage: true }),
+  });
+  applyBackgroundReference(payload.backgroundReference || {});
+  addLog("已拍摄并设置当前 Background Reference。");
+}
+
+async function importBackgroundReference() {
+  const selected = await api("/api/select-file?purpose=background-image");
+  if (!selected.path) return;
+  const payload = await api("/api/background-reference/import", {
+    method: "POST",
+    body: JSON.stringify({ path: selected.path }),
+  });
+  applyBackgroundReference(payload.backgroundReference || {});
+  addLog("已导入并设置当前 Background Reference。");
+}
+
+async function activateBackgroundReference(backgroundId) {
+  const payload = await api("/api/background-reference/activate", {
+    method: "POST",
+    body: JSON.stringify({ backgroundId }),
+  });
+  applyBackgroundReference(payload.backgroundReference || {});
+}
+
+async function clearBackgroundReference() {
+  const payload = await api("/api/background-reference/clear", { method: "POST", body: "{}" });
+  applyBackgroundReference(payload.backgroundReference || {});
+}
+
+function previewBackgroundReference() {
+  const active = state.backgroundReference?.active;
+  if (!active || active.missing) return;
+  setText("backgroundPreviewTitle", active.filename || "背景参考图");
+  const image = $("#backgroundPreviewImage");
+  if (image) image.src = active.previewUrl || "";
+  const modal = $("#backgroundPreviewModal");
+  if (modal) modal.hidden = false;
 }
 
 async function postHardwareAction(path, body, successMessage) {
@@ -2562,6 +2727,14 @@ async function sampleStageStop() {
 }
 
 function updateAnalysisButtonStates() {
+  if (isTrainingCaptureMode()) {
+    $("#startSscAnalysis") && ($("#startSscAnalysis").disabled = true);
+    $("#startAcidAnalysis") && ($("#startAcidAnalysis").disabled = true);
+    setText("sscModelStatus", "训练采集不预测");
+    setText("acidModelStatus", "训练采集不预测");
+    renderModelOverview();
+    return;
+  }
   const sscAvailable = hasActiveSample() && Boolean(state.selectedSscModelId);
   const taAvailable = hasActiveSample() && Boolean(state.selectedTaModelId || state.selectedPhModelId);
   const sscButton = $("#startSscAnalysis");
@@ -3257,6 +3430,9 @@ function switchView(view, stepKey = null) {
   document.querySelectorAll(".view-page").forEach((page) => {
     page.classList.toggle("active", page.dataset.page === view);
   });
+  document.querySelectorAll("[data-analysis-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.analysisView === view && (!stepKey || button.dataset.analysisStep === stepKey));
+  });
   setText("viewTitle", titles[view] || "功能模块");
   if (stepKey) setCurrentStep(stepKey);
   addLog(`切换到 ${titles[view] || view}`);
@@ -3558,8 +3734,10 @@ function qualityPayload() {
     rgbDirName: state.rgbDirName || $("#colorDir")?.value || "rgb",
     multispectralDirName: currentMultispectralDirName(),
     sampleId: $("#sampleId")?.value || "",
+    sampleMode: state.sampleMode || "inspection",
     fruitType: state.fruitType || "",
     variety: state.variety || "generic",
+    backgroundReference: state.backgroundReference?.active || null,
     selectedSscModelId: $("#sscModelSelect")?.value || state.selectedSscModelId || "",
     selectedTaModelId: $("#taModelSelect")?.value || state.selectedTaModelId || "",
     selectedPhModelId: $("#phModelSelect")?.value || state.selectedPhModelId || "",
@@ -3582,6 +3760,7 @@ function updateSampleSessionFromReport(report = {}) {
 function applyLoadedSampleMetadata(metadata = {}) {
   const fruitType = metadata.fruit_type || metadata.fruitType || "";
   const variety = metadata.variety || "";
+  const sampleMode = metadata.sample_mode || metadata.sampleMode || "";
   const sampleName = metadata.sample_name || metadata.sampleName || "";
   const sampleId = metadata.sample_id || metadata.sampleId || "";
   const imageDirs = metadata.image_directories || {};
@@ -3594,13 +3773,16 @@ function applyLoadedSampleMetadata(metadata = {}) {
   }
   if (fruitType) state.fruitType = fruitType;
   if (variety) state.variety = variety;
+  if (sampleMode) state.sampleMode = sampleMode === "training_capture" ? "training_capture" : "inspection";
   if (state.hasSample && !state.sampleName && sampleName) state.sampleName = sampleName;
   if (state.hasSample && !state.sampleId && sampleId) state.sampleId = sampleId;
   state.sampleSession.fruitType = state.fruitType;
   state.sampleSession.variety = state.variety;
+  state.sampleSession.sampleMode = state.sampleMode;
   if ($("#qualityFruitType") && fruitType) $("#qualityFruitType").value = fruitType;
   if ($("#qualityVariety") && variety) $("#qualityVariety").value = variety;
   if (fruitType || variety) {
+    updateSampleModeUi(state.sampleMode);
     renderCurrentSample();
     loadQualityModels().catch((error) => addLog(error.message, "WARN"));
   }
@@ -3760,10 +3942,24 @@ function renderModelSummaryRow(id, target, selectedId = "") {
 }
 
 function renderModelOverview() {
+  const panel = $(".model-overview-panel");
+  if (panel) panel.hidden = isTrainingCaptureMode();
+  if (isTrainingCaptureMode()) {
+    setText("modelOverviewHint", "训练数据采集不需要检测模型。");
+    document.body.classList.remove("model-advanced");
+    return;
+  }
   setText("modelOverviewScope", `${state.fruitType || "未选择水果"} / ${state.variety || "generic"}`);
   renderModelSummaryRow("modelSummarySsc", "ssc", state.selectedSscModelId);
   renderModelSummaryRow("modelSummaryTa", "ta", state.selectedTaModelId);
   renderModelSummaryRow("modelSummaryPh", "ph", state.selectedPhModelId);
+  if (state.sampleMode === "training_capture") {
+    setText("modelOverviewHint", "训练数据采集模式不绑定 SSC / TA / pH 模型；采集完成后到 Model Studio 导入样品并补充实测标签。");
+    const button = $("#toggleModelAdvanced");
+    if (button) button.textContent = state.modelAdvanced ? "隐藏高级" : "更换模型";
+    document.body.classList.toggle("model-advanced", state.modelAdvanced);
+    return;
+  }
   const missing = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
     .some((id) => document.getElementById(id)?.dataset.status === "missing");
   const generic = ["modelSummarySsc", "modelSummaryTa", "modelSummaryPh"]
@@ -3780,12 +3976,58 @@ function renderModelOverview() {
   document.body.classList.toggle("model-advanced", state.modelAdvanced);
 }
 
+function getSampleModeFromControls() {
+  const modalOpen = !$("#sampleModal")?.hidden;
+  const modalMode = modalOpen ? document.querySelector("input[name='modalSampleMode']:checked")?.value : "";
+  const inlineMode = document.querySelector("input[name='sampleMode']:checked")?.value;
+  return modalMode || inlineMode || state.sampleMode || "inspection";
+}
+
+function setSampleModeControls(mode) {
+  const normalized = mode === "training_capture" ? "training_capture" : "inspection";
+  document.querySelectorAll("input[name='sampleMode'], input[name='modalSampleMode']").forEach((input) => {
+    input.checked = input.value === normalized;
+  });
+}
+
+function updateSampleModeUi(mode = getSampleModeFromControls()) {
+  state.sampleMode = mode === "training_capture" ? "training_capture" : "inspection";
+  setSampleModeControls(state.sampleMode);
+  const training = state.sampleMode === "training_capture";
+  document.querySelectorAll(".inspection-scope-field, .modal-inspection-scope-field").forEach((el) => { el.hidden = training; });
+  document.querySelectorAll(".training-scope-field, .modal-training-scope-field").forEach((el) => { el.hidden = !training; });
+  setText("newSampleHint", training
+    ? "训练数据采集模式：此样品不要求已有预测模型。Fruit Type 和 Variety 将写入样品 metadata。"
+    : "正常检测使用已发布模型；具体糖酸模型在分析页面选择。");
+  if (training) {
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+  }
+  renderModelOverview();
+}
+
+function currentSampleScopeInputs() {
+  const training = state.sampleMode === "training_capture";
+  if (training) {
+    return {
+      fruitType: ($("#trainingFruitType")?.value || $("#newTrainingFruitType")?.value || "").trim(),
+      variety: ($("#trainingVariety")?.value || $("#newTrainingVariety")?.value || "generic").trim() || "generic",
+    };
+  }
+  return {
+    fruitType: ($("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "").trim(),
+    variety: ($("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic").trim() || "generic",
+  };
+}
+
 function toggleModelAdvanced() {
   state.modelAdvanced = !state.modelAdvanced;
   renderModelOverview();
 }
 
 async function loadSampleTypeCatalog() {
+  if (state.sampleMode === "training_capture") return state.modelCatalog || {};
   const selectedFruit = $("#qualityFruitType")?.value.trim() || state.fruitType || "";
   const selectedVariety = $("#qualityVariety")?.value.trim() || state.variety || "generic";
   const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
@@ -3796,6 +4038,20 @@ async function loadSampleTypeCatalog() {
 }
 
 async function loadQualityModels() {
+  if (isTrainingCaptureMode()) {
+    const empty = { fruitTypes: [], varieties: [], ssc: [], ta: [], ph: [], compatible: { ssc: [], ta: [], ph: [] }, defaults: {} };
+    state.modelCatalog = empty;
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+    fillModelSelect("#sscModelSelect", [], "", null);
+    fillModelSelect("#taModelSelect", [], "", null);
+    fillModelSelect("#phModelSelect", [], "", null);
+    updateAnalysisButtonStates();
+    renderModelOverview();
+    renderSelectedPredictionModels();
+    return empty;
+  }
   let fruitType = state.fruitType || "";
   let variety = state.variety || "generic";
   if (!fruitType) {
@@ -3844,13 +4100,18 @@ function closeSampleModal() {
 }
 
 async function loadNewSampleCatalog() {
+  if (isTrainingCaptureMode()) {
+    updateSampleModeUi("training_capture");
+    setText("newSampleHint", "训练数据采集允许直接输入新的 Fruit Type / Variety，并写入样品 metadata.json。");
+    return;
+  }
   const selectedFruit = $("#newSampleFruitType")?.value || state.fruitType || "";
   const selectedVariety = $("#newSampleVariety")?.value || state.variety || "generic";
   const payload = await api(`/api/quality-models?fruitType=${encodeURIComponent(selectedFruit)}&variety=${encodeURIComponent(selectedVariety)}`);
   const fruitType = fillPlainSelect("#newSampleFruitType", payload.fruitTypes || [], selectedFruit);
   const varietyPayload = await api(`/api/quality-models?fruitType=${encodeURIComponent(fruitType)}&variety=${encodeURIComponent(selectedVariety)}`);
   fillPlainSelect("#newSampleVariety", varietyPayload.varieties || ["generic"], selectedVariety, "generic");
-  setText("newSampleHint", varietyPayload.fruitTypes?.length ? "样品种类和品种将保存到本次样品 metadata.json。" : "暂无 Published / Default 模型，请先在 Model Studio 发布模型。");
+  setText("newSampleHint", varietyPayload.fruitTypes?.length ? "样品种类和品种将保存到本次样品 metadata.json。" : "正常检测尚无可选模型；如需先采集训练数据，请选择“训练数据采集”。");
 }
 
 async function createNewSample() {
@@ -3873,12 +4134,25 @@ async function createNewSample() {
     return;
   }
   setText("sampleCreateStatus", "正在创建样品");
-  await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+  updateSampleModeUi(getSampleModeFromControls());
+  if (state.sampleMode !== "training_capture") {
+    await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
+  }
+  const scope = currentSampleScopeInputs();
+  if (!scope.fruitType) {
+    setText("newSampleHint", "样品种类必须填写。");
+    setText("sampleCreateStatus", "请填写样品种类");
+    return;
+  }
   const payload = {
     sampleName,
     saveRootDir,
-    fruitType: $("#qualityFruitType")?.value || $("#newSampleFruitType")?.value || "",
-    variety: $("#qualityVariety")?.value || $("#newSampleVariety")?.value || "generic",
+    sampleMode: state.sampleMode,
+    fruitType: scope.fruitType,
+    variety: scope.variety,
+    selectedSscModelId: state.sampleMode === "training_capture" ? "" : ($("#sscModelSelect")?.value || state.selectedSscModelId || ""),
+    selectedTaModelId: state.sampleMode === "training_capture" ? "" : ($("#taModelSelect")?.value || state.selectedTaModelId || ""),
+    selectedPhModelId: state.sampleMode === "training_capture" ? "" : ($("#phModelSelect")?.value || state.selectedPhModelId || ""),
     sampleRotation: rotationSettings,
     rgbDirName: state.rgbDirName || "rgb",
     multispectralDirName: state.multispectralDirName || "multispectral",
@@ -3888,7 +4162,15 @@ async function createNewSample() {
   clearSampleDependentState();
   applySampleSessionState(response.sample || {});
   setStepStatus("sample", "done");
-  await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+  if (state.sampleMode === "training_capture") {
+    state.modelCatalog = { ssc: [], ta: [], ph: [], compatible: { ssc: [], ta: [], ph: [] }, defaults: {} };
+    state.selectedSscModelId = "";
+    state.selectedTaModelId = "";
+    state.selectedPhModelId = "";
+    renderModelOverview();
+  } else {
+    await loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+  }
   renderCurrentSample();
   await refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN"));
   closeSampleModal();
@@ -3910,18 +4192,34 @@ function applySampleSessionState(sample = {}) {
     otherImageDirs: sample.otherImageDirs || state.otherImageDirs || [],
   });
   state.captureStarted = Boolean(sample.captureStarted);
+  state.sampleMode = sample.sampleMode || "inspection";
   state.fruitType = sample.fruitType || "";
   state.variety = sample.variety || "generic";
+  state.sampleMode = sample.sampleMode || sample.sample_mode || state.sampleMode || "inspection";
+  setSampleMode(state.sampleMode);
+  if (sample.backgroundReference) {
+    state.backgroundReference = {
+      ...state.backgroundReference,
+      active: sample.backgroundReference,
+      activeId: sample.backgroundReference.backgroundReferenceId || state.backgroundReference.activeId || "",
+    };
+  }
   state.selectedSscModelId = sample.selectedSscModelId || "";
   state.selectedTaModelId = sample.selectedTaModelId || "";
   state.selectedPhModelId = sample.selectedPhModelId || "";
   state.captureRotationPlan = sample.captureRotationPlan || state.captureRotationPlan || buildCaptureRotationPlan(DEFAULT_ROTATION_SETTINGS);
   state.sampleSession.sampleId = state.sampleId;
   state.sampleSession.sampleName = state.sampleName;
+  state.sampleSession.sampleMode = state.sampleMode;
   state.sampleSession.fruitType = state.fruitType;
   state.sampleSession.variety = state.variety;
   if ($("#qualityFruitType")) $("#qualityFruitType").value = state.fruitType;
   if ($("#qualityVariety")) $("#qualityVariety").value = state.variety;
+  if ($("#trainingFruitType")) $("#trainingFruitType").value = state.fruitType;
+  if ($("#trainingVariety")) $("#trainingVariety").value = state.variety;
+  if ($("#newTrainingFruitType")) $("#newTrainingFruitType").value = state.fruitType;
+  if ($("#newTrainingVariety")) $("#newTrainingVariety").value = state.variety;
+  updateSampleModeUi(state.sampleMode);
   renderRotationPlan(state.captureRotationPlan);
 }
 
@@ -4068,6 +4366,7 @@ async function runSscAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderSscResult(payload.result || {});
+    await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.result?.status);
     setStepStatus("sugar", ok ? "done" : "warning");
     addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", ok ? "INFO" : "WARN");
@@ -4110,6 +4409,7 @@ async function runAcidAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderAcidResult(payload.taResult || {}, payload.phResult || {});
+    await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.taResult?.status) || ["ok", "success"].includes(payload.phResult?.status);
     setStepStatus("acid", ok ? "done" : "warning");
     addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", ok ? "INFO" : "WARN");
@@ -4681,6 +4981,78 @@ function exportReport() {
   addLog("报告已导出为文本文件。");
 }
 
+function inspectionResult(results, target) {
+  return (results || []).find((item) => item.target === target) || null;
+}
+
+function renderInspectionHistory(payload = {}) {
+  const list = $("#inspectionHistoryList");
+  if (!list) return;
+  list.replaceChildren();
+  const items = payload.items || [];
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "status-note";
+    empty.textContent = "暂无检测记录";
+    list.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "inspection-history-item";
+    const sample = item.sample || {};
+    const ssc = inspectionResult(item.results, "ssc");
+    const ta = inspectionResult(item.results, "ta");
+    const ph = inspectionResult(item.results, "ph");
+    button.innerHTML = `<strong></strong><span></span><small></small>`;
+    button.querySelector("strong").textContent = sample.sampleName || sample.sampleId || "未命名样品";
+    button.querySelector("span").textContent = `SSC ${ssc?.value ?? "--"} · TA ${ta?.value ?? "--"} · pH ${ph?.value ?? "--"}`;
+    button.querySelector("small").textContent = `${item.status || "--"} · ${item.createdAt || item.startedAt || "--"}`;
+    button.addEventListener("click", () => loadInspectionDetail(item.inspectionId));
+    list.appendChild(button);
+  });
+}
+
+function renderInspectionDetail(inspection) {
+  const node = $("#inspectionHistoryDetail");
+  if (!node) return;
+  const sample = inspection.sample || {};
+  node.hidden = false;
+  node.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `${sample.sampleName || sample.sampleId || "检测记录"} · ${inspection.status || "--"}`;
+  node.appendChild(title);
+  const detail = document.createElement("p");
+  detail.textContent = `模型结果已固定保存。Pipeline Signature: ${inspection.pipelineSignature || "--"}`;
+  node.appendChild(detail);
+  (inspection.results || []).forEach((result) => {
+    const line = document.createElement("div");
+    line.className = "inspection-history-result";
+    line.textContent = `${String(result.target || "").toUpperCase()} · ${result.value ?? "--"} ${result.unit || ""} · ${result.status || "--"}${result.errorCode ? ` · ${result.errorCode}` : ""}`;
+    node.appendChild(line);
+  });
+}
+
+async function loadInspectionDetail(inspectionId) {
+  if (!inspectionId) return;
+  try {
+    const payload = await api(`/api/inspections/${encodeURIComponent(inspectionId)}`);
+    renderInspectionDetail(payload.inspection || {});
+  } catch (error) {
+    addLog(error.message || "检测记录详情读取失败。", "WARN");
+  }
+}
+
+async function loadInspectionHistory() {
+  try {
+    const payload = await api("/api/inspections?limit=8");
+    renderInspectionHistory(payload);
+  } catch (error) {
+    addLog(error.message || "检测记录读取失败。", "WARN");
+  }
+}
+
 function updateClock() {
   setText("currentTime", new Date().toLocaleTimeString("zh-CN", { hour12: false }));
 }
@@ -4721,6 +5093,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     button.addEventListener("click", () => updateCaptureProgress(Number(button.dataset.step)));
   });
 
+  document.querySelectorAll("[data-analysis-view]").forEach((button) => {
+    button.addEventListener("click", () => switchView(button.dataset.analysisView, button.dataset.analysisStep));
+  });
+
+  document.querySelectorAll('input[name="sampleMode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      setSampleMode(input.value);
+      if (!isTrainingCaptureMode()) loadQualityModels().catch((error) => addLog(error.message, "WARN"));
+    });
+  });
+  document.querySelectorAll('input[name="modalSampleMode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      setSampleMode(input.value);
+      loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message));
+    });
+  });
+
   document.querySelectorAll(".lamp").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll(".lamp").forEach((lamp) => lamp.classList.remove("active"));
@@ -4737,6 +5126,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   ["#qualityFruitType", "#qualityVariety"].forEach((selector) => {
     $(selector)?.addEventListener("change", async () => {
+      if (state.sampleMode === "training_capture") return;
       await loadSampleTypeCatalog().catch((error) => addLog(error.message, "WARN"));
       state.fruitType = $("#qualityFruitType")?.value || state.fruitType || "";
       state.variety = $("#qualityVariety")?.value || state.variety || "generic";
@@ -4785,6 +5175,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#closeSampleModal")?.addEventListener("click", closeSampleModal);
   $("#cancelNewSample")?.addEventListener("click", closeSampleModal);
   $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
+  $("#openCaptureSettings")?.addEventListener("click", openCaptureSettings);
+  $("#closeCaptureSettings")?.addEventListener("click", closeCaptureSettings);
+  $("#captureBackgroundReference")?.addEventListener("click", () => captureBackgroundReference().catch((error) => addLog(error.message, "ERROR")));
+  $("#importBackgroundReference")?.addEventListener("click", () => importBackgroundReference().catch((error) => addLog(error.message, "ERROR")));
+  $("#previewBackgroundReference")?.addEventListener("click", previewBackgroundReference);
+  $("#clearBackgroundReference")?.addEventListener("click", () => clearBackgroundReference().catch((error) => addLog(error.message, "WARN")));
+  $("#closeBackgroundPreview")?.addEventListener("click", () => {
+    const modal = $("#backgroundPreviewModal");
+    if (modal) modal.hidden = true;
+  });
   $("#closeImageDirSettingsModal")?.addEventListener("click", () => closeImageDirSettingsModal(null));
   $("#cancelImageDirSettings")?.addEventListener("click", () => closeImageDirSettingsModal(null));
   $("#confirmImageDirSettings")?.addEventListener("click", confirmImageDirSettingsModal);
@@ -4795,10 +5195,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (event.key !== "Escape") return;
     if (!$("#imageFolderSelectModal")?.hidden) closeImageFolderSelectModal(null);
     else if (!$("#imageDirSettingsModal")?.hidden) closeImageDirSettingsModal(null);
+    else if (!$("#backgroundPreviewModal")?.hidden) $("#backgroundPreviewModal").hidden = true;
+    else if (!$("#captureSettingsModal")?.hidden) closeCaptureSettings();
     else if (!$("#sampleModal")?.hidden) closeSampleModal();
   });
   $("#newSampleFruitType")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
   $("#newSampleVariety")?.addEventListener("change", () => loadNewSampleCatalog().catch((error) => setText("newSampleHint", error.message)));
+  document.querySelectorAll("input[name='sampleMode'], input[name='modalSampleMode']").forEach((input) => {
+    input.addEventListener("change", () => {
+      updateSampleModeUi(input.value);
+      if (state.sampleMode !== "training_capture") {
+        loadSampleTypeCatalog().then(loadQualityModels).catch((error) => addLog(error.message, "WARN"));
+      }
+    });
+  });
   [
     "#multiViewEnabled",
     "#rotationIntervalDeg",
@@ -4911,6 +5321,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#runShapeAnalysis")?.addEventListener("click", runShapeAnalysis);
   $("#cancelShapeAnalysis")?.addEventListener("click", cancelShapeAnalysis);
   $("#exportReport")?.addEventListener("click", exportReport);
+  $("#refreshInspectionHistory")?.addEventListener("click", () => loadInspectionHistory());
   $("#clearLog")?.addEventListener("click", () => {
     setText("runLog", "[INFO] 日志已清空。");
   });
@@ -4930,7 +5341,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   window.setInterval(updateClock, 1000);
   updateClock();
+  setSampleMode(state.sampleMode);
   await loadPersistentCameraSettings();
+  await loadInspectionHistory();
+  await loadBackgroundReference().catch((error) => addLog(error.message || "Background Reference 状态读取失败。", "WARN"));
   setCameraSettingsTab("rgb");
   renderRgbApplySummary();
   renderRotationPlan();
@@ -4951,6 +5365,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     applyCameraStatus(status.cameras || status.device?.cameras || {});
     if (status.devicePrep) state.devicePrep = { ...state.devicePrep, ...status.devicePrep };
     state.trueCaptureReadiness = status.trueCaptureReadiness || state.trueCaptureReadiness;
+    applyBackgroundReference(status.backgroundReference || state.backgroundReference);
     if (state.hardwareStatus.connected) state.devicePrep.connect = true;
     renderDevicePreparationStatus();
     applySampleSessionState(status);

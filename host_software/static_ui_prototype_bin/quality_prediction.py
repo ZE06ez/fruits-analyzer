@@ -6,11 +6,25 @@ from pathlib import Path
 import sqlite3
 
 from pointcloud_service import inspect_sample_folder, list_images
-from quality_algorithm.model_io import ModelInputMismatch, load_model_bundle, predict_feature_record
-from quality_algorithm.spectral_features import FeatureExtractionError, extract_feature_record
+from quality_algorithm.analysis_pipeline import FeaturePipelineConfig, run_feature_pipeline
+from quality_algorithm.model_io import MODEL_INPUT_CONTRACT_MISSING, ModelInputMismatch, load_model_bundle, predict_feature_record
+from quality_algorithm.spectral_features import FeatureExtractionError
+from runtime_support import runtime_data_dir
 
 
-MODEL_ROOT = Path(__file__).resolve().parent / "trained_models"
+APP_DIR = Path(__file__).resolve().parent
+# Kept as a test/development override; packaged runtime data is resolved below.
+MODEL_ROOT = APP_DIR / "trained_models"
+
+
+def model_root() -> Path:
+    runtime_root = runtime_data_dir(APP_DIR)
+    return MODEL_ROOT if runtime_root == APP_DIR else runtime_root / "trained_models"
+
+
+def model_registry_path() -> Path:
+    runtime_root = runtime_data_dir(APP_DIR)
+    return MODEL_ROOT.parent / "model_studio" / "database" / "model_studio.sqlite" if runtime_root == APP_DIR else runtime_root / "database" / "model_studio.sqlite"
 
 
 @dataclass
@@ -29,6 +43,11 @@ class PredictionResult:
     model_type: str = ""
     preprocessing: str = ""
     error_message: str = ""
+    target: str = ""
+    pipeline_signature: str = ""
+    model_pipeline_signature: str = ""
+    model_input_contract: dict | None = None
+    feature_pipeline: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -113,6 +132,11 @@ def predict_ph(sample_data: SampleSession) -> PredictionResult:
     return _predict_target(sample_data, target="ph", unit="pH", display_name="pH prediction model")
 
 
+def build_prediction_feature_record(sample_data: SampleSession, model_metadata: dict | None = None):
+    pipeline_config = _pipeline_config_for_model_metadata(model_metadata or {})
+    return run_feature_pipeline(sample_data.analysis_data_dir, sample_id=sample_data.sample_id, config=pipeline_config)
+
+
 def _predict_target(sample_data: SampleSession, *, target: str, unit: str, display_name: str) -> PredictionResult:
     started = time.perf_counter()
     selected_id = {
@@ -126,7 +150,23 @@ def _predict_target(sample_data: SampleSession, *, target: str, unit: str, displ
         variety=sample_data.variety,
         selected_model_id=selected_id,
     )
-    model_dir = Path(registry_model["model_dir"]) if registry_model else MODEL_ROOT / target
+    if registry_model is None and sample_data.fruit_type and _registry_has_published_models(target):
+        return PredictionResult(
+            value=None,
+            unit=unit,
+            confidence=None,
+            model_name=display_name,
+            model_version="not_connected",
+            model_id=selected_id,
+            model_type="",
+            preprocessing="",
+            sample_count=_effective_sample_count(sample_data),
+            elapsed_time=round(time.perf_counter() - started, 3),
+            status="model_missing",
+            error_message="No published model matches the current fruit type or variety.",
+            target=target,
+        )
+    model_dir = Path(registry_model["model_dir"]) if registry_model else model_root() / target
     model_path = model_dir / "model.joblib"
     metadata_path = model_dir / "metadata.json"
     sample_count = _effective_sample_count(sample_data)
@@ -144,12 +184,17 @@ def _predict_target(sample_data: SampleSession, *, target: str, unit: str, displ
             elapsed_time=round(time.perf_counter() - started, 3),
             status="model_missing",
             error_message=f"{display_name} is not connected.",
+            target=target,
         )
 
     try:
         bundle = load_model_bundle(model_dir)
-        record = extract_feature_record(sample_data.analysis_data_dir, sample_id=sample_data.sample_id, allow_uncalibrated=True)
-        value = predict_feature_record(bundle, record)
+        record = build_prediction_feature_record(sample_data, bundle.metadata)
+        value = predict_feature_record(
+            bundle,
+            record,
+            allow_legacy_missing_contract=_allows_legacy_missing_contract(bundle.metadata),
+        )
         resolved_name = bundle.metadata.get("display_name") or (registry_model.get("display_name") if registry_model else "") or bundle.metadata.get("model_type") or display_name
         return PredictionResult(
             value=round(value, 4),
@@ -164,31 +209,65 @@ def _predict_target(sample_data: SampleSession, *, target: str, unit: str, displ
             elapsed_time=round(time.perf_counter() - started, 3),
             status="success",
             error_message="",
+            target=target,
+            pipeline_signature=record.pipeline_signature,
+            model_pipeline_signature=str(bundle.metadata.get("pipeline_signature") or ""),
+            model_input_contract=record.model_input_contract,
+            feature_pipeline=bundle.metadata.get("feature_pipeline") if isinstance(bundle.metadata.get("feature_pipeline"), dict) else None,
         )
     except ModelInputMismatch as exc:
-        return _error_result(unit, display_name, sample_count, started, "model_input_mismatch", str(exc))
+        return _error_result(
+            unit, display_name, sample_count, started, "model_input_mismatch", str(exc), target=target,
+            model_id=str(bundle.metadata.get("model_id") if "bundle" in locals() else ""),
+            model_version=str(bundle.metadata.get("model_version") if "bundle" in locals() else ""),
+            model_type=str(bundle.metadata.get("model_type") if "bundle" in locals() else ""),
+            preprocessing=str(bundle.metadata.get("preprocessing") if "bundle" in locals() else ""),
+            model_pipeline_signature=str(bundle.metadata.get("pipeline_signature") if "bundle" in locals() else ""),
+            model_input_contract=bundle.metadata.get("model_input_contract") if "bundle" in locals() and isinstance(bundle.metadata.get("model_input_contract"), dict) else None,
+            feature_pipeline=bundle.metadata.get("feature_pipeline") if "bundle" in locals() and isinstance(bundle.metadata.get("feature_pipeline"), dict) else None,
+        )
     except FeatureExtractionError as exc:
-        return _error_result(unit, display_name, sample_count, started, "feature_error", str(exc))
+        return _error_result(unit, display_name, sample_count, started, "feature_error", str(exc), target=target)
     except ImportError as exc:
-        return _error_result(unit, display_name, sample_count, started, "dependency_missing", str(exc))
+        return _error_result(unit, display_name, sample_count, started, "dependency_missing", str(exc), target=target)
     except Exception as exc:
-        return _error_result(unit, display_name, sample_count, started, "model_error", str(exc))
+        return _error_result(unit, display_name, sample_count, started, "model_error", str(exc), target=target)
 
 
-def _error_result(unit: str, name: str, sample_count: int, started: float, status: str, message: str) -> PredictionResult:
+def _error_result(
+    unit: str,
+    name: str,
+    sample_count: int,
+    started: float,
+    status: str,
+    message: str,
+    *,
+    target: str = "",
+    model_id: str = "",
+    model_version: str = "",
+    model_type: str = "",
+    preprocessing: str = "",
+    model_pipeline_signature: str = "",
+    model_input_contract: dict | None = None,
+    feature_pipeline: dict | None = None,
+) -> PredictionResult:
     return PredictionResult(
         value=None,
         unit=unit,
         confidence=None,
         model_name=name,
-        model_version="",
-        model_id="",
-        model_type="",
-        preprocessing="",
+        model_id=model_id,
+        model_version=model_version,
+        model_type=model_type,
+        preprocessing=preprocessing,
         sample_count=sample_count,
         elapsed_time=round(time.perf_counter() - started, 3),
         status=status,
         error_message=message,
+        target=target,
+        model_pipeline_signature=model_pipeline_signature,
+        model_input_contract=model_input_contract,
+        feature_pipeline=feature_pipeline,
     )
 
 
@@ -198,8 +277,27 @@ def _effective_sample_count(sample_data: SampleSession) -> int:
     return 1 if sample_data.rgb_files else 0
 
 
+def _pipeline_config_for_model_metadata(metadata: dict) -> FeaturePipelineConfig:
+    feature_pipeline = metadata.get("feature_pipeline")
+    if isinstance(feature_pipeline, dict):
+        return FeaturePipelineConfig.from_dict(feature_pipeline)
+    if _allows_legacy_missing_contract(metadata):
+        return FeaturePipelineConfig.legacy()
+    raise ModelInputMismatch(f"{MODEL_INPUT_CONTRACT_MISSING}: model metadata missing feature_pipeline")
+
+
+def _allows_legacy_missing_contract(metadata: dict) -> bool:
+    if str(metadata.get("model_input_contract_policy") or "") == "legacy_compatibility":
+        return True
+    feature_pipeline = metadata.get("feature_pipeline")
+    if not isinstance(feature_pipeline, dict):
+        return False
+    mode = str(feature_pipeline.get("mode") or "")
+    return mode in {"legacy", "development"}
+
+
 def _select_registry_model(*, target: str, fruit_type: str, variety: str, selected_model_id: str = "") -> dict | None:
-    database = MODEL_ROOT.parent / "model_studio" / "database" / "model_studio.sqlite"
+    database = model_registry_path()
     if not database.exists():
         return None
     conn = sqlite3.connect(database)
@@ -238,6 +336,21 @@ def _select_registry_model(*, target: str, fruit_type: str, variety: str, select
             if generic:
                 return dict(generic)
         return None
+    finally:
+        conn.close()
+
+
+def _registry_has_published_models(target: str) -> bool:
+    database = model_registry_path()
+    if not database.exists():
+        return False
+    conn = sqlite3.connect(database)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM models WHERE target=? AND status IN ('Published','Default','Production') LIMIT 1",
+            (target,),
+        ).fetchone()
+        return row is not None
     finally:
         conn.close()
 

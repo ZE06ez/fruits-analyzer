@@ -862,7 +862,7 @@ async function loadModels() {
           <h4>${escapeHtml(model.display_name || model.model_name)}</h4>
           <small title="${escapeHtml(model.model_id)}">${escapeHtml(model.model_id)}</small>
         </div>
-        <span>${badge(model.status)} ${model.isDefault ? '<span class="badge good">★ Default</span>' : ""}</span>
+        <span>${badge(model.status)} ${model.isDefault ? '<span class="badge good">★ Default</span>' : ""} ${qualityBadge(model.qualityStatus)}</span>
       </div>
       <div class="model-line">${escapeHtml(model.fruit_type || "--")} / ${escapeHtml(model.variety || "generic")} · ${escapeHtml(model.target.toUpperCase())}</div>
       <div class="model-line">${escapeHtml(model.model_type)} · ${escapeHtml(model.preprocessing)} · ${escapeHtml(model.dataset_version_label || model.dataset_version_id || "--")}</div>
@@ -950,6 +950,12 @@ function modelMoreActions(model) {
     actions.push(menuButton(model, "delete", "Delete Permanently", "danger-menu-item"));
   }
   return actions.join("");
+}
+
+function qualityBadge(status) {
+  const value = status || "NOT_AVAILABLE";
+  const className = value === "PASS" ? "good" : value === "FAIL" ? "bad" : "warn";
+  return `<span class="badge ${className}">Quality: ${escapeHtml(value)}</span>`;
 }
 
 function menuButton(model, action, label, className = "", disabled = false, title = "") {
@@ -1072,6 +1078,10 @@ async function showModelDetail(modelId) {
     `Dataset Version: ${lineage.datasetVersionLabel || lineage.datasetVersionId || "--"}`,
     `Experiment: ${lineage.experimentId || "--"}`,
     `Run: ${lineage.runId || "--"}`,
+    `Quality: ${model.qualityStatus || "NOT_AVAILABLE"}`,
+    `Quality policy: ${model.qualityPolicyVersion || "--"}`,
+    `Validation: ${model.qualityReport?.checks?.validation?.actual || "--"}`,
+    `Quality metrics: R²=${fmt(model.r2)}, RMSE=${fmt(model.rmse)}, MAE=${fmt(model.mae)}, RPD=${fmt(model.rpd)}`,
     `Files: model=${model.fileStatus?.modelJoblib ? "ok" : "missing"}, metadata=${model.fileStatus?.metadataJson ? "ok" : "missing"}`,
   ].join("\n"));
 }

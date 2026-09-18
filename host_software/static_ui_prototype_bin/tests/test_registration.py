@@ -244,8 +244,9 @@ class RegistrationTests(unittest.TestCase):
 
         self.assertEqual(target_mask.shape, image.shape)
         self.assertGreater(pixels.size, 0)
-        with self.assertRaises(NotImplementedError):
-            apply_mask_to_image(image, target_mask, registration_mode="calibrated")
+        calibrated_pixels, calibrated_mask = apply_mask_to_image(image, target_mask, registration_mode="calibrated")
+        self.assertEqual(calibrated_mask.shape, image.shape)
+        self.assertEqual(calibrated_pixels.size, pixels.size)
 
 
 if __name__ == "__main__":

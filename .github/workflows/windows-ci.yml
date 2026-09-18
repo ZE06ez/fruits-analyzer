@@ -1,0 +1,27 @@
+name: Windows software verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  software-tests:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: host_software/static_ui_prototype_bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -X utf8 -m unittest discover -s tests -v
+      - run: node --check app.js
+      - run: node --check model_studio/static/model_studio.js
+      - run: git diff --check

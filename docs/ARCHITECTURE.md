@@ -1,6 +1,6 @@
 # Architecture
 
-更新时间：2026-09-12
+更新时间：2026-09-18
 
 ## 总体结构
 
@@ -26,6 +26,9 @@ host_software/static_ui_prototype_bin/
   config/registration_profile.json (runtime, gitignored)
   config/background_reference.example.json
   runtime/background_reference/ (runtime, gitignored)
+    background_references.json
+    images/background_<timestamp>_<id>.png
+  manual_registered_roi_output/ (runtime, gitignored)
   quality_prediction.py
   quality_algorithm/
   training/
@@ -34,6 +37,14 @@ host_software/static_ui_prototype_bin/
   trained_models/
   tests/
 ```
+
+Background Reference runtime store:
+
+- `backend_server.BackgroundReferenceStore` owns `runtime/background_reference/background_references.json` and managed PNG files under `runtime/background_reference/images/`.
+- Import copies/converts user-selected images into managed PNG files and never modifies or deletes the user original.
+- Camera capture uses `CameraManager.capture_rgb_frame()` scientific RGB capture and stores the resulting frame as managed PNG. It does not use browser preview JPEG.
+- Store snapshot exposes `activeId`, `active`, `items`, `missing` and `previewUrl`. Missing active files are reported as Missing instead of failing startup.
+- New Sample metadata writes `background_reference` independently from `calibrationId` / CalibrationSet.
 
 运行时结构：
 
@@ -56,6 +67,7 @@ launcher.py
 | 路径选择与校验 | `backend_server.py` | `select_directory_dialog()`, `select_file_dialog()`, `validate_folder_path()`, `validate_file_path()` | 选择用途、初始目录、用户系统选择结果 | `/api/select-folder`、`/api/select-file` 返回只读路径和校验状态 | tkinter / PowerShell fallback |
 | 作业队列 | `backend_server.py` | `JobStore` | job 状态更新 | `/api/jobs/<id>` | threading |
 | 样品会话 | `backend_server.py` | `SessionState` | 样品表单、模型选择、目录 | 当前样品状态 | Model Studio 可选 |
+| Background Reference 管理 | `backend_server.py`, `app.js` | `BackgroundReferenceStore`, `loadBackgroundReference()`, `renderBackgroundReference()` | RGB scientific capture 帧或用户选择的本地图片 | `runtime/background_reference/` 下的托管 PNG、图库 JSON、active background、Sample metadata `background_reference`；与 CalibrationSet/calibrationId 独立 | PIL, CameraManager |
 | 设备准备状态 | `backend_server.py`, `app.js` | `SessionState.update_device_preparation()`, `DeviceManager.capture_readiness()` | 连接/电机/光源/相机/标定检查状态与当前 true-capture plan | `/api/device-preparation`，`devicePrepared` 表示当前离线验证可用；P1B-8 后 `trueCapturePrepared` 来自当前 `TrueCapturePlan` readiness，不再硬编码 true，也不代表 hardware acceptance PASS | 串口/滤光轮部分可走真实 API，RGB adapter 已实机验证并接入正式 PNG 保存，DVP2 adapter 已接入 raw mono PNG、多波段、Dark/White、Sample MultiView；真实多视角仍被 SampleStage protocol gate 阻断 |
 | 全局系统状态 | `app.js` | `deriveSystemStatus()`, `renderSystemStatus()`, `renderOperatorOverview()`, `runOperatorPrimaryAction()` | `state`、设备状态、相机状态、样品状态、形态任务、预测任务 | 顶栏“当前状态”与 Operator Workbench 总览卡；下一步 Primary Action 只转发到现有 UI 入口 | 前端派生状态，不新增后端状态源 |
 | STM32 串口 | `serial_service.py` | `SerialService` | 串口名、超时、旧两字节命令或 raw bytes | 串口 open/read/write/clear buffers、旧两字节 RESULT、异常 | pyserial |
@@ -86,10 +98,12 @@ launcher.py
 | Fruit Type 模型作用域 | `backend_server.py`, `model_studio/service.py` | sample/session/dataset/model `fruit_type` 字段 | 用户输入的 Fruit Type 字符串 | 仅作为 Dataset、Experiment、Model、Station catalog 的作用域；不要求英文、不生成 AI prompt、不维护固定水果 enum | sqlite3 |
 | 背景参考果实分割 | `quality_algorithm/background_reference.py`, `quality_algorithm/background_segmenter.py`, `quality_algorithm/segmentation.py`, `quality_algorithm/mask_quality.py` | `BackgroundReference`, `validate_background_reference()`, `BackgroundReferenceSegmenter`, `BackgroundSegmentationConfig`, `FruitSegmentationResult`, `compute_mask_iou()`, `compute_mask_dice()` | 空背景 RGB、样品 RGB、相机/光照 metadata、阈值与形态学配置 | RGB absolute difference + Lab distance、threshold/open/close/fill holes/connected components；输出 mask、bbox、centroid、component diagnostics、differenceStats、qualityFlags、referenceId；不伪造 ellipse fallback | numpy, PIL, OpenCV optional |
 | RGB-DVP2 几何配准标定 | `quality_algorithm/registration.py`, `manual_registration_test.py`, `config/registration_profile.example.json`, `config/registration_profile.json` | `RegistrationProfile`, `detect_checkerboard_corners()`, `estimate_planar_homography()`, `build_registration_profile()`, `validate_profile_for_runtime()`, `warp_mask_rgb_to_multispectral()` | RGB scientific checkerboard 图、DVP2 reference-band checkerboard 图、相机身份/分辨率、棋盘格规格 | RGB -> DVP2 planar homography profile、reprojection metrics、角点/warp/overlay/difference 可视化；运行时 profile 被 Git 忽略，example 不绑定真实设备 | OpenCV, numpy, json |
+| Registered multispectral ROI | `quality_algorithm/registered_roi.py`, `manual_registered_roi_test.py` | `RegisteredRoiConfig`, `RegisteredRoiResult`, `build_registered_multispectral_roi()` | RGB fruit mask、RegistrationProfile、runtime RGB/DVP2 endpoint、DVP2 target shape | RGB mask warp 到 DVP2 坐标、post-warp conservative erosion、bbox/centroid/pixel-count/metrics diagnostics；失败时不 fallback | numpy, OpenCV optional |
+| Production Analysis Pipeline | `quality_algorithm/analysis_pipeline.py` | `FeaturePipelineConfig`, `ModelInputContract`, `run_feature_pipeline()`, `pipeline_signature()` | 样品目录、pipeline config、BackgroundReference、RegistrationProfile、runtime endpoints、registered ROI 参数 | 训练端和检测端共享的 FeatureRecord 入口；production 默认要求 Dark/White、Background Reference、calibrated registration 和 registered ROI；生成稳定模型输入 contract/signature；legacy/development 必须显式配置 | spectral_features, background_reference, registration, registered_roi |
 | 特征提取 | `quality_algorithm/spectral_features.py` | `inspect_sample_structure()`, `extract_feature_record()` | 样品目录 | `FeatureRecord` | filters/calibration/roi |
 | 预处理 | `quality_algorithm/preprocessing.py` | `PreprocessorState`, `fit_transform_preprocessor()` | 特征矩阵 | RAW/SNV/MSC 后矩阵 | numpy |
-| 模型 IO | `quality_algorithm/model_io.py` | `save_model_bundle()`, `load_model_bundle()`, `predict_feature_record()` | 模型目录、FeatureRecord | 预测数值 | joblib, preprocessing |
-| 预测入口 | `quality_prediction.py` | `SampleSession`, `PredictionResult`, `predict_ssc()`, `predict_ta()`, `predict_ph()` | 样品目录和模型选择 | 结构化预测结果 | model_io, spectral_features, sqlite |
+| 模型 IO | `quality_algorithm/model_io.py` | `save_model_bundle()`, `load_model_bundle()`, `validate_model_input_contract()`, `predict_feature_record()` | 模型目录、FeatureRecord | 预测前校验 contract/signature/wavelengths/calibration，再输出预测数值 | joblib, preprocessing |
+| 预测入口 | `quality_prediction.py` | `SampleSession`, `PredictionResult`, `build_prediction_feature_record()`, `predict_ssc()`, `predict_ta()`, `predict_ph()` | 样品目录和模型选择 | 通过模型 metadata 中的 `feature_pipeline` 生成 FeatureRecord；缺少 contract/signature 的生产模型返回 `model_input_mismatch`，旧模型只有显式 legacy/development compatibility 才可兼容；缺少正式依赖时返回 feature_error，不产生假结果 | analysis_pipeline, model_io, sqlite |
 | 训练数据 | `training/build_dataset.py` | `build_dataset()` | samples root, labels.csv | features.csv | quality_algorithm.dataset |
 | 模型训练 | `training/train.py` | `train_one()`, `run_experiment_matrix()` | features.csv、target、model、preprocessing | 模型 bundle、指标 | scikit-learn |
 | 模型评估 | `training/evaluate.py` | `evaluate_model()` | features.csv、model_dir、target | R2/RMSE/MAE/RPD | model_io |
@@ -107,10 +121,23 @@ GET /api/status
   -> CameraManager.status()
   -> CameraSettingsStore.snapshot()
   -> SessionState.snapshot()
+  -> BackgroundReferenceStore.snapshot()
   -> defaultSaveRoot
 ```
 
-输出包括 Python 依赖、设备准备状态、真实/离线设备状态、顶层 `cameras`、当前样品、当前拍摄目录、分析目录、果种/品种、已选模型。`device.cameras` 与顶层 `cameras` 保持同一状态来源。
+输出包括 Python 依赖、设备准备状态、真实/离线设备状态、顶层 `cameras`、当前样品、当前拍摄目录、分析目录、果种/品种、样品模式、已选模型和当前 Background Reference。`device.cameras` 与顶层 `cameras` 保持同一状态来源。
+
+### Background Reference
+
+```text
+GET  /api/background-reference
+POST /api/background-reference/import    body: {path}
+POST /api/background-reference/capture   body: {operatorConfirmedEmptyStage:true}
+POST /api/background-reference/activate  body: {backgroundId}
+POST /api/background-reference/clear
+```
+
+`import` 使用系统文件选择器返回的路径，把用户图片复制/转换到程序管理目录，不修改用户原文件。`capture` 要求操作员确认样品台为空，并调用 `CameraManager.capture_rgb_frame()`；如果 RGB scientific capture 未就绪则返回真实错误，不使用 preview JPEG。`activate` 保证同一时间只有一个 active background。新建 Sample 时，`ensure_sample_capture_folder()` 把 active background 写入 metadata 的 `background_reference`，不写入或复用 `calibrationId`。
 
 ### 相机参数持久化
 
@@ -138,7 +165,7 @@ P1C-1 起 RGB preview profile 与 RGB scientific profile 分开。Preview 默认
 
 P1C-2A 新增离线几何配准标定边界，不改变正式特征提取路径。`manual_registration_test.py` 从 RGB scientific checkerboard 图和 DVP2 reference-band checkerboard 图检测 OpenCV checkerboard inner corners，使用 `cv2.findHomography(..., RANSAC)` 估计 RGB pixel -> DVP2 pixel 的 `planar_homography_v1` 3x3 矩阵，并保存 `RegistrationProfile`。profile schema 记录 `schemaVersion`、`method`、RGB/DVP2 endpoint identity 与分辨率、`referenceBandNm`、棋盘格规格、`matrixRgbToMultispectral`、calibration plane 说明、`rmsePx/meanErrorPx/maxErrorPx/p95ErrorPx`、source pairs、createdAt 和 valid。
 
-运行时 profile 默认路径为 `config/registration_profile.json`，属于本机标定结果并被 Git 忽略；`config/registration_profile.example.json` 只作为可提交参考，不绑定真实 serial/stableId。`validate_profile_for_runtime()` 会校验 schema/method、3x3 矩阵有限且非奇异、RGB/DVP2 分辨率、输出尺寸，以及 profile 已记录的 stableId/serial/deviceIndex，错用不同设备或不同分辨率时抛出 `REGISTRATION_PROFILE_MISMATCH`。P1C-2A 只提供 `warp_mask_rgb_to_multispectral()` 和可视化/诊断工具，`quality_algorithm.roi.apply_mask_to_image(registration_mode="calibrated")` 仍不接入生产路径，待 P1C-2B 完成。
+运行时 profile 默认路径为 `config/registration_profile.json`，属于本机标定结果并被 Git 忽略；`config/registration_profile.example.json` 只作为可提交参考，不绑定真实 serial/stableId。`validate_profile_for_runtime()` 会校验 schema/method、3x3 矩阵有限且非奇异、RGB/DVP2 分辨率、输出尺寸，以及 profile 已记录的 stableId/serial/deviceIndex，错用不同设备或不同分辨率时抛出 `REGISTRATION_PROFILE_MISMATCH`。P1C-2B 后 calibrated registration 已接入 `extract_feature_record()`，P1E-1 后 production analysis pipeline 默认要求该 calibrated path；真实硬件 profile 和 ROI overlay 仍待现场验收。
 
 RGB frame metadata 增加或保留 `requestedFourcc`、`actualFourcc`、`requestedWidth`/`requestedHeight`/`requestedFps` 所在的 `requestedSettings`、`actualWidth`/`actualHeight`/`actualFps` 所在的 `actualSettings`、`sourcePixelFormat`、`sourceCompression`、`chromaSubsampling`、`scientificStrictLossless`、`scientificCaptureApproved`、`scientificQualityClass`、`outputFormat=PNG`、`outputLossless=true`、`previewProfile`、`scientificProfile`、`settingsSource` 和 device identity。`DeviceManager.capture_readiness()` 调用 `CameraManager.rgb_scientific_status()`，即使 preview PASS，只要 scientific capture 未 approved，True Capture readiness 仍 BLOCK。
 
@@ -419,6 +446,13 @@ app.js createNewSample()
 
 `metadata.json.image_directories` 保存本次实际使用的 RGB 与多光谱子目录名。`sample_rotation` 是样品台多视角计划；`filter_wheel_rotation` 是滤光片转轮波段切换说明。两者控制域独立，不能混用。
 
+P1D-1 起样品创建增加 `sample_mode`：
+
+- `inspection`：正常检测样品，继续通过 `/api/quality-models`、`resolve_model_id()`、Default 和 `generic` fallback 匹配 SSC/TA/pH 模型。
+- `training_capture`：训练数据采集样品，不要求任何 Published/Default/Production 模型存在；`fruit_type` 和 `variety` 来自用户输入并写入 Sample `metadata.json`，`selected_ssc_model_id`、`selected_ta_model_id`、`selected_ph_model_id` 保持空字符串是合法状态。
+
+Sample identity 的权威字段为 `sample_id`、`sample_name`、`sample_mode`、`fruit_type`、`variety`。Model availability 只影响 Inspection 的检测模型选择，不决定能否创建 Training Capture Sample。
+
 ### 路径选择
 
 ```text
@@ -557,12 +591,41 @@ POST /api/predict-ssc 或 /api/predict-acid
   -> predict_ssc()/predict_ta()/predict_ph()
   -> _select_registry_model()
   -> load_model_bundle()
-  -> extract_feature_record()
+  -> run_feature_pipeline()
   -> predict_feature_record()
   -> PredictionResult.to_dict()
 ```
 
-`extract_feature_record()`：
+P1E-1 后，Production Analysis Pipeline 是训练端和检测端的唯一正式 FeatureRecord 入口：
+
+```text
+run_feature_pipeline(FeaturePipelineConfig)
+  -> inspect_sample_structure()
+  -> require complete Dark/White calibration in production
+  -> Background Reference segmentation in production
+  -> calibrated RGB -> DVP2 registration in production
+  -> registered multispectral conservative ROI in production
+  -> extract_feature_record()
+```
+
+`FeaturePipelineConfig.production()` 默认要求：
+
+- `require_calibration=true`
+- `segmentation_mode=background_reference`
+- `registration_mode=calibrated`
+- `background_reference`
+- `registration_profile`
+- runtime RGB/DVP2 registration endpoints
+- complete enabled wavelength/filter configuration
+- registered ROI config
+
+缺少 Dark/White、Background Reference、RegistrationProfile、runtime endpoints、enabled wavelength 或 registered ROI 生成失败时，pipeline 抛出稳定 `FeatureExtractionError`，主程序预测返回 `feature_error`，不静默改用 uncalibrated、legacy color 或 identity registration。
+
+P1E-2 后，`run_feature_pipeline()` 返回的 `FeatureRecord` 还携带 `model_input_contract` 和 `pipeline_signature`。contract 是模型输入语义，不是运行 provenance：包含 contract schema version、pipeline version、calibration required/mode/version、segmentation mode/algorithm version/semantic params/Background Reference semantic identity、registration mode/algorithm version/profile semantic digest、ordered wavelength/filter mapping digest、ROI algorithm/version/erosion/min count/min ratio、feature schema/version/ordered feature names/extractor version 和 input modality/schema；不包含 sample_id、job_id、时间戳、绝对路径或当前运行输出目录。RegistrationProfile 文件会先解析后摘要，不能因为配置使用路径就丢失 profile semantics。canonical JSON 使用稳定 key 排序和稳定列表顺序，signature 为 SHA-256；Actual Contract 由本次 runtime 实际解析的资源/config 生成，不能复制 model metadata contract。
+
+`FeaturePipelineConfig.legacy()` / `development()` 保留旧数据兼容，显式使用 `legacy_color`、`identity` 和允许未校正数据。Model Studio 测试和旧离线数据必须显式选择该配置；production/default 语义不再由 prediction 或 Model Studio 各自散落决定。
+
+底层 `extract_feature_record()` 仍负责实际光谱特征提取：
 
 ```text
 rgb first image
@@ -577,16 +640,45 @@ multispectral/<wavelength>.png
   -> FeatureRecord(wavelengths, features, calibrated, warnings)
 ```
 
-Background Reference 是当前正式 Fruit Mask 方向。背景参考 JSON 与背景图放在 `runtime/background_reference/` 或本机 `config/background_reference/`，均不提交真实设备 serial、绝对路径或真实参考图；`config/background_reference.example.json` 只描述 schema。兼容性校验覆盖 image sha256、分辨率、设备 identity、camera profile、camera settings 和 illumination，参考 age 不会单独导致失效。若背景与样品尺寸不一致，算法失败为 `BACKGROUND_REFERENCE_RESOLUTION_MISMATCH`，不会 resize 或伪造 calibrated registration。旧 `legacy_color` 仍只作为兼容/离线 fallback，不代表正式背景分割。
+Background Reference 是当前正式 Fruit Mask 方向。背景参考 JSON 与背景图放在 `runtime/background_reference/` 或本机 `config/background_reference/`，均不提交真实设备 serial、绝对路径或真实参考图；`config/background_reference.example.json` 只描述 schema。兼容性校验覆盖 image sha256、分辨率、设备 identity、camera profile、camera settings 和 illumination，参考 age 不会单独导致失效。若背景与样品尺寸不一致，算法失败为 `BACKGROUND_REFERENCE_RESOLUTION_MISMATCH`，不会 resize 或伪造 calibrated registration。旧 `legacy_color` 仍只作为显式兼容/离线 fallback，不代表正式背景分割。
+
+P1C-2B 起 `registration_mode="calibrated"` 在 `extract_feature_record()` 中真实可运行：RGB segmentation 与 geometric registration 解耦，`legacy_color + calibrated` 和 `background_reference + calibrated` 都先得到 RGB mask，再通过 `RegistrationProfile` warp 到 DVP2 坐标。profile 必须由参数传入或路径加载，并使用 runtime RGB/DVP2 endpoint 做校验，不能用 profile 自己和自己“自验证”。registered ROI 只构建一次，并复用于所有 enabled bands；每张 band image 必须保持同一 DVP2 shape，否则失败为 `REGISTERED_ROI_TARGET_RESOLUTION_MISMATCH`。Dark/White reflectance correction 或 uncalibrated normalization 先按原公式执行，然后用最终 eroded DVP2 mask 取 ROI mean。`roi_pixel_count` 表示最终 eroded DVP2 ROI pixel count。
+
+P1C-2B 的 erosion 在 DVP2 coordinate space 执行，不在 RGB warp 前执行。原因是 P1C-2A 是 planar homography，而真实水果是 3D 物体，边缘区域最容易因 residual parallax 映射到背景、样品托盘或阴影。默认 erosion 是 engineering provisional default，不能当作科学验证阈值；真实机器仍需 RGB Fruit Mask -> DVP2 ROI overlay 人工验收，且未来若发现滤光片切换造成 band-to-band spatial shift，再另行增加 band-specific correction。
 
 `predict_feature_record()`：
 
 ```text
 FeatureRecord
+  -> validate model_input_contract and pipeline_signature
   -> validate wavelengths and calibration_required
   -> transform RAW/SNV/MSC
   -> sklearn model.predict()
 ```
+
+缺少 `model_input_contract` / `pipeline_signature` 的模型默认不能进入 production prediction。仅当模型 metadata 明确 `feature_pipeline.mode=legacy|development` 或设置 `model_input_contract_policy=legacy_compatibility` 时，旧模型可显式跳过新 contract gate；这种兼容模式不代表 production 默认行为。`publish_model()` 和 `set_default_model()` 还要求 contract `mode=production`；legacy/development contract 会返回稳定 `MODEL_INPUT_CONTRACT_NOT_PRODUCTION`，Candidate/测试模型仍可保留用于比较。
+
+P1E-3 Software E2E Acceptance：
+
+```text
+Temporary synthetic Sample folders + temporary SQLite
+  -> ModelStudioService Dataset/import/labels/immutable Version
+  -> run_feature_pipeline(production)
+  -> train_one(PLSR, RAW, SSC)
+  -> Candidate -> Validated -> Published -> Default
+  -> quality_prediction.predict_ssc()
+  -> actual FeatureRecord contract/signature validation
+```
+
+`tests/e2e_support.py` 只生成固定 RGB、多光谱、Dark/White、Background Reference 和 calibrated identity homography profile；identity matrix 属于显式 `RegistrationProfile`，不是 `registration_mode=identity` fallback。`tests/test_software_e2e.py` 同时注入缺 calibration、缺 background、缺 band、registration/profile、ROI、feature schema、scope 和 model contract 故障，并 patch 硬件 open/connect 边界。该 E2E 只证明软件闭环，不证明真实硬件、科学准确率、真实注册/ROI overlay 或 Production ready。
+
+## P1E-4 Inspection History / Traceability
+
+检测历史与 Model Studio 数据库分离，持久化到 `host_software/static_ui_prototype_bin/inspection/inspection.sqlite`。`inspections` 保存 Sample identity、原始文件引用、软件版本、实际 pipeline contract/signature、Calibration、Background Reference 和 Registration provenance；`prediction_results` 以 `inspection_id + target` 保存 SSC/TA/pH 的值、状态、错误码、模型 identity/version/type/preprocessing、模型期望 signature 和 input contract。文件路径只作为可重新打开的 managed/external reference，不复制 Dark/White 图像到数据库。
+
+主程序仍调用 `predict_ssc()`、`predict_ta()`、`predict_ph()`，后端在同一 orchestration 层把结果写入当前 Inspection。SSC、TA、pH 分批返回时使用事务 upsert；三个 target 全部成功为 `COMPLETED`，存在成功和失败为 `PARTIAL`，全部失败为 `FAILED`，未完成聚合时为 `RUNNING`。失败结果只写 NULL value 和稳定 error code，不伪造数值。`GET /api/inspections` 支持 newest-first、pagination、fruit/variety/status/date filters，`GET /api/inspections/<id>` 返回完整 provenance，归档使用 `POST /api/inspections/<id>/archive`。
+
+主程序结果区提供轻量检测记录列表和详情查看；contract、digest、内部路径只在详情数据/API 中保留，不铺满普通检测列表。该实现记录软件运行事实，不代表真实硬件或科学验收完成。
 
 ## Model Studio 架构
 
@@ -628,6 +720,8 @@ host_software/static_ui_prototype_bin/model_studio_data/
 External Sample Folder
   -> validate_sample_folder()
   -> import_samples()
+     -> read Sample metadata identity first
+     -> validate / initialize Dataset scope
   -> COPY to model_studio_data/datasets/<dataset_id>/samples/<sample_id>
   -> samples.source_path = external source
   -> samples.local_path/storage_path = managed local copy
@@ -663,13 +757,20 @@ Dataset archive/delete
 Dataset local storage
   -> import_labels()
   -> create_dataset_version()
+     -> snapshot Sample identity + labels
   -> sample_snapshot_json + label_snapshot_json
   -> generate_features()
+     -> run_feature_pipeline()
   -> model_studio/artifacts/features/<dataset_version>_features.csv
+  -> feature_info.modelInputContract + pipelineSignature
   -> create_experiment()
+     -> inherit Dataset scope
   -> create_training_job()
   -> training.train_one()
   -> model_studio/models/candidates/<experiment>/<target>_<pre>_<model>/
+  -> candidate metadata.feature_pipeline records the FeaturePipelineConfig used for training
+  -> candidate metadata.model_input_contract + pipeline_signature records the input contract
+  -> candidate metadata keeps fruit_type / variety / target
   -> models.status = Candidate
   -> Model Compare shows Algorithm + Preprocessing variants
   -> publish_model()
@@ -683,11 +784,20 @@ Dataset local storage
 模型发布约束：
 
 - Candidate 不会自动进入主程序。
+- Sample -> Dataset -> Dataset Version -> Training Experiment -> Model 是 fruit_type/variety 的传递方向。`import_samples()` 优先读取 Sample `metadata.json`；只有历史 Sample 缺少 fruit/variety 时才 fallback 到 Dataset scope。Dataset 空 scope 且导入样品只有一个 scope 时自动继承；出现多个 scope 时失败为 `DATASET_SAMPLE_SCOPE_CONFLICT`，不自动混合或拆分。
 - Published 可被主检测工作站手动选择，但 Default 才会作为对应 fruit_type/variety/target 的自动默认。
 - 同一 `fruit_type + variety + target` 后端只允许一个 Default；设置新 Default 时旧 Default 自动回到 Published，不删除原模型。
+- `publish_model()` 和 `set_default_model()` 会拒绝缺失或篡改 `model_input_contract` / `pipeline_signature` 的模型，防止旧特征语义模型进入主检测默认链。
 - Archived 保留数据库记录、模型文件和 lineage，但不进入 `/api/quality-models`，因此不参与主检测工作站自动或手动选择。
 - Permanent Delete 必须先确认模型不是 Default，再同步删除 SQLite models 记录、受管 candidate/published artifacts；已作为 legacy `trained_models/<target>` 的 Default 不能直接删除。Published 非 Default 删除后不再进入 `/api/quality-models`。批量删除接口 `POST /api/model-studio/models/delete-batch` 逐个调用同一删除逻辑，返回 `deleted/blocked/failed`，不在前端复制安全规则。
 - `trained_models/<target>/` 是 legacy/default fallback，不代表所有已发布模型。
+
+Model Quality Gate（P1E-5）：
+
+- `quality_algorithm/model_quality.py` 定义 `ModelQualityPolicy`、`ModelQualityReport` 和 `evaluate_model_quality()`；策略支持 target、版本、样本量、R²/RMSE/MAE/RPD、validation、Dataset Version、production contract、WARN 发布策略和可选 physical bounds。
+- `ModelStudioService.publish_model()` 与 `set_default_model()` 在既有 Production ModelInputContract gate 之后重新计算质量报告。blocking FAIL 或 blocking NOT_AVAILABLE 会阻止发布并返回 `MODEL_QUALITY_GATE_FAILED`；非 blocking 问题可形成 WARN，是否允许发布由 policy 决定。
+- 质量报告保存在 `models.quality_report_json` 和模型 `metadata.json`，`GET /api/model-studio/models/<model_id>/quality` 返回当前 policy 与报告。policy 版本变化时会重新 evaluate，不静默复用旧报告。
+- `config/model_quality_policy.example.json` 只提供 placeholder/software gate defaults；这些阈值不是 scientific acceptance criteria，也不代表 real Production model approval。真实硬件验收和科学准确率验证仍未完成。
 
 Model Studio 一级 UI 结构：
 
@@ -714,7 +824,13 @@ Dataset 页面内部承载 Samples、Versions、Quality、Experiments。Training
 - `open3d`
 - `cv2`
 
-`FruitTasteAnalyzer.spec` 打包排除了 `matplotlib`、`scipy`、`pytest`、`sphinx`、`docutils`、`lxml`，所以点云预览会走 Pillow fallback 或受限路径。
+`FruitTasteAnalyzer.spec` 继续排除不参与运行时路径的 `matplotlib`、`pytest`、`sphinx`、`docutils`、`lxml`；不再排除 `scipy`，因为 scikit-learn 的训练和预测运行时可能需要它。spec 显式收录 production analysis pipeline、Model Quality Gate、Inspection、Model Studio、training 与运行时支持模块；用户数据库、训练模型和测试数据不打包。
+
+### P1E-6 Software Productization Baseline
+
+`runtime_support.py` 是软件运行时基础设施：唯一 `APP_VERSION`、冻结 EXE 的 `%LOCALAPPDATA%\FruitTasteAnalyzer\app_data` 可写根目录、原子 JSON 写入、配置 bootstrap/parse error、SQLite backup API、编号 schema migrations 与 `RotatingFileHandler`。源码开发和 unittest 继续使用应用目录中的既有历史路径，避免擅自搬迁开发数据；冻结 EXE 仅把 mutable data 写入 app data，而静态页面、example config 和 Python modules 保持为 application resources。
+
+Model Studio schema version 为 `2`，Inspection schema version 为 `2`。迁移前对旧库创建 SQLite backup，编号 migration 在 `BEGIN IMMEDIATE` transaction 内写入 `schema_migrations`/`PRAGMA user_version`；失败会 rollback 并保留原库/backup，绝不 DROP/重建用户表。重启时 daemon training jobs `Queued/Preparing/Training` 标记 `Interrupted`，未完成 Inspection `CREATED/RUNNING` 标记 `FAILED_RECOVERABLE`；内存 JobStore 不跨进程恢复，不会在新进程中假装仍在运行。`GET /api/health` 只报告 backend/database software readiness，不把硬件未连接判为软件不健康。
 
 ## 当前真实数据目录状态
 

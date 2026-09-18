@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from runtime_support import atomic_write_json
 
 
 REGISTRATION_SCHEMA_VERSION = 1
@@ -152,8 +153,7 @@ class RegistrationProfile:
 
     def save_json(self, path: str | Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(path, self.to_dict())
 
     def validate(self) -> None:
         if self.schemaVersion != REGISTRATION_SCHEMA_VERSION:
