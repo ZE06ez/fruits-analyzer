@@ -6,6 +6,8 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+from runtime_support import APP_VERSION, RuntimePaths, atomic_write_json, configure_logging, shutdown_logging
+
 
 def resource_path(name: str) -> Path:
     if hasattr(sys, "_MEIPASS"):
@@ -41,11 +43,8 @@ def log_startup(message: str) -> None:
 
 def write_runtime_info(port: int) -> None:
     try:
-        import json
-
         path = runtime_json_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"pid": os.getpid(), "port": int(port), "url": f"http://127.0.0.1:{port}/"}, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(path, {"pid": os.getpid(), "port": int(port), "url": f"http://127.0.0.1:{port}/", "softwareVersion": APP_VERSION})
     except Exception as exc:
         log_startup(f"runtime info write failed: {exc}")
 
@@ -110,7 +109,10 @@ def main() -> None:
         if not mutex.acquire():
             show_already_running_message()
             return
-        log_startup("launcher start")
+        logger = configure_logging(resource_path("."))
+        logger.info("launcher startup version=%s", APP_VERSION)
+        RuntimePaths.for_app(resource_path("."))
+        log_startup(f"launcher start version={APP_VERSION}")
         site_dir = prepare_runtime_site()
         output_dir = runtime_site_dir().parent / "outputs"
         log_startup(f"site_dir={site_dir}")
@@ -135,16 +137,27 @@ def main() -> None:
     except Exception:
         log_startup("fatal error")
         log_startup(traceback.format_exc())
+        try:
+            configure_logging(resource_path(".")).exception("launcher fatal error")
+        except Exception:
+            pass
         raise
     finally:
         if server is not None:
             try:
                 if getattr(server, "device_manager", None) is not None:
                     server.device_manager.camera_manager.release_all()
+                    server.device_manager.disconnect()
+            except Exception:
+                pass
+            try:
+                server.shutdown()
+                server.server_close()
             except Exception:
                 pass
         if mutex is not None:
             mutex.release()
+        shutdown_logging()
         log_startup("launcher exit")
 
 

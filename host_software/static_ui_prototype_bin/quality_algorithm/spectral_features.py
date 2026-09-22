@@ -39,6 +39,8 @@ class FeatureRecord:
     roi_pixel_count: int
     source_dir: str
     warnings: list[str]
+    model_input_contract: dict | None = None
+    pipeline_signature: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

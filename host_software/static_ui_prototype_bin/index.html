@@ -366,18 +366,6 @@
                 </label>
               </div>
               <div class="sample-create-grid">
-                <label class="wide">样品用途
-                  <div class="sample-mode-toggle" role="radiogroup" aria-label="样品用途">
-                    <label>
-                      <input type="radio" name="sampleMode" value="inspection" checked />
-                      <span>正常检测</span>
-                    </label>
-                    <label>
-                      <input type="radio" name="sampleMode" value="training_capture" />
-                      <span>训练数据采集</span>
-                    </label>
-                  </div>
-                </label>
                 <label>样品名称 *
                   <input id="captureSampleName" placeholder="Duke成熟组03" />
                 </label>
@@ -1122,6 +1110,17 @@
           <p class="status-note" id="statusNote">硬件未连接，当前仅用于界面调试与功能预留。</p>
           <button id="exportReport">导出结果</button>
         </section>
+
+        <section class="result-card inspection-history-card">
+          <div class="result-card-head">
+            <h2>检测记录</h2>
+            <button id="refreshInspectionHistory" type="button">刷新</button>
+          </div>
+          <div id="inspectionHistoryList" class="inspection-history-list">
+            <p class="status-note">暂无检测记录</p>
+          </div>
+          <div id="inspectionHistoryDetail" class="inspection-history-detail" hidden></div>
+        </section>
       </aside>
     </main>
 
@@ -1145,18 +1144,6 @@
           </label>
         </div>
         <div class="modal-grid">
-          <label class="wide">样品用途
-            <div class="sample-mode-toggle" role="radiogroup" aria-label="样品用途">
-              <label>
-                <input type="radio" name="modalSampleMode" value="inspection" checked />
-                <span>正常检测</span>
-              </label>
-              <label>
-                <input type="radio" name="modalSampleMode" value="training_capture" />
-                <span>训练数据采集</span>
-              </label>
-            </div>
-          </label>
           <label>样品名称 *
             <input id="newSampleName" placeholder="Duke成熟组03" />
           </label>

@@ -4366,6 +4366,7 @@ async function runSscAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderSscResult(payload.result || {});
+    await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.result?.status);
     setStepStatus("sugar", ok ? "done" : "warning");
     addLog(payload.result?.error_message || "SSC 预测接口已返回结果。", ok ? "INFO" : "WARN");
@@ -4408,6 +4409,7 @@ async function runAcidAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderAcidResult(payload.taResult || {}, payload.phResult || {});
+    await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.taResult?.status) || ["ok", "success"].includes(payload.phResult?.status);
     setStepStatus("acid", ok ? "done" : "warning");
     addLog(payload.taResult?.error_message || payload.phResult?.error_message || "酸度预测接口已返回结果。", ok ? "INFO" : "WARN");
@@ -4979,6 +4981,78 @@ function exportReport() {
   addLog("报告已导出为文本文件。");
 }
 
+function inspectionResult(results, target) {
+  return (results || []).find((item) => item.target === target) || null;
+}
+
+function renderInspectionHistory(payload = {}) {
+  const list = $("#inspectionHistoryList");
+  if (!list) return;
+  list.replaceChildren();
+  const items = payload.items || [];
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "status-note";
+    empty.textContent = "暂无检测记录";
+    list.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "inspection-history-item";
+    const sample = item.sample || {};
+    const ssc = inspectionResult(item.results, "ssc");
+    const ta = inspectionResult(item.results, "ta");
+    const ph = inspectionResult(item.results, "ph");
+    button.innerHTML = `<strong></strong><span></span><small></small>`;
+    button.querySelector("strong").textContent = sample.sampleName || sample.sampleId || "未命名样品";
+    button.querySelector("span").textContent = `SSC ${ssc?.value ?? "--"} · TA ${ta?.value ?? "--"} · pH ${ph?.value ?? "--"}`;
+    button.querySelector("small").textContent = `${item.status || "--"} · ${item.createdAt || item.startedAt || "--"}`;
+    button.addEventListener("click", () => loadInspectionDetail(item.inspectionId));
+    list.appendChild(button);
+  });
+}
+
+function renderInspectionDetail(inspection) {
+  const node = $("#inspectionHistoryDetail");
+  if (!node) return;
+  const sample = inspection.sample || {};
+  node.hidden = false;
+  node.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `${sample.sampleName || sample.sampleId || "检测记录"} · ${inspection.status || "--"}`;
+  node.appendChild(title);
+  const detail = document.createElement("p");
+  detail.textContent = `模型结果已固定保存。Pipeline Signature: ${inspection.pipelineSignature || "--"}`;
+  node.appendChild(detail);
+  (inspection.results || []).forEach((result) => {
+    const line = document.createElement("div");
+    line.className = "inspection-history-result";
+    line.textContent = `${String(result.target || "").toUpperCase()} · ${result.value ?? "--"} ${result.unit || ""} · ${result.status || "--"}${result.errorCode ? ` · ${result.errorCode}` : ""}`;
+    node.appendChild(line);
+  });
+}
+
+async function loadInspectionDetail(inspectionId) {
+  if (!inspectionId) return;
+  try {
+    const payload = await api(`/api/inspections/${encodeURIComponent(inspectionId)}`);
+    renderInspectionDetail(payload.inspection || {});
+  } catch (error) {
+    addLog(error.message || "检测记录详情读取失败。", "WARN");
+  }
+}
+
+async function loadInspectionHistory() {
+  try {
+    const payload = await api("/api/inspections?limit=8");
+    renderInspectionHistory(payload);
+  } catch (error) {
+    addLog(error.message || "检测记录读取失败。", "WARN");
+  }
+}
+
 function updateClock() {
   setText("currentTime", new Date().toLocaleTimeString("zh-CN", { hour12: false }));
 }
@@ -5247,6 +5321,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#runShapeAnalysis")?.addEventListener("click", runShapeAnalysis);
   $("#cancelShapeAnalysis")?.addEventListener("click", cancelShapeAnalysis);
   $("#exportReport")?.addEventListener("click", exportReport);
+  $("#refreshInspectionHistory")?.addEventListener("click", () => loadInspectionHistory());
   $("#clearLog")?.addEventListener("click", () => {
     setText("runLog", "[INFO] 日志已清空。");
   });
@@ -5268,6 +5343,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateClock();
   setSampleMode(state.sampleMode);
   await loadPersistentCameraSettings();
+  await loadInspectionHistory();
   await loadBackgroundReference().catch((error) => addLog(error.message || "Background Reference 状态读取失败。", "WARN"));
   setCameraSettingsTab("rgb");
   renderRgbApplySummary();

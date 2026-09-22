@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from runtime_support import APP_VERSION
 
 from quality_algorithm.dataset import InsufficientTrainingDataset
 from quality_algorithm.model_io import save_model_bundle
@@ -154,6 +155,15 @@ def train_one(
         validation_label = "grouped_holdout_by_sample_id"
 
     x_all, pre_state = fit_transform_preprocessor(x, preprocessing)
+    feature_statistics = {
+        name: {
+            "min": float(np.min(x[:, index])),
+            "max": float(np.max(x[:, index])),
+            "mean": float(np.mean(x[:, index])),
+            "std": float(np.std(x[:, index])),
+        }
+        for index, name in enumerate(feature_names)
+    }
     model = fit_regressor(model_type, x_all, y)
     metadata = {
         "target": target,
@@ -170,8 +180,10 @@ def train_one(
         "rmse": metrics["rmse"],
         "mae": metrics["mae"],
         "rpd": metrics["rpd"],
+        "target_range": {"min": float(np.min(y)), "max": float(np.max(y))},
+        "feature_statistics": feature_statistics,
         "calibration_required": bool(calibration_required),
-        "software_version": "algorithm-framework-v1",
+        "software_version": APP_VERSION,
     }
     if output_dir:
         save_model_bundle(model, metadata, output_dir)

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>风扇与YYNMOS-4接线测试指南</title>
+<style>body{font-family:"Microsoft YaHei",sans-serif;max-width:980px;margin:32px auto;padding:0 22px;color:#18212b;line-height:1.7;background:#f5f7fa}main{background:#fff;padding:28px 34px;border-radius:14px;box-shadow:0 3px 18px #ccd3dc}h1{color:#146c43}h2{border-left:5px solid #2f9e69;padding-left:10px;margin-top:30px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #b9c4cf;padding:9px;text-align:left}th{background:#e9f7ef}.diagram,pre{background:#10251d;color:#edfff5;padding:18px;border-radius:9px;overflow:auto}.warn{background:#fff3cd;border-left:5px solid #e0a800;padding:13px}.danger{background:#fde8e8;border-left:5px solid #d93025;padding:13px}.ok{background:#e8f5e9;border-left:5px solid #2e7d32;padding:13px}@media print{body{background:#fff;margin:0}main{box-shadow:none}}</style></head><body><main>
+<h1>三只散热风扇与YYNMOS-4接线测试指南</h1>
+<p>三只同规格风扇并联使用YYNMOS-4通道4，因此同时开启、同时关闭；LED1、LED2、LED3分别使用通道1、2、3。</p>
+<div class="danger"><strong>先确认风扇铭牌：</strong>YYNMOS-4只有一组DC+/DC-，四路输出共用同一负载电压。当前模块已经接24V灯带，因此只有额定24V的直流风扇才能直接接OUT3。如果风扇是12V，不能接OUT3，必须另用12V电源和另一只MOS开关模块。</div>
+
+<h2>1. 总体接线</h2>
+<div class="diagram"><pre>24V电源 +V ─> 总保险丝 ─────> YYNMOS-4 DC+
+24V电源 -V ─────────────────> YYNMOS-4 DC-
+
+OUT1+ / OUT1- ─> 24V LED灯带1
+OUT2+ / OUT2- ─> 24V LED灯带2
+OUT3+ / OUT3- ─> 24V LED灯带3
+OUT4+ ─┬────────> 24V风扇1正极
+       ├────────> 24V风扇2正极
+       └────────> 24V风扇3正极
+OUT4- ─┬────────> 24V风扇1负极
+       ├────────> 24V风扇2负极
+       └────────> 24V风扇3负极
+
+STM32 GPIO_LED1 ─> PWM1       STM32 GND ─> GND1
+STM32 GPIO_LED2 ─> PWM2       STM32 GND ─> GND2
+STM32 GPIO_LED3 ─> PWM3       STM32 GND ─> GND3
+STM32 GPIO_FAN  ─> PWM4       STM32 GND ─> GND4</pre></div>
+<p>三只风扇的负极都必须接OUT4-，不能直接接DC-。三只风扇必须并联，不能串联。PWM4/GND4是控制端，OUT4+/OUT4-是功率端，不能混接。</p>
+<p>总保险丝按“LED1＋LED2＋LED3＋三只风扇”的合计电流重新核算。还要确认三只风扇总电流不超过MOS通道4、接线端子和导线的允许电流。</p>
+
+<h2>2. GPIO逻辑</h2>
+<table><tr><th>GPIO_FAN</th><th>MOS通道4</th><th>三只风扇</th></tr><tr><td>低电平</td><td>关闭</td><td>全部停止</td></tr><tr><td>高电平</td><td>开启</td><td>全部运行</td></tr></table>
+<pre>void Fan_On(void)
+{
+    HAL_GPIO_WritePin(FAN_PWM_GPIO_Port, FAN_PWM_Pin, GPIO_PIN_SET);
+}
+
+void Fan_Off(void)
+{
+    HAL_GPIO_WritePin(FAN_PWM_GPIO_Port, FAN_PWM_Pin, GPIO_PIN_RESET);
+}</pre>
+<p>协议保持不变：<code>10 01</code>开启风扇，<code>10 00</code>关闭风扇，成功回复<code>90 00</code>。</p>
+
+<h2>3. 测试步骤</h2>
+<ol><li>核对三只风扇铭牌均为24V DC，并确认每只正负极和额定电流。</li><li>第一次只将风扇1接到OUT4+/OUT4-，完成开关测试。</li><li>断电后并联风扇2，再测试两只同时启停。</li><li>断电后并联风扇3，再测试三只同时启停。</li><li>STM32 GPIO_FAN配置为推挽输出，默认低电平；上电时PWM4应为低。</li><li>发送<code>10 01</code>确认三只全部启动，发送<code>10 00</code>确认三只全部停止。</li><li>连续开关10次，再连续运行30分钟，检查MOS、端子和风扇导线温升。</li><li>逐只观察，任意一只未转都应视为故障；相机长曝光时检查振动模糊。</li></ol>
+<div class="warn">设备正式运行时软件默认开启风扇，但MOS方案在STM32复位或掉电时会关闭风扇。因此钨灯控制程序必须做互锁：风扇未开启时禁止开启钨灯；发生异常时先关钨灯。</div>
+<div class="ok"><strong>通过标准：</strong>高电平可靠开启、低电平可靠关闭；运行电流不超过模块和电源容量；连续运行无异常温升；相机图像不受振动影响。</div>
+
+<h2>4. 示例代码</h2>
+<p><a href="sample_code/bsp_actuators.c">bsp_actuators.c</a>、<a href="sample_code/bsp_actuators.h">bsp_actuators.h</a>、<a href="sample_code/main_usage_example.c">main_usage_example.c</a></p>
+</main></body></html>

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "policy_version": "placeholder-v1",
+  "target": "ssc",
+  "minimum_sample_count": 5,
+  "minimum_r2": null,
+  "maximum_rmse": null,
+  "maximum_mae": null,
+  "minimum_rpd": null,
+  "require_validation": true,
+  "require_dataset_version": true,
+  "allow_warn_publish": false,
+  "physical_min": null,
+  "physical_max": null,
+  "blocking": {
+    "sample_count": true,
+    "r2": true,
+    "rmse": true,
+    "mae": true,
+    "rpd": true,
+    "validation": true,
+    "dataset_integrity": true,
+    "production_contract": true,
+    "physical_bounds": false
+  }
+}

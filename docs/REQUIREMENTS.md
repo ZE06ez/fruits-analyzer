@@ -1,6 +1,6 @@
 # Requirements
 
-更新时间：2026-09-12
+更新时间：2026-09-18
 
 本文档集中记录当前已经确认或待确认的需求。状态含义：
 
@@ -13,7 +13,7 @@
 
 | 需求 | 状态 | 说明 |
 | --- | --- | --- |
-| 软件应是水果/果实口感多光谱无损检测系统 | 部分实现 | 主界面、样品流程、形态、模型入口、STM32 硬件控制层、RGB UVC adapter、DVP2 adapter 和 P1B-8 True Capture 单视角软件入口已存在；硬件 acceptance、真实样品台、多视角硬件采集、生产模型和检测历史仍未完成 |
+| 软件应是水果/果实口感多光谱无损检测系统 | 部分实现 | 主界面、样品流程、形态、模型入口、STM32 硬件控制层、RGB UVC adapter、DVP2 adapter、P1E-4 检测历史和 P1B-8 True Capture 单视角软件入口已存在；硬件 acceptance、真实样品台、多视角硬件采集和生产模型仍未完成 |
 | 使用 RGB 彩色相机采集外观图像 | 部分实现/实机验证 | UI 和目录支持默认 `rgb/`，并支持用户自定义 RGB 子目录名；`RgbUvcCamera` 已在当前电脑通过 OpenCV DirectShow/UVC 验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，可返回 RGB `uint8` 帧；相机设置页已支持 `/api/camera/rgb/probe` 真实重新检测、真实参数应用和低延迟 960x540 JPEG 预览；P1B-3 已接入 `CameraManager.capture_rgb_frame()` 和正式 RGB PNG 保存；P1B-8 后单视角 `/api/capture/start` 可复用该正式保存路径，但仍受 readiness/acceptance gate 约束 |
 | 使用黑白相机 + 滤光片转轮采集多光谱图像 | 部分实现/实机验证 | 目录和算法支持默认 `multispectral/`，并支持用户自定义多光谱子目录名；滤光轮已有 STM32 HOME/相对旋转控制层；目标黑白相机是 DO3THINK/度申 GigE/RJ45 工业相机，`Dvp2MonoCamera` 已基于真实 DVP2 header/examples 完成 Python 3.12 `ctypes` 绑定；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、取流、30 帧取图和 PNG 保存；网页相机设置页已接入 DVP2 重新检测、实时预览、曝光/增益应用和回读；P1B-4/P1B-5/P1B-6/P1B-7 已接入 DVP2 raw mono 单帧、多波段 sequence、Dark/White reference 和 Sample MultiView 软件编排；P1B-8 后单视角 `/api/capture/start` 可复用这些路径；真实样品台、多视角硬件采集和现场 acceptance 仍未完成 |
 | 使用封闭暗箱和稳定光源 | 部分实现/实机验证 | 2026-09-11 实机确认 PB7=钨灯1 SSR/bit0/0x01、PB8=钨灯2 SSR/bit1/0x02、PB9=LED3/bit2/0x04，统一复用 `LED_SET=0x12` 与 STATUS `led_mask/led1_duty/led2_duty/led3_duty`；不使用独立 0x13 钨灯协议。主 UI 已新增两路钨灯限时手动测试和关闭入口，后端执行 fresh STATUS read-modify-write、ACK + fresh STATUS 确认、1-5 秒 auto-off 和安全 interlock。亮度闭环、RGB 正式照明映射、双钨灯同时开启、硬件门联锁和完整真实采图同步仍需验收 |
@@ -42,8 +42,11 @@
 | RGB 预览应与正式采集分离 | 已实现/部分真实 | `/api/camera/rgb/preview/start` 使用同一个 `RgbUvcCamera` 实例启动后台 latest-frame/latest encoded JPEG worker，`/api/camera/rgb/preview-frame` 直接返回最新 960x540 JPEG 预览缓存；`CameraManager.capture_rgb_frame()` 通过同一个 RGB adapter 取正式 RGB 帧，不使用预览 JPEG，不在预览运行时打开第二个 UVC 句柄；响应和 UI 显示 frameId、source age、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 计数和 encoder；P1B-8 True Capture 入口也只读取正式 `CameraFrame` |
 | 正式 scientific capture 文件必须使用 lossless PNG | 已实现/测试覆盖 | 受保护 RGB 单帧、DVP2 raw mono 单帧、多波段 sample sequence、Dark/White reference、Sample MultiView 和 `create_offline_capture_dataset()` 离线验证正式数据均保存 `.png`；正式 metadata 不得引用 `.jpg/.jpeg`；JPEG 只允许用于 `/api/camera/*/preview-frame` 浏览器预览 |
 | RGB 正式 scientific capture 必须使用独立 scientific profile 并通过 source transport 准入 | 已实现/需实机复核 | P1C-1 后 RGB Preview Profile 与 RGB Scientific Capture Profile 明确分离。默认 Preview 为 `3840x2160 @25fps MJPG`，只用于实时预览；默认 Scientific 为 `1920x1080 @5fps YUY2`，用于正式 CaptureCoordinator RGB PNG、RGB dataset、morphology、ROI 和后续 RGB ↔ multispectral registration。正式 capture 必须暂停/释放 preview handle、应用 scientific profile、读取 actual width/height/fps/FOURCC，并按 actual transport 判断 `scientificCaptureApproved`。`MJPG/MJPEG/JPEG/H264/H265` 为 lossy 且 BLOCK；`YUY2/YUYV/UYVY` 是未压缩 4:2:2，`scientificStrictLossless=false` 但 `scientificCaptureApproved=true`、`scientificQualityClass=uncompressed_422`；RAW Bayer/RGB24/BGR24 为 strict lossless。缺少 `rgb.scientificProfile` 时返回 `RGB_SCIENTIFIC_PROFILE_NOT_CONFIGURED`，不得静默继承 preview MJPG |
-| RGB 与 DVP2 几何配准应可离线标定并可追溯 | 已实现/SOFTWARE IMPLEMENTED，待实机标定 | P1C-2A 新增 `quality_algorithm/registration.py` 和 `manual_registration_test.py`，支持棋盘格角点检测、RGB -> DVP2 planar homography/RANSAC 标定、`RegistrationProfile` JSON 保存/加载、reprojection error metrics、角点/warp/overlay/difference 可视化和 runtime profile Git ignore。profile 记录 RGB/DVP2 identity、分辨率、reference band、棋盘格规格和 calibration plane；错用不同分辨率、stableId、serial 或 deviceIndex 时返回 `REGISTRATION_PROFILE_MISMATCH`。本阶段不把 calibrated registration 接入 `spectral_features.py` 生产路径 |
+| RGB 与 DVP2 几何配准应可离线标定并可追溯 | 已实现/SOFTWARE IMPLEMENTED，待实机标定 | P1C-2A 新增 `quality_algorithm/registration.py` 和 `manual_registration_test.py`，支持棋盘格角点检测、RGB -> DVP2 planar homography/RANSAC 标定、`RegistrationProfile` JSON 保存/加载、reprojection error metrics、角点/warp/overlay/difference 可视化和 runtime profile Git ignore。profile 记录 RGB/DVP2 identity、分辨率、reference band、棋盘格规格和 calibration plane；错用不同分辨率、stableId、serial 或 deviceIndex 时返回 `REGISTRATION_PROFILE_MISMATCH`。P1C-2B 后 calibrated registration 接入特征提取，P1E-1 后 production analysis pipeline 默认要求该路径；真实 profile 与 ROI overlay 仍待实机验收 |
 | Calibrated 多光谱 ROI 应使用 registered conservative ROI | 已实现/SOFTWARE PASS，待实机验收 | P1C-2B 后 `extract_feature_record(registration_mode="calibrated")` 要求显式 RegistrationProfile、runtime RGB endpoint 和 runtime DVP2 endpoint；先生成 RGB Fruit Mask，再复用 `warp_mask_rgb_to_multispectral()` 转成 DVP2 mask，并在 DVP2 坐标执行 erosion。缺 profile、profile/runtime mismatch、resolution mismatch、warp empty、erosion empty/too small/retained ratio too low 都必须失败，不允许 resize、identity fallback 或 ellipse fallback |
+| 训练端和检测端必须使用同一正式分析管线 | 已实现/SOFTWARE IMPLEMENTED | P1E-1 新增 `FeaturePipelineConfig` / `run_feature_pipeline()`。Model Studio `generate_features()`、训练 feature CSV、主程序 SSC/TA/pH 预测前 FeatureRecord 均通过该 shared pipeline；P1E-2 后训练 job 会把 `feature_pipeline`、`model_input_contract` 和 `pipeline_signature` 写入模型 metadata，检测端按 metadata 中的 pipeline config 生成 FeatureRecord，并在预测前校验 contract/signature |
+| Production 分析不得静默 fallback 到 legacy/uncalibrated/identity | 已实现/测试覆盖 | `FeaturePipelineConfig.production()` 默认要求 Dark/White calibration、Background Reference segmentation、calibrated registration、registered multispectral ROI 和完整波段；缺少依赖时返回稳定 feature error。Legacy/development 兼容仍保留，但必须显式启用 |
+| 模型输入契约必须阻止训练/检测特征语义漂移 | 已实现/测试覆盖 | P1E-2 新增稳定 `ModelInputContract` 和 canonical SHA-256 `pipeline_signature`，覆盖 pipeline/schema version、calibration、segmentation、registration profile semantic digest、ordered wavelength/filter mapping、ROI 参数、feature schema 和 input modality；contract 不包含 sample_id、job_id、时间戳或绝对路径。Model Studio 发布/设为 Default 会拒绝缺失或篡改契约的模型；主程序预测在 `model.predict()` 前校验契约，缺失返回 `MODEL_INPUT_CONTRACT_MISSING`，不返回假的 SSC/TA/pH |
 | Planar registration 不得声明为 3D pixel-perfect | 已确认/文档约束 | P1C-2B 文档和诊断明确 planar homography 只来自标定平面，水果是 3D 物体，边界区域可能有 residual parallax；post-warp erosion 是 provisional engineering guard，REAL HARDWARE ROI ACCEPTANCE PENDING，REAL BAND-TO-BAND SHIFT ACCEPTANCE PENDING |
 | Fruit Mask 正式方向应使用背景参考分割 | 部分实现/SOFTWARE INFRASTRUCTURE | P1C-2A.5 改为 Background Reference Fruit Segmentation：固定相机/暗箱/光源条件下先采空背景，再对样品 RGB 做差分；不依赖 GPU/AI/PyTorch/SAM/HF/network/checkpoint，不要求每种水果维护颜色阈值。当前完成软件算法、metadata guard、CLI 和 synthetic tests，真实背景采集入口和人工验收仍待完成 |
 | 主工作站应能管理 Background Reference | 已实现/部分真实 | 采集设置中新增 Background Reference 区域，可通过 RGB scientific capture 拍摄空样品台背景，也可使用系统原生文件选择器导入已有图片；程序复制/转换为托管 PNG，持久化到 `runtime/background_reference/`，支持图库、缩略图、预览、设为当前和取消使用。拍摄失败时返回真实 CameraError/Not Ready，不使用 Preview JPEG 或模拟图 |
@@ -85,8 +88,8 @@
 | 当前形态分析以 RGB/多光谱二维测算为主 | 已实现/部分实现 | 输出面积、宽高、颜色、纹理、波段均值 |
 | 主程序中央区应区分采集模式和分析模式布局 | 已实现 | `motor/light/camera/capture/settings` 保留 RGB + 多光谱相机面板；`shape/sugar/acid/taste` 隐藏相机面板并让分析内容占用中央空间 |
 | 三维点云建模作为后续预留 | 部分实现 | 兼容旧 RGB-D/PLY；主 UI 禁用点云模式 |
-| SSC、TA、pH 应分别预测 | 部分实现 | 入口和模型加载已实现；当前无生产模型 |
-| 预测结果不得伪造 | 已实现 | 无模型时返回 `model_missing`，测试覆盖 |
+| SSC、TA、pH 应分别预测 | 部分实现 | 入口和模型加载已实现；P1E-1 后预测前模型输入统一由 shared analysis pipeline 生成；P1E-2 后预测前强制校验模型输入契约；P1E-3 已在 deterministic fake environment 完成 SSC/PLSR/RAW 软件闭环；仓库当前仍无真实生产模型 |
+| 预测结果不得伪造 | 已实现 | 无模型时返回 `model_missing`；production 分析依赖缺失时返回 `feature_error`，不返回假的 SSC/TA/pH；测试覆盖 |
 | 糖酸比和口感等级由 SSC/TA 推导 | 部分实现 | 前端实现简单规则 |
 | 模型训练支持 PLSR、SVR、Random Forest | 已实现 | `training/train.py` |
 | 预处理支持 RAW、SNV、MSC | 已实现 | `quality_algorithm/preprocessing.py` |
@@ -109,9 +112,13 @@
 | 被历史 Version / Experiment / Model 引用的 Sample 禁止永久删除 | 已实现 | `sample_references()` 会显示引用关系，`delete_sample()` 和 duplicate Replace 会拒绝破坏已有 lineage 的操作 |
 | Dataset Version 应支持 Diff | 已实现 | `dataset_version_diff()` 比较两个不可变快照，输出 added samples、removed/excluded samples 和 SSC/TA/pH label changes |
 | Production/Default 模型必须人工发布 | 已实现 | `publish_model()` / `set_default_model()` |
+| Software E2E 必须覆盖训练到检测闭环 | 已实现/仅软件验收 | `tests/test_software_e2e.py` 使用临时 SQLite、deterministic synthetic production sample、真实 Model Studio service、shared pipeline、PLSR/RAW、Published/Default 和 `predict_ssc()`；不代表 Hardware PASS、Scientific validation PASS 或 Production ready |
 | 系统不能自动替换正式模型 | 已实现 | 候选与发布目录隔离 |
 | Model lifecycle 应区分 Candidate / Validated / Published / Archived / Default | 已实现 | `Default` 继续兼容为 Published 模型的自动选择角色；Archived 保留记录和文件但不进入主工作台模型目录 |
 | Model Permanent Delete 必须同步清理 DB 和文件且保护 Default | 已实现 | `/api/model-studio/models/delete` 需要 model_id 确认；Default 和仍对应 legacy default bundle 的模型禁止直接删除；非 Default 删除会移除 SQLite 记录和受管 candidate/published artifacts；Model Card 的“更多”菜单提供状态化入口 |
+| Published / Default 必须通过软件质量门禁 | 已实现/软件门禁 | P1E-5 使用 `ModelQualityPolicy` 和持久化 `ModelQualityReport` 检查 sample_count、可配置 R²/RMSE/MAE/RPD、validation、Dataset Version/scope 和 Production ModelInputContract；blocking FAIL/NOT_AVAILABLE 阻止发布，WARN 是否允许由 policy 控制。默认阈值是 placeholder/software gate defaults，不是最终科学标准 |
+| 软件持久化与重启不能伪造运行状态 | 已实现/软件收尾 | P1E-6 的 Model Studio/Inspection SQLite 使用 schema version + incremental migration，旧库迁移前有 SQLite backup，迁移失败 rollback 且不 DROP/recreate 数据；进程重启后 training `Queued/Preparing/Training` 标记 `Interrupted`，Inspection `CREATED/RUNNING` 标记 `FAILED_RECOVERABLE`。硬件运动、相机 stream 和内存分析 Job 不尝试恢复 |
+| EXE 运行时数据不可写入安装资源目录 | 已实现/软件收尾 | 冻结 PyInstaller EXE 的 config/database/models/logs/outputs/backups 放在 `%LOCALAPPDATA%\FruitTasteAnalyzer\app_data`；仓库的 config example/static assets 是 application resources。camera settings 和模型质量 policy 使用 atomic write；RegistrationProfile 继续严格解析，损坏或缺失不能被 production pipeline 静默替代 |
 | Retrain 不得覆盖旧模型 | 已实现 | `retrain_from_model()` 带出 `parent_model_id` 创建新 Experiment/Run/Model，旧模型保留，由人工决定 Publish / Set Default |
 | 支持不同水果/品种使用不同模型 | 已实现 | 模型目录和 SQLite 按 fruit_type/variety 过滤 |
 | 支持 generic 品种模型兜底 | 已实现 | `model_catalog()` 和 `_select_registry_model()` |
@@ -134,7 +141,7 @@
 | pH/TA/SSC 最低样本量与验证标准 | 代码最低训练样本门槛较低，真实上线门槛待定 |
 | 模型发布审批标准 | 可手动发布，但缺少必须满足的 R2/RMSE/RPD 阈值 |
 | 报告格式 | 当前为 TXT，是否需要 PDF/Excel/数据库记录待确认 |
-| 历史记录结构 | 历史文档有建议表，当前检测工作站未实现 |
+| 历史记录结构 | 已实现/软件验收 | P1E-4 使用独立 `inspection/inspection.sqlite` 保存 Inspection 与 Prediction Result；记录 Sample、原始文件引用、Calibration、Background Reference、Registration、Feature Pipeline contract/signature、模型 provenance、结果值和稳定错误码 |
 | Dataset 删除/归档策略 | 已实现 | Archive 保留 Dataset/Samples/Versions/Experiments/Models/Lineage 并默认隐藏；Permanent Delete 需要 Dataset Name 确认，Published/Default/Production 模型引用会阻止删除，Candidate/Validated/Archived 实验模型可随 Dataset 级联清理；仅删除 Model Studio 受管目录，不删除外部 source_path |
 | 硬件通信协议最终格式 | 当前主路径保留 zdyzzddy 两字节协议 `[CMD][PARAM] -> [CMD|0x80][RESULT]` 兼容；P1B-7.5A.1 后默认生产 adapter 已使用当前 AA55 firmware profile，旧 short-frame 只作为兼容边界保留。P1B-7.5B 搜索仓库后未找到独立样品旋转台协议，需补齐控制器资料后才能实现 RealSampleStageAdapter。真实硬件 smoke 后再把现场验证状态写入文档 |
 | RGB/DVP2 网页预览现场复核 | RGB 本轮已在当前电脑完成 CLI benchmark，但仍需在主程序相机设置页复核浏览器端 sourceAge、server、fetch、FPS 和 drop；用户已确认 DVP2 完全退出 BasedCam3 后 manual test 可打开和取帧，本轮 Codex 复测时当前运行环境 DVP2 枚举返回 0，需要在设备在线时复核重新检测、打开预览、曝光/增益应用、停止/重启预览 |
@@ -153,5 +160,5 @@
 | 门控、急停、温度、电机报警状态 | 升降门、急停、故障码已有基础 API；温度和扩展报警未接入 |
 | RGB 与多光谱 calibrated ROI 生产接入 | P1C-2B 已完成软件接入；仍需真实机器上用 RGB Fruit Mask -> DVP2 ROI overlay 做人工验收 |
 | 正式 Production 模型 | 当前仓库没有模型文件和真实训练数据 |
-| 检测历史记录数据库 | 当前只有 Model Studio SQLite，不保存检测结果历史 |
+| 检测历史记录数据库 | 已实现/软件验收 | `/api/inspections` 支持 newest-first、分页、fruit/variety/status/date filter；详情返回运行 provenance；失败值为 NULL；默认保留历史，归档不做永久删除 |
 | 正式报告导出 | 当前前端导出 TXT |

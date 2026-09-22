@@ -1,0 +1,433 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>fruit_multi_band 多光谱蓝莓检测样机技术方案</title>
+  <style>
+    :root {
+      --bg: #f5f7f4;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #5d6975;
+      --line: #d8ded6;
+      --green: #2f6f5e;
+      --blue: #315f8c;
+      --amber: #9a6418;
+      --red: #9f3a38;
+      --soft-green: #e7f1ed;
+      --soft-blue: #e7eef7;
+      --soft-amber: #f8efdE;
+      --soft-red: #f6e8e6;
+      --code: #172026;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      line-height: 1.72;
+    }
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 32px auto 56px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 34px 42px 46px;
+      box-shadow: 0 12px 34px rgba(22, 37, 29, 0.08);
+    }
+    h1, h2, h3 { line-height: 1.35; margin: 0; }
+    h1 { font-size: 30px; letter-spacing: 0; color: #18252d; }
+    h2 {
+      font-size: 22px;
+      margin-top: 34px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--line);
+      color: #1f3d35;
+    }
+    h3 { font-size: 18px; margin-top: 22px; color: #263946; }
+    p { margin: 10px 0; }
+    .subtitle { margin-top: 10px; color: var(--muted); font-size: 15px; }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .meta div, .note, .warn, .ok {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: #fbfcfb;
+    }
+    .meta b { display: block; color: var(--muted); font-weight: 500; font-size: 13px; }
+    .meta span { display: block; margin-top: 4px; font-weight: 600; }
+    .note { background: var(--soft-blue); border-color: #c8d8ea; }
+    .warn { background: var(--soft-red); border-color: #e1c3bf; }
+    .ok { background: var(--soft-green); border-color: #c4dcd2; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
+    th { background: #edf2ef; color: #25352f; text-align: left; font-weight: 600; }
+    tr:nth-child(even) td { background: #fbfcfb; }
+    code, pre {
+      font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+      letter-spacing: 0;
+    }
+    code { background: #eef2ef; padding: 1px 5px; border-radius: 4px; }
+    pre {
+      background: var(--code);
+      color: #eef7f2;
+      padding: 14px 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      line-height: 1.55;
+      font-size: 13px;
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-right: 5px;
+    }
+    .tag.green { color: var(--green); background: var(--soft-green); }
+    .tag.blue { color: var(--blue); background: var(--soft-blue); }
+    .tag.amber { color: var(--amber); background: var(--soft-amber); }
+    .tag.red { color: var(--red); background: var(--soft-red); }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin: 14px 0 18px;
+    }
+    .flow div {
+      background: #f6f8f6;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+      min-height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .small { color: var(--muted); font-size: 13px; }
+    .split-title { margin-top: 12px; font-weight: 600; color: #263946; }
+    ul, ol { padding-left: 24px; }
+    li { margin: 4px 0; }
+    @media (max-width: 820px) {
+      main { width: calc(100% - 20px); padding: 24px 18px 34px; }
+      .meta, .grid-2, .flow { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>fruit_multi_band 多光谱蓝莓检测样机技术方案</h1>
+  <p class="subtitle">版本：v1.0 草案；目标：采集蓝莓 RGB 图像与多光谱图像，建立 SSC、TA 与 SSC/TA 糖酸比预测模型，并为后续分选装置开发提供硬件基础。</p>
+
+  <section class="meta">
+    <div><b>检测对象</b><span>3-5颗蓝莓/样品</span></div>
+    <div><b>多光谱范围</b><span>400-1000 nm</span></div>
+    <div><b>滤光片转轮</b><span>25mm滤光片，16孔</span></div>
+    <div><b>主控架构</b><span>电脑 + STM32</span></div>
+  </section>
+
+  <h2>1. 系统总体架构</h2>
+  <p>整机采用“电脑负责图像采集与模型处理，STM32负责执行机构与状态采集”的分工。两个相机均直接连接笔记本电脑，STM32不处理图像，只负责滤光片转轮、光源、风扇、升降门、称重和传感器状态。</p>
+
+  <pre>电脑上位机
+  ├─ USB/GigE → RGB彩色相机
+  ├─ USB/GigE → 黑白工业相机
+  └─ USB串口 → STM32主控板
+                 ├─ CL57C闭环步进驱动器 → 57闭环步进电机 → 16孔滤光片转轮
+                 ├─ SSR1/SSR2 → 12V100W卤钨灯1/2
+                 ├─ MOS模块 → 24V白色LED条形灯1/2
+                 ├─ MOS/继电器 → 24V散热风扇2-3个
+                 ├─ 电机驱动/H桥 → 升降门电机
+                 ├─ GPIO输入 → HOME槽型光电、门限位、急停、门磁
+                 └─ HX711/ADC/串口 → 称重、温度等传感器</pre>
+
+  <div class="note">相机由电脑直接控制，采图、曝光、增益、白平衡、保存路径和样品编号均由上位机管理。STM32只需要在“硬件已到位、灯已稳定、转轮已定位”后向电脑返回状态。</div>
+
+  <h2>2. 电源模块</h2>
+  <p>整机低压电源分为 48V、24V、12V 和 5V 四类，避免不同负载互相干扰。220V 输入侧后续整机联调时建议通过 2P C10A 空气开关或漏保空开进入设备内部。</p>
+
+  <table>
+    <thead><tr><th>电源</th><th>用途</th><th>规格建议</th><th>注意事项</th></tr></thead>
+    <tbody>
+      <tr><td>48V DC</td><td>CL57C闭环步进驱动器</td><td>LRS-200-48，约48V/4.2A/200W</td><td>只供转轮电机，不接灯和STM32</td></tr>
+      <tr><td>12V DC</td><td>2个12V100W卤钨灯</td><td>12V/33A，约400W</td><td>两个灯并联，每灯独立SSR控制，错峰启动</td></tr>
+      <tr><td>24V DC</td><td>风扇、LED、传感器、门电机、控制模块</td><td>LRS-200-24，约24V/8.8A/200W</td><td>控制电源和灯电源分开</td></tr>
+      <tr><td>5V DC</td><td>STM32、小模块、HX711、TTL模块</td><td>24V转5V降压模块，5A，1-2个</td><td>5V由24V降压获得，注意共地策略</td></tr>
+      <tr><td>AC 220V</td><td>所有开关电源输入、笔记本适配器</td><td>三芯电源线，PE接地</td><td>强弱电分区，220V端子加保护罩</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. 上位机与STM32通讯模块</h2>
+  <p>电脑与STM32通过USB串口通信。建议使用固定6字节协议，简单、稳定、易于调试。</p>
+
+  <pre>固定帧格式：AA 55 CMD P1 P2 SUM
+SUM = (AA + 55 + CMD + P1 + P2) & 0xFF</pre>
+
+  <table>
+    <thead><tr><th>CMD</th><th>功能</th><th>P1</th><th>P2</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>0x01</td><td>电机使能</td><td>0/1</td><td>0</td><td>1使能，0失能</td></tr>
+      <tr><td>0x02</td><td>转轮HOME</td><td>0</td><td>0</td><td>寻找原点传感器</td></tr>
+      <tr><td>0x03</td><td>转到孔位</td><td>1-16</td><td>速度档</td><td>P2: 0慢，1中，2快</td></tr>
+      <tr><td>0x04</td><td>下一个孔位</td><td>0</td><td>0</td><td>转轮顺序切换到下一孔</td></tr>
+      <tr><td>0x05</td><td>卤钨灯控制</td><td>灯号1-2</td><td>0/1</td><td>每灯一路SSR</td></tr>
+      <tr><td>0x06</td><td>RGB LED控制</td><td>灯号1-2</td><td>0/1</td><td>彩色相机专用白光LED</td></tr>
+      <tr><td>0x07</td><td>全部光源关闭</td><td>0</td><td>0</td><td>关闭卤钨灯和LED</td></tr>
+      <tr><td>0x08</td><td>风扇控制</td><td>风扇号1-4</td><td>0/1</td><td>用于散热控制</td></tr>
+      <tr><td>0x09</td><td>升降门控制</td><td>0/1/2</td><td>0</td><td>0停，1开，2关</td></tr>
+      <tr><td>0x0A</td><td>读取重量</td><td>0</td><td>0</td><td>返回称重数据</td></tr>
+      <tr><td>0x0B</td><td>读取温度</td><td>0</td><td>0</td><td>返回箱内温度/灯区温度</td></tr>
+      <tr><td>0x0C</td><td>读取状态</td><td>0</td><td>0</td><td>返回孔位、灯、门、报警等</td></tr>
+      <tr><td>0x0D</td><td>清除报警</td><td>0</td><td>0</td><td>清除驱动器或系统报警</td></tr>
+      <tr><td>0xFF</td><td>急停</td><td>0</td><td>0</td><td>立即关灯、停门、停电机</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. 相机模块</h2>
+  <div class="grid-2">
+    <div class="ok">
+      <h3>RGB彩色相机</h3>
+      <p>用于采集蓝莓外观图像，包括颜色、果粉、大小、纹理和缺陷信息。由电脑直接控制，光源为普通白色LED条形灯。</p>
+      <p><span class="tag blue">建议</span>5MP左右工业彩色相机，手动曝光、手动白平衡、C口镜头。</p>
+    </div>
+    <div class="ok">
+      <h3>黑白多光谱相机</h3>
+      <p>用于采集通过16孔滤光片转轮后的灰度多光谱图像。由电脑直接控制，光源为12V100W卤钨灯。</p>
+      <p><span class="tag green">建议</span>2-5MP黑白工业相机，无IR-cut，支持Mono8/Mono12，400-1000nm响应。</p>
+    </div>
+  </div>
+
+  <h2>5. 滤光片转轮与电机模块</h2>
+  <table>
+    <thead><tr><th>项目</th><th>参数</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>滤光片</td><td>直径25mm，厚度1mm</td><td>先买6-8片，转轮预留16孔</td></tr>
+      <tr><td>转轮</td><td>16孔，每孔22.5°</td><td>外径建议约230mm，3D打印厚度8-10mm</td></tr>
+      <tr><td>电机</td><td>57闭环步进，2.3N·m</td><td>低速定位，追求稳定</td></tr>
+      <tr><td>驱动器</td><td>CL57C脉冲控制</td><td>STEP/DIR控制，闭环模式</td></tr>
+      <tr><td>细分</td><td>1600脉冲/圈</td><td>16孔时每孔100脉冲</td></tr>
+      <tr><td>电源</td><td>48V约200W</td><td>专供CL57C驱动器</td></tr>
+      <tr><td>HOME</td><td>槽型光电开关</td><td>开机回原点，建立1号孔位基准</td></tr>
+    </tbody>
+  </table>
+
+  <pre>STM32 STEP/DIR → CL57C → 57闭环步进 → 滤光片转轮
+HOME槽型光电 → STM32输入
+CL57C报警输出 ALM → STM32输入</pre>
+
+  <h2>6. 卤钨灯多光谱照明模块</h2>
+  <p>黑白多光谱通道使用2个12V100W低压卤钨灯杯，提供400-1000nm连续光谱照明。两个灯并联供电，但每个灯单独一路DC-DC SSR控制。</p>
+
+  <table>
+    <thead><tr><th>部件</th><th>数量</th><th>规格</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>卤钨灯杯</td><td>2</td><td>12V，100W，标称400-2500nm</td><td>左右对称布置</td></tr>
+      <tr><td>12V电源</td><td>1</td><td>12V，33A，约400W</td><td>专供两盏卤钨灯</td></tr>
+      <tr><td>SSR</td><td>2</td><td>DC-DC，DD220D40，40A</td><td>每个灯一个SSR</td></tr>
+      <tr><td>SSR散热片</td><td>2</td><td>配导热硅脂</td><td>SSR底面贴合散热片</td></tr>
+      <tr><td>端子排</td><td>2</td><td>TC3006，30A，6位</td><td>12V+和12V-分开</td></tr>
+      <tr><td>灯线</td><td>若干</td><td>主线2.5mm²，支线1.5mm²或1.27mm²高温线</td><td>灯杯附近用硅胶编织高温线更好</td></tr>
+      <tr><td>匀光片</td><td>2-3</td><td>100×100×1mm，600目单面磨砂石英片</td><td>抛光面朝灯，磨砂面朝样品</td></tr>
+    </tbody>
+  </table>
+
+  <pre>12V电源 V+ → 12V+端子排 → 灯1+ / 灯2+
+灯1- → SSR1 输出+ → SSR1 输出- → 12V电源 V-
+灯2- → SSR2 输出+ → SSR2 输出- → 12V电源 V-
+
+STM32 GPIO_LAMP1 → SSR1 输入+
+STM32 GND        → SSR1 输入-
+STM32 GPIO_LAMP2 → SSR2 输入+
+STM32 GND        → SSR2 输入-</pre>
+
+  <div class="warn">卤钨灯属于阻性负载，但冷启动冲击电流高。程序应采用错峰启动：先开灯1，延时500-1000ms，再开灯2。两个灯不能串联，必须并联。</div>
+
+  <h2>7. RGB LED照明模块</h2>
+  <p>RGB彩色相机使用普通白色LED条形光源，与卤钨灯轮流打开，避免卤钨灯偏黄色温影响RGB颜色。</p>
+
+  <table>
+    <thead><tr><th>项目</th><th>建议</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>LED类型</td><td>24V白色机器视觉条形光源</td><td>左右各1根，色温5000-6500K</td></tr>
+      <tr><td>功率</td><td>单根10-30W</td><td>根据视场和亮度调节</td></tr>
+      <tr><td>控制</td><td>10A MOS模块或30A MOS模块</td><td>支持3.3V触发，PWM调光更好</td></tr>
+      <tr><td>电源</td><td>24V控制电源</td><td>不要和12V卤钨灯正极混接</td></tr>
+    </tbody>
+  </table>
+
+  <pre>24V电源 V+ → LED+
+LED- → MOS LOAD-
+MOS GND → 24V电源 V-
+STM32 GPIO_LED → MOS IN
+STM32 GND → MOS GND</pre>
+
+  <h2>8. 散热风扇模块</h2>
+  <p>建议装2-3个散热风扇，结构上预留4个风扇位。风扇主要服务卤钨灯散热、SSR/电源散热和箱体温度控制。风道必须做遮光处理，避免外界光漏入暗箱。</p>
+
+  <table>
+    <thead><tr><th>风扇</th><th>建议规格</th><th>控制方式</th><th>安装位置</th></tr></thead>
+    <tbody>
+      <tr><td>FAN1</td><td>24V，120mm</td><td>MOS控制，可常开</td><td>灯区排风</td></tr>
+      <tr><td>FAN2</td><td>24V，120mm</td><td>MOS控制，可常开</td><td>电控区/SSR散热</td></tr>
+      <tr><td>FAN3</td><td>24V，80mm或120mm</td><td>可选</td><td>箱体辅助进风/排风</td></tr>
+    </tbody>
+  </table>
+
+  <p class="small">建议风扇先随系统启动常开。若加入温度传感器，可设置温度阈值，例如灯区超过35°C开启强制散热，超过45°C禁止继续采集并报警。</p>
+
+  <h2>9. 升降门与安全传感器模块</h2>
+  <p>升降门不要求高精度，可采用齿轮条 + 直流减速电机 + H桥驱动模块。必须设置上限位和下限位，防止电机堵转。</p>
+
+  <table>
+    <thead><tr><th>部件</th><th>连接到STM32</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>门电机</td><td>H桥驱动输入</td><td>控制正转、反转、停止</td></tr>
+      <tr><td>上限位</td><td>GPIO输入</td><td>门到顶后立即停止</td></tr>
+      <tr><td>下限位</td><td>GPIO输入</td><td>门到底后立即停止</td></tr>
+      <tr><td>急停按钮</td><td>GPIO输入 + 硬件断电回路</td><td>触发后关灯、停电机、停门</td></tr>
+      <tr><td>门磁/门状态</td><td>GPIO输入</td><td>门未关闭时禁止采集</td></tr>
+    </tbody>
+  </table>
+
+  <h2>10. 样品称重与生化标签模块</h2>
+  <p>称重模块用于记录每组蓝莓样品质量，便于后续TA计算和样本管理。每份样品建议为3-5颗蓝莓。</p>
+
+  <table>
+    <thead><tr><th>指标</th><th>方法</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td>SSC</td><td>数显折射仪</td><td>取同一份匀浆少量汁液测Brix</td></tr>
+      <tr><td>TA</td><td>GB 12456-2021，总酸/可滴定酸</td><td>NaOH滴定，pH计终点法，按柠檬酸计</td></tr>
+      <tr><td>糖酸比</td><td>SSC / TA</td><td>作为蓝莓风味分级关键标签</td></tr>
+      <tr><td>可选酸组分</td><td>HPLC/离子色谱</td><td>重点考虑柠檬酸、奎宁酸、苹果酸</td></tr>
+    </tbody>
+  </table>
+
+  <h2>11. 开机启动顺序</h2>
+  <div class="flow">
+    <div>1. 合上220V总开关</div>
+    <div>2. 24V/48V/12V电源上电</div>
+    <div>3. STM32自检</div>
+    <div>4. 风扇启动</div>
+    <div>5. 转轮HOME校准</div>
+  </div>
+  <ol>
+    <li>检查急停、门状态、限位、HOME传感器是否正常。</li>
+    <li>STM32关闭所有灯，确保卤钨灯和LED都处于关闭状态。</li>
+    <li>启动风扇，建议灯区风扇先运行10-30秒。</li>
+    <li>电机使能，转轮低速寻找HOME槽型光电开关。</li>
+    <li>HOME触发后，将当前孔位设为1号孔，并根据机械偏移补偿到1号滤光片中心。</li>
+    <li>电脑连接两个相机，加载曝光参数、保存路径和样品编号。</li>
+    <li>电脑向STM32读取状态，确认“READY”后开始采集。</li>
+  </ol>
+
+  <h2>12. 单个样品采集流程</h2>
+  <p>建议每个样品先拍RGB，再拍多光谱。RGB使用LED，黑白多光谱使用卤钨灯，两类光源互锁，不能同时打开。</p>
+
+  <pre>步骤1：放入样品，关闭升降门
+步骤2：电脑发送 READ_STATUS，确认门关闭、转轮已HOME、无报警
+步骤3：关闭全部光源
+步骤4：打开RGB LED，等待100-300ms
+步骤5：彩色相机采集RGB图像，保存 sample_id_rgb.png
+步骤6：关闭RGB LED
+步骤7：打开卤钨灯1，延时500-1000ms
+步骤8：打开卤钨灯2，预热/稳定3-10s
+步骤9：黑白相机依次采集16个孔位或指定波段
+       对每个孔位：转轮到位 → 等待500-1000ms → 拍照 → 保存
+步骤10：关闭卤钨灯，风扇继续运行
+步骤11：取出样品，进入SSC/TA生化测定
+步骤12：记录样品编号、图像路径、SSC、TA、糖酸比</pre>
+
+  <h2>13. 多光谱采集子流程</h2>
+  <table>
+    <thead><tr><th>阶段</th><th>电脑动作</th><th>STM32动作</th><th>等待/确认</th></tr></thead>
+    <tbody>
+      <tr><td>孔位切换</td><td>发送转到孔位命令</td><td>输出STEP/DIR，转100脉冲/孔</td><td>到位后等待500-1000ms</td></tr>
+      <tr><td>状态确认</td><td>读取状态</td><td>返回当前孔位、报警、灯状态</td><td>无报警才拍照</td></tr>
+      <tr><td>图像采集</td><td>黑白相机拍照</td><td>保持灯和转轮状态不变</td><td>保存Mono8/Mono12原始图</td></tr>
+      <tr><td>下一波段</td><td>发送下一孔命令</td><td>转轮切换</td><td>循环执行</td></tr>
+    </tbody>
+  </table>
+
+  <h2>14. 白板与暗场校正流程</h2>
+  <p>多光谱成像必须做黑白校正，建议每次实验开始时采集一组白板和暗场，每个滤光片波段都需要对应校正图像。</p>
+
+  <pre>暗场图像：关闭全部光源，盖镜头或保持暗箱完全遮光，采集 D(lambda)
+白板图像：放标准白板，打开对应光源，逐孔采集 W(lambda)
+样品图像：放蓝莓样品，逐孔采集 S(lambda)
+校正图像：R(lambda) = (S(lambda) - D(lambda)) / (W(lambda) - D(lambda))</pre>
+
+  <h2>15. 线缆与端子建议</h2>
+  <table>
+    <thead><tr><th>用途</th><th>线材建议</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>12V卤钨灯主线</td><td>2.5mm²多股铜线</td><td>12V电源到端子排</td></tr>
+      <tr><td>12V卤钨灯支线</td><td>1.5mm²或1.27mm²硅胶编织高温线</td><td>端子排到SSR/灯杯，尽量短</td></tr>
+      <tr><td>48V电机电源线</td><td>0.75-1.0mm²</td><td>48V电源到CL57C</td></tr>
+      <tr><td>电机相线/编码器线</td><td>商家配套线</td><td>编码器线优先用屏蔽线</td></tr>
+      <tr><td>STEP/DIR</td><td>0.2-0.3mm²屏蔽双绞线</td><td>STM32到CL57C或转换模块</td></tr>
+      <tr><td>风扇/LED</td><td>0.5-0.75mm²</td><td>按功率选择</td></tr>
+      <tr><td>传感器/SSR输入</td><td>0.2-0.3mm²信号线</td><td>3.3V小信号</td></tr>
+      <tr><td>220V输入</td><td>3芯1.0-1.5mm²电源线</td><td>L/N/PE，必须接地</td></tr>
+    </tbody>
+  </table>
+
+  <h2>16. 安全与调试注意事项</h2>
+  <ul>
+    <li>所有开关电源外壳、金属电控板、金属灯架应接PE保护地。</li>
+    <li>12V、24V、48V端子必须贴清楚标签，禁止混接。</li>
+    <li>卤钨灯附近不能使用普通塑料件和普通亚克力扩散板。</li>
+    <li>SSR必须配散热片，首次点亮10-20分钟后检查SSR、端子和线缆温度。</li>
+    <li>风扇风道应做迷宫式遮光，防止外界光漏入暗箱。</li>
+    <li>程序中应设置光源互锁：RGB LED和卤钨灯不能同时开启。</li>
+    <li>门未关闭、急停触发、温度过高、电机报警时，禁止采集。</li>
+    <li>调试阶段先单独测试：电机 → 风扇 → 单灯 → 双灯错峰 → LED → 相机联动。</li>
+  </ul>
+
+  <h2>17. 推荐调试顺序</h2>
+  <div class="flow">
+    <div>1. 只调STM32串口协议</div>
+    <div>2. 调CL57C与转轮HOME</div>
+    <div>3. 调单个SSR与单灯</div>
+    <div>4. 调双灯错峰与散热</div>
+    <div>5. 调RGB LED与相机</div>
+  </div>
+  <div class="flow">
+    <div>6. 做白板/暗场采集</div>
+    <div>7. 采单个蓝莓样品</div>
+    <div>8. 连续采10个样品</div>
+    <div>9. 检查温升和稳定性</div>
+    <div>10. 批量实验</div>
+  </div>
+
+  <h2>18. v1.0 验收标准</h2>
+  <table>
+    <thead><tr><th>模块</th><th>验收标准</th></tr></thead>
+    <tbody>
+      <tr><td>通讯</td><td>电脑能稳定发送命令，STM32能返回ACK/状态，无明显丢包</td></tr>
+      <tr><td>转轮</td><td>开机HOME成功，任意孔位切换后滤光片与镜头对准，到位无明显晃动</td></tr>
+      <tr><td>卤钨灯</td><td>两灯可独立控制，错峰启动，连续点亮30分钟SSR和线缆不过热</td></tr>
+      <tr><td>LED</td><td>RGB采图时亮度稳定，白平衡可锁定，无卤钨灯干扰</td></tr>
+      <tr><td>风扇</td><td>散热有效且不漏光，箱内温升可控</td></tr>
+      <tr><td>相机</td><td>RGB和多光谱图像均能按样品编号保存，曝光参数可复现</td></tr>
+      <tr><td>数据</td><td>每个样品具备RGB、多光谱、SSC、TA、SSC/TA及称重记录</td></tr>
+    </tbody>
+  </table>
+
+  <p class="small">备注：本方案为 v1.0 样机技术方案，优先保证低成本、可搭建、可调试、可重复采集。后续可根据实验结果升级为更高稳定性的电控板、定制光源和封闭式电控箱。</p>
+</main>
+</body>
+</html>

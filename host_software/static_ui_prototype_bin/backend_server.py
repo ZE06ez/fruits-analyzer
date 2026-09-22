@@ -27,6 +27,8 @@ from device_manager import (
 )
 from PIL import Image, ImageDraw
 from rotation_plan import build_capture_rotation_plan, mark_plan_completed
+from inspection.service import InspectionService
+from runtime_support import APP_VERSION, RuntimePaths, atomic_write_json, configure_logging
 
 class JobStore:
     def __init__(self) -> None:
@@ -109,6 +111,7 @@ class SessionState:
         self.selected_ssc_model_id: str = ""
         self.selected_ta_model_id: str = ""
         self.selected_ph_model_id: str = ""
+        self.inspection_id: str = ""
         self.sample_mode: str = "inspection"
         self.background_reference: dict = {}
         self.capture_rotation_plan: dict = build_capture_rotation_plan({})
@@ -186,6 +189,7 @@ class SessionState:
             self.selected_ssc_model_id = selected_ssc
             self.selected_ta_model_id = selected_ta
             self.selected_ph_model_id = selected_ph
+            self.inspection_id = ""
             self.background_reference = dict(payload.get("backgroundReference") or {})
             self.capture_rotation_plan = rotation_plan
             self.current_capture_dir = capture_dir
@@ -261,6 +265,7 @@ class SessionState:
             selected_ssc_model_id = self.selected_ssc_model_id
             selected_ta_model_id = self.selected_ta_model_id
             selected_ph_model_id = self.selected_ph_model_id
+            inspection_id = self.inspection_id
             sample_mode = self.sample_mode
             background_reference = dict(self.background_reference)
             capture_rotation_plan = dict(self.capture_rotation_plan)
@@ -302,6 +307,7 @@ class SessionState:
             "selectedSscModelId": selected_ssc_model_id,
             "selectedTaModelId": selected_ta_model_id,
             "selectedPhModelId": selected_ph_model_id,
+            "inspectionId": inspection_id,
             "captureRotationPlan": capture_rotation_plan,
             "currentCaptureMessage": "" if current_valid else "暂无本次拍摄数据",
         }
@@ -332,7 +338,7 @@ def default_sample_dataset(app_dir: Path) -> str:
 
 
 def default_save_root(app_dir: Path) -> str:
-    return str(app_dir.parent / "Data")
+    return str(RuntimePaths.for_app(app_dir).root / "outputs")
 
 
 def read_sample_metadata(dataset_dir: str | Path) -> dict:
@@ -360,7 +366,7 @@ class BackgroundReferenceStore:
     INDEX_NAME = "background_references.json"
 
     def __init__(self, app_dir: Path) -> None:
-        self.root = app_dir / "runtime" / "background_reference"
+        self.root = RuntimePaths.for_app(app_dir).root / "background_reference"
         self.images_dir = self.root / "images"
         self.index_path = self.root / self.INDEX_NAME
         self._lock = threading.Lock()
@@ -386,9 +392,7 @@ class BackgroundReferenceStore:
 
     def _save_unlocked(self, payload: dict) -> None:
         self._ensure_dirs()
-        tmp = self.index_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.index_path)
+        atomic_write_json(self.index_path, payload)
 
     def _public_item(self, item: dict, active_id: str) -> dict:
         managed_path = Path(str(item.get("managedPath") or ""))
@@ -656,6 +660,7 @@ def create_handler(
             registry=DeviceRegistry(app_dir / "runtime" / "hardware_profile.json")
         )
     background_store = BackgroundReferenceStore(app_dir)
+    inspection_service = InspectionService(app_dir)
     model_studio_static = app_dir / "model_studio" / "static"
     try:
         from model_studio.service import ModelStudioService
@@ -710,7 +715,7 @@ def create_handler(
             }
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "FruitTasteAnalyzer/1.0"
+        server_version = f"FruitTasteAnalyzer/{APP_VERSION}"
 
         def log_message(self, format, *args):  # noqa: A003
             return
@@ -718,6 +723,13 @@ def create_handler(
         def do_GET(self):  # noqa: N802
             parsed = urlparse(self.path)
             path = parsed.path
+            if path == "/api/health":
+                database = {
+                    "modelStudio": bool(model_studio and model_studio.database_path.exists()),
+                    "inspection": inspection_service.database_path.exists(),
+                }
+                self.json_response({"ok": True, "status": "ok", "softwareVersion": APP_VERSION, "backend": "ready", "databases": database})
+                return
             if path == "/model-studio":
                 self.serve_file(model_studio_static, "index.html")
                 return
@@ -963,6 +975,13 @@ def create_handler(
                 return
             if path == "/api/quality-models":
                 self.handle_quality_models(parsed.query)
+                return
+            if path == "/api/inspections":
+                self.handle_inspection_list(parsed.query)
+                return
+            if path.startswith("/api/inspections/"):
+                inspection_id = unquote(path.removeprefix("/api/inspections/")).strip("/")
+                self.handle_inspection_detail(inspection_id)
                 return
             if path == "/api/dataset-images":
                 self.handle_dataset_images(parsed.query)
@@ -1569,6 +1588,10 @@ def create_handler(
             if parsed.path == "/api/model-selection":
                 self.handle_model_selection()
                 return
+            if parsed.path.startswith("/api/inspections/") and parsed.path.endswith("/archive"):
+                inspection_id = unquote(parsed.path.removeprefix("/api/inspections/")).removesuffix("/archive").strip("/")
+                self.handle_inspection_archive(inspection_id)
+                return
             if parsed.path == "/api/open-folder":
                 self.handle_open_folder()
                 return
@@ -1742,6 +1765,10 @@ def create_handler(
                     )
                     self.json_response({"ok": True, "models": registry["models"], "registry": registry})
                     return
+                if path.startswith("models/") and path.endswith("/quality"):
+                    model_id = path.split("/")[1]
+                    self.json_response({"ok": True, "quality": studio.get_model_quality(model_id)})
+                    return
                 if path.startswith("models/") and len(path.split("/")) == 2:
                     self.json_response({"ok": True, "model": studio.get_model(path.split("/")[-1])})
                     return
@@ -1829,7 +1856,11 @@ def create_handler(
                     return
                 if path == "features":
                     dataset_id = payload.get("datasetId") or payload.get("dataset_id")
-                    self.json_response({"ok": True, "features": studio.generate_features(dataset_id, payload.get("datasetVersionId") or payload.get("dataset_version_id"))})
+                    self.json_response({"ok": True, "features": studio.generate_features(
+                        dataset_id,
+                        payload.get("datasetVersionId") or payload.get("dataset_version_id"),
+                        payload.get("pipelineConfig") or payload.get("pipeline_config"),
+                    )})
                     return
                 if path == "experiments":
                     self.json_response({"ok": True, "experiment": studio.create_experiment(payload)})
@@ -2500,11 +2531,14 @@ def create_handler(
 
                 result = predict_ssc(sample_data)
                 sample_data.ssc_result = result.to_dict()
+                history = inspection_service.record_prediction(sample_data, result, session.snapshot().get("inspectionId") or "")
+                session.inspection_id = history.get("inspectionId") or session.snapshot().get("inspectionId") or ""
                 self.json_response({
                     "ok": True,
                     "sample": sample_data.to_dict(),
                     "dataCheck": report,
                     "result": result.to_dict(),
+                    "inspection": {"inspectionId": history.get("inspectionId"), "status": history.get("status")},
                 })
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"SSC 预测接口执行失败: {exc}"}, status=500)
@@ -2522,12 +2556,19 @@ def create_handler(
                 ph_result = predict_ph(sample_data)
                 sample_data.ta_result = ta_result.to_dict()
                 sample_data.ph_result = ph_result.to_dict()
+                history = inspection_service.record_predictions(
+                    sample_data,
+                    [ta_result, ph_result],
+                    session.snapshot().get("inspectionId") or "",
+                )
+                session.inspection_id = history.get("inspectionId") or session.snapshot().get("inspectionId") or ""
                 self.json_response({
                     "ok": True,
                     "sample": sample_data.to_dict(),
                     "dataCheck": report,
                     "taResult": ta_result.to_dict(),
                     "phResult": ph_result.to_dict(),
+                    "inspection": {"inspectionId": history.get("inspectionId"), "status": history.get("status")},
                 })
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"酸度预测接口执行失败: {exc}"}, status=500)
@@ -2580,6 +2621,41 @@ def create_handler(
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"当前样品数据检查失败: {exc}"}, status=400)
                 return None
+
+        def handle_inspection_list(self, query: str) -> None:
+            params = parse_qs(query)
+            try:
+                result = inspection_service.list_inspections(
+                    limit=int((params.get("limit") or [20])[0]),
+                    offset=int((params.get("offset") or [0])[0]),
+                    fruit_type=(params.get("fruitType", params.get("fruit_type", [""]))[0] or "").strip(),
+                    variety=(params.get("variety", [""])[0] or "").strip(),
+                    status=(params.get("status", [""])[0] or "").strip(),
+                    date_from=(params.get("dateFrom", params.get("date_from", [""]))[0] or "").strip(),
+                    date_to=(params.get("dateTo", params.get("date_to", [""]))[0] or "").strip(),
+                )
+                self.json_response({"ok": True, **result})
+            except (TypeError, ValueError) as exc:
+                self.json_response({"ok": False, "error": str(exc)}, status=400)
+
+        def handle_inspection_detail(self, inspection_id: str) -> None:
+            if not inspection_id:
+                self.json_response({"ok": False, "error": "inspection_id is required"}, status=400)
+                return
+            result = inspection_service.get_inspection(inspection_id)
+            if result is None:
+                self.json_response({"ok": False, "error": "检测记录不存在"}, status=404)
+                return
+            self.json_response({"ok": True, "inspection": result})
+
+        def handle_inspection_archive(self, inspection_id: str) -> None:
+            if not inspection_id:
+                self.json_response({"ok": False, "error": "inspection_id is required"}, status=400)
+                return
+            if not inspection_service.archive_inspection(inspection_id):
+                self.json_response({"ok": False, "error": "检测记录不存在或已归档"}, status=404)
+                return
+            self.json_response({"ok": True, "inspectionId": inspection_id, "status": "ARCHIVED"})
 
         def read_json(self) -> dict:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -2654,6 +2730,8 @@ def create_handler(
             self.wfile.write(data)
 
     Handler.device_manager = device_manager
+    Handler.inspection_service = inspection_service
+    Handler.model_studio_service = model_studio
     return Handler
 
 
@@ -3019,8 +3097,8 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
                 "missing": bool(background_reference.get("missing")),
             }
         meta["capture_views"] = list((meta["sample_rotation"] or {}).get("views") or [])
-        (capture_root / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        (capture_root / "views.json").write_text(json.dumps(meta["capture_views"], ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(capture_root / "metadata.json", meta)
+        atomic_write_json(capture_root / "views.json", meta["capture_views"])
 
 
 def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_dir: str | Path | None = None, metadata: dict | None = None) -> Path:
@@ -3120,6 +3198,8 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_d
 
 
 def start_backend(static_dir: Path, outputs_dir: Path, app_dir: Path, port: int | None = None) -> tuple[ThreadingHTTPServer, int]:
+    logger = configure_logging(app_dir)
+    logger.info("backend startup version=%s", APP_VERSION)
     store = JobStore()
     session = SessionState()
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -3128,6 +3208,8 @@ def start_backend(static_dir: Path, outputs_dir: Path, app_dir: Path, port: int 
     server = ThreadingHTTPServer(("127.0.0.1", selected_port), handler)
     setattr(server, "should_exit", False)
     setattr(server, "device_manager", getattr(handler, "device_manager", None))
+    setattr(server, "inspection_service", getattr(handler, "inspection_service", None))
+    setattr(server, "model_studio_service", getattr(handler, "model_studio_service", None))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, selected_port

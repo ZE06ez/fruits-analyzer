@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
+from runtime_support import atomic_write_json
 
 
 BACKGROUND_REFERENCE_MISSING = "BACKGROUND_REFERENCE_MISSING"
@@ -99,8 +100,7 @@ def create_background_reference(
 
 def save_background_reference(reference: BackgroundReference, path: str | Path) -> None:
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(reference.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(target, reference.to_dict())
 
 
 def load_background_reference(path: str | Path) -> BackgroundReference:

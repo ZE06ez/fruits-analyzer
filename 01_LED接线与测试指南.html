@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>三路24V LED灯带与YYNMOS-4接线测试指南</title>
+<style>body{font-family:"Microsoft YaHei",sans-serif;max-width:1000px;margin:32px auto;padding:0 22px;color:#18212b;line-height:1.72;background:#f5f7fa}main{background:#fff;padding:28px 34px;border-radius:14px;box-shadow:0 3px 18px #ccd3dc}h1{color:#145da0}h2{border-left:5px solid #2e8bc0;padding-left:10px;margin-top:30px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #b9c4cf;padding:9px;text-align:left}th{background:#eaf4fb}.diagram,pre{background:#10202e;color:#eaf7ff;padding:18px;border-radius:9px;overflow:auto}.warn{background:#fff3cd;border-left:5px solid #e0a800;padding:13px}.danger{background:#fde8e8;border-left:5px solid #d93025;padding:13px}.ok{background:#e8f5e9;border-left:5px solid #2e7d32;padding:13px}.tag{display:inline-block;background:#e8f2ff;padding:2px 8px;border-radius:12px}@media print{body{background:#fff;margin:0}main{box-shadow:none}}</style></head><body><main>
+<h1>24V LED 1、LED 2、LED 3 接线与开关测试指南</h1>
+<p><span class="tag">YYNMOS-4四路MOS模块</span> 灯带参数：普瑞芯片，180D，6000K，24V，16W/米。</p>
+<p>单条灯带电流：</p><pre>I = 16W/m × 长度(m) ÷ 24V = 0.667 × 长度(m) A</pre>
+
+<h2>1. 模块端子说明</h2>
+<table><tr><th>端子</th><th>连接</th></tr>
+<tr><td>DC+ / DC-</td><td>模块负载电源输入，接24V开关电源正、负极</td></tr>
+<tr><td>OUT1+ / OUT1-</td><td>接LED灯带1正、负极</td></tr>
+<tr><td>OUT2+ / OUT2-</td><td>接LED灯带2正、负极</td></tr>
+<tr><td>OUT3+ / OUT3-</td><td>接LED灯带3正、负极</td></tr>
+<tr><td>PWM1 / GND1</td><td>STM32控制通道1</td></tr>
+<tr><td>PWM2 / GND2</td><td>STM32控制通道2</td></tr>
+<tr><td>PWM3 / GND3</td><td>STM32控制通道3</td></tr>
+<tr><td>通道4</td><td>接三只并联24V风扇，详见风扇指南</td></tr></table>
+
+<h2>2. 24V功率侧接线</h2>
+<div class="diagram"><pre>24V开关电源 +V ──> 总保险丝 ──> MOS模块 DC+
+24V开关电源 -V ─────────────────> MOS模块 DC-
+
+MOS模块 OUT1+ ──────────────────> LED灯带1 +24V
+MOS模块 OUT1- ──────────────────> LED灯带1 负极
+
+MOS模块 OUT2+ ──────────────────> LED灯带2 +24V
+MOS模块 OUT2- ──────────────────> LED灯带2 负极
+
+MOS模块 OUT3+ ──────────────────> LED灯带3 +24V
+MOS模块 OUT3- ──────────────────> LED灯带3 负极</pre></div>
+<div class="danger"><strong>关键：</strong>LED灯带负极必须接相应的OUT1-或OUT2-，不能直接接24V电源负极。直接接电源负极会绕过MOS开关，造成灯带一直亮。OUT1、OUT2之间也不能交叉连接。</div>
+
+<h2>3. STM32信号侧接线</h2>
+<div class="diagram"><pre>STM32 GPIO_LED1 ─────────────────> MOS模块 PWM1
+STM32 GND ──────────────────────> MOS模块 GND1
+
+STM32 GPIO_LED2 ─────────────────> MOS模块 PWM2
+STM32 GND ──────────────────────> MOS模块 GND2
+
+STM32 GPIO_LED3 ─────────────────> MOS模块 PWM3
+STM32 GND ──────────────────────> MOS模块 GND3</pre></div>
+<p>图片显示每路都有独立输入端，功率侧与控制侧之间有光耦器件。GND1、GND2、GND3接STM32的GND；不需要为了控制而额外把STM32 GND接到模块DC-。如果整机其他非隔离模块已经共地，也不影响本模块使用。</p>
+<div class="warn"><strong>尚需确认：</strong>图片没有给出PWM输入电压范围。首次测试前应向卖家确认“PWM输入是否兼容3.3V高电平”。可以先用STM32 3.3V做单路低功率测试；若不能稳定开启，不要把PWM脚直接接5V，应加3.3V转5V驱动。</div>
+
+<h2>4. GPIO初始化和开关逻辑</h2>
+<p>PWM输入既可以接定时器PWM，也可以当普通数字输入使用。这里只测试开关，不需要配置PWM。</p>
+<pre>// 上电立即配置为推挽输出、默认低电平
+HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);
+
+// 三灯开启
+HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
+
+// 三灯关闭
+HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);</pre>
+<p>依据该类模块的一般用法，高电平开启、低电平关闭；首次测试必须实际确认。如果实物逻辑相反，只修改软件宏定义，不改动功率侧极性。</p>
+
+<h2>5. 与两字节协议对应</h2>
+<table><tr><th>电脑命令</th><th>作用</th></tr>
+<tr><td><code>12 00</code></td><td>三灯关闭</td></tr>
+<tr><td><code>12 01</code></td><td>只开LED1</td></tr>
+<tr><td><code>12 02</code></td><td>只开LED2</td></tr>
+<tr><td><code>12 04</code></td><td>只开LED3</td></tr>
+<tr><td><code>12 03</code></td><td>开启LED1、LED2</td></tr>
+<tr><td><code>12 07</code></td><td>三灯全部开启</td></tr></table>
+<p>STM32执行后回复：<code>92 00</code>。第一版可以在写入GPIO后立即回复。</p>
+
+<h2>6. 推荐测试顺序</h2>
+<ol><li>所有电源断开，检查模块背面没有碰到金属机架，最好加绝缘柱安装。</li><li>暂时只接DC+/DC-和一小段LED灯带1；其他通道暂不接负载。</li><li>24V电源先设置电流限制；若不能限流，在DC+附近串入合适保险丝。</li><li>STM32先上电，GPIO_LED1、GPIO_LED2、GPIO_LED3输出低电平。</li><li>开启24V电源，确认LED1保持熄灭。</li><li>将GPIO_LED1置高，确认LED1点亮；测量OUT1端电压和灯带电流。</li><li>将GPIO_LED1置低，确认LED1完全熄灭。</li><li>连续开关10次，确认没有偶发不亮或关不掉。</li><li>断电后按相同方法依次连接并测试LED2、LED3。</li><li>最后发送<code>12 07</code>测试三灯同时开启，连续运行10分钟并检查MOS管、端子和导线温升。</li></ol>
+
+<h2>7. 保险丝与电源容量</h2>
+<p>若三条LED的长度分别为L1、L2、L3米：</p>
+<pre>I_LED = 0.667 × (L1 + L2 + L3) A
+P_LED = 16 × (L1 + L2 + L3) W
+I_total = I_LED + 3 × 单只风扇铭牌电流</pre>
+<p>24V电源建议保留至少25%余量。总保险丝需要按照三条LED与三只风扇的合计电流重新选择，不能继续只按两条LED估算。</p>
+
+<div class="ok"><strong>通过标准：</strong>上电默认关闭；两路能分别控制；<code>12 03</code>能同时开启；关闭后灯带不残亮；连续工作时24V电源不掉压，模块MOS管和端子没有异常发热。</div>
+<h2>8. 野火HAL示例代码</h2>
+<p>示例驱动文件：<a href="sample_code/bsp_actuators.c">bsp_actuators.c</a>、<a href="sample_code/bsp_actuators.h">bsp_actuators.h</a>。</p>
+<pre>LED_SetMask(0x00);  // 三灯关闭
+LED_SetMask(0x01);  // 只开LED1
+LED_SetMask(0x02);  // 只开LED2
+LED_SetMask(0x04);  // 只开LED3
+LED_SetMask(0x07);  // 三灯开启</pre>
+<div class="danger"><strong>禁止：</strong>不得接反DC+/DC-；不得带电拧端子；不得把OUT-直接并到DC-；不得在不知道输入兼容性的情况下向STM32 GPIO施加5V。</div>
+</main></body></html>
