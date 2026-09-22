@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>fruit_multi_band HBS57H闭环步进电机连接与操控指南</title>
+  <style>
+    :root {
+      --bg: #f5f7f4;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #5f6b76;
+      --line: #d8ded6;
+      --green: #2f6f5e;
+      --blue: #315f8c;
+      --amber: #9a6418;
+      --red: #9f3a38;
+      --soft-green: #e7f1ed;
+      --soft-blue: #e7eef7;
+      --soft-amber: #f8efde;
+      --soft-red: #f6e8e6;
+      --code: #172026;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      line-height: 1.72;
+    }
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 32px auto 56px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 34px 42px 46px;
+      box-shadow: 0 12px 34px rgba(22, 37, 29, 0.08);
+    }
+    h1, h2, h3 { line-height: 1.35; margin: 0; }
+    h1 { font-size: 30px; letter-spacing: 0; color: #18252d; }
+    h2 {
+      font-size: 22px;
+      margin-top: 34px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--line);
+      color: #1f3d35;
+    }
+    h3 { font-size: 18px; margin-top: 22px; color: #263946; }
+    p { margin: 10px 0; }
+    .subtitle { margin-top: 10px; color: var(--muted); font-size: 15px; }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .meta div, .note, .warn, .ok, .choice {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: #fbfcfb;
+    }
+    .meta b { display: block; color: var(--muted); font-weight: 500; font-size: 13px; }
+    .meta span { display: block; margin-top: 4px; font-weight: 600; }
+    .note { background: var(--soft-blue); border-color: #c8d8ea; }
+    .warn { background: var(--soft-red); border-color: #e1c3bf; }
+    .ok { background: var(--soft-green); border-color: #c4dcd2; }
+    .choice { background: var(--soft-amber); border-color: #e6d2aa; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
+    th { background: #edf2ef; color: #25352f; text-align: left; font-weight: 600; }
+    tr:nth-child(even) td { background: #fbfcfb; }
+    code, pre {
+      font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+      letter-spacing: 0;
+    }
+    code { background: #eef2ef; padding: 1px 5px; border-radius: 4px; }
+    pre {
+      background: var(--code);
+      color: #edf7f3;
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow: auto;
+      line-height: 1.55;
+      font-size: 13px;
+    }
+    ul, ol { margin: 8px 0 16px 22px; padding: 0; }
+    li { margin: 5px 0; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 14px 0 18px;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #e9efec;
+      color: #263946;
+      font-size: 12px;
+      font-weight: 600;
+      margin-right: 6px;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin: 16px 0;
+    }
+    .flow div {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 88px;
+      background: #fbfcfb;
+      position: relative;
+    }
+    .flow div:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      right: -10px;
+      top: 34px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    svg { width: 100%; height: auto; display: block; margin: 14px 0 22px; }
+    .small { color: var(--muted); font-size: 13px; }
+    @media (max-width: 860px) {
+      main { width: calc(100% - 22px); padding: 24px 18px 34px; }
+      .meta, .grid-2, .flow { grid-template-columns: 1fr; }
+      .flow div:not(:last-child)::after { content: ""; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>fruit_multi_band 滤光片转轮电机连接与操控指南</h1>
+  <p class="subtitle">适用对象：STM32F407 开发板 + 3.3V转5V高速隔离/差分模块 + HBS57H蓝色数显闭环驱动器 + 57闭环步进电机 + 16孔滤光片转轮。</p>
+
+  <section class="meta">
+    <div><b>项目</b><span>蓝莓多光谱检测样机</span></div>
+    <div><b>驱动器参考</b><span>HBS57H V110 手册</span></div>
+    <div><b>转轮方案</b><span>16孔，22.5度/孔</span></div>
+    <div><b>推荐控制</b><span>STM32发 STEP/DIR 脉冲</span></div>
+  </section>
+
+  <h2>1. 先给结论</h2>
+  <div class="ok">
+    <p><b>推荐方案：</b>电机驱动器用独立 <code>48V DC</code> 开关电源供电；STM32 不直接接 HBS57H 的 PUL/DIR，而是经过 <code>3.3V输入、5V供电、5V差分输出</code> 或 <code>高速光耦隔离输出</code> 模块，再进入 HBS57H 的 <code>PUL+</code>/<code>PUL-</code>、<code>DIR+</code>/<code>DIR-</code>。</p>
+    <p>HBS57H 手册写明控制信号支持 <code>5V-24V</code>，且无需外串电阻；但 STM32 GPIO 是 <code>3.3V</code>，逻辑输入电流典型约 <code>10mA</code>，所以不要把 STM32 直接硬接到驱动器作为正式方案。</p>
+  </div>
+
+  <div class="choice">
+    <p><b>本指南里的“升压模块”指两类东西：</b></p>
+    <ul>
+      <li><b>电源模块：</b>例如 220V AC 转 48V DC 开关电源，给 HBS57H 和电机供能。这不是小升压板，建议直接买 48V 开关电源。</li>
+      <li><b>信号电平转换模块：</b>把 STM32 的 3.3V 脉冲信号变成 HBS57H 更稳的 5V 差分/隔离信号。这是本电机控制部分真正需要的“升压/转换”。</li>
+    </ul>
+  </div>
+
+  <h2>2. 系统连接总图</h2>
+  <svg viewBox="0 0 1120 520" role="img" aria-label="STM32, 电平转换模块, HBS57H驱动器和电机连接总图">
+    <defs>
+      <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#315f8c" />
+      </marker>
+      <style>
+        .box { fill: #fbfcfb; stroke: #d8ded6; stroke-width: 2; rx: 8; }
+        .box2 { fill: #e7eef7; stroke: #b9cce3; stroke-width: 2; rx: 8; }
+        .box3 { fill: #e7f1ed; stroke: #b7d6ca; stroke-width: 2; rx: 8; }
+        .box4 { fill: #f8efde; stroke: #e0c995; stroke-width: 2; rx: 8; }
+        .t { font: 16px Microsoft YaHei, Arial; fill: #1f2933; }
+        .s { font: 13px Microsoft YaHei, Arial; fill: #5f6b76; }
+        .line { stroke: #315f8c; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+        .power { stroke: #9f3a38; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+        .sig { stroke: #2f6f5e; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      </style>
+    </defs>
+    <rect x="30" y="44" width="190" height="110" class="box4" />
+    <text x="60" y="82" class="t">220V AC输入</text>
+    <text x="60" y="112" class="s">L / N / PE</text>
+    <text x="60" y="136" class="s">空气开关 + 急停预留</text>
+
+    <rect x="280" y="44" width="210" height="110" class="box4" />
+    <text x="310" y="82" class="t">48V开关电源</text>
+    <text x="310" y="112" class="s">建议 48V 4.2A/200W</text>
+    <text x="310" y="136" class="s">只给HBS57H主电源</text>
+
+    <rect x="570" y="44" width="230" height="160" class="box2" />
+    <text x="608" y="82" class="t">HBS57H驱动器</text>
+    <text x="608" y="112" class="s">+VDC / GND</text>
+    <text x="608" y="136" class="s">PUL± / DIR± / ENA±</text>
+    <text x="608" y="160" class="s">A± / B± / Encoder</text>
+    <text x="608" y="184" class="s">ALM±报警输出</text>
+
+    <rect x="880" y="58" width="200" height="130" class="box3" />
+    <text x="918" y="98" class="t">57闭环步进电机</text>
+    <text x="918" y="128" class="s">A/B相动力线</text>
+    <text x="918" y="152" class="s">编码器反馈线</text>
+    <text x="918" y="176" class="s">带动16孔滤光片转轮</text>
+
+    <rect x="30" y="300" width="210" height="130" class="box3" />
+    <text x="62" y="340" class="t">STM32F407</text>
+    <text x="62" y="370" class="s">STEP / DIR / ENA</text>
+    <text x="62" y="394" class="s">HOME / ALM输入</text>
+    <text x="62" y="418" class="s">USB串口连接电脑</text>
+
+    <rect x="300" y="300" width="240" height="130" class="box2" />
+    <text x="332" y="340" class="t">3.3V转5V模块</text>
+    <text x="332" y="370" class="s">推荐：高速光耦隔离</text>
+    <text x="332" y="394" class="s">或单端转差分输出</text>
+    <text x="332" y="418" class="s">5V供电，GND参考</text>
+
+    <rect x="620" y="310" width="180" height="92" class="box" />
+    <text x="650" y="346" class="t">HOME传感器</text>
+    <text x="650" y="376" class="s">槽型光电开关</text>
+
+    <path d="M220 98 H280" class="power" />
+    <path d="M490 98 H570" class="power" />
+    <path d="M800 112 H880" class="power" />
+    <path d="M800 150 H880" class="sig" />
+    <path d="M240 354 H300" class="sig" />
+    <path d="M540 354 C590 354 590 210 620 190" class="sig" />
+    <path d="M620 356 C500 468 210 470 172 430" class="sig" />
+  </svg>
+
+  <h2>3. 部件清单与作用</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模块</th>
+        <th>建议型号/规格</th>
+        <th>作用</th>
+        <th>注意点</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>STM32开发板</td>
+        <td>STM32F407_V2</td>
+        <td>接收电脑串口命令，产生脉冲，控制方向，读取HOME和报警。</td>
+        <td>GPIO为3.3V，正式接驱动器前建议经过电平转换/隔离。</td>
+      </tr>
+      <tr>
+        <td>HBS57H闭环驱动器</td>
+        <td>蓝色数显闭环驱动器 V110</td>
+        <td>接收PUL/DIR脉冲，驱动57闭环步进电机，并读取编码器反馈。</td>
+        <td>供电24-48VDC；控制信号5-24V；不要带电插拔电机线和编码器线。</td>
+      </tr>
+      <tr>
+        <td>57闭环步进电机</td>
+        <td>1.5-2.3 N·m均可，优先配套线缆</td>
+        <td>驱动16孔滤光片转轮转动，每次旋转一个孔位。</td>
+        <td>电机A/B相和编码器颜色按卖家配套线缆/标签接，颜色不同时不要猜。</td>
+      </tr>
+      <tr>
+        <td>48V开关电源</td>
+        <td>48V 4.2A/200W 或 48V 5A</td>
+        <td>给HBS57H主电源供电。</td>
+        <td>48V只接驱动器主电源，不接STM32、不接12V卤钨灯。</td>
+      </tr>
+      <tr>
+        <td>5V降压/电源模块</td>
+        <td>24V或12V转5V，输出2-5A</td>
+        <td>给电平转换模块、传感器小模块、必要时给开发板5V供电。</td>
+        <td>电机主电源不要通过小降压模块供电。</td>
+      </tr>
+      <tr>
+        <td>3.3V转5V信号模块</td>
+        <td>高速光耦隔离板或单端转差分输出模块</td>
+        <td>把STM32的STEP/DIR变成HBS57H更稳定的5V输入。</td>
+        <td>脉冲最高只需几百Hz到几kHz，但仍建议买高速型，不买低速继电器型。</td>
+      </tr>
+      <tr>
+        <td>HOME传感器</td>
+        <td>槽型光电开关，5V或24V</td>
+        <td>开机寻找滤光片转轮机械零点。</td>
+        <td>若传感器输出24V，必须通过光耦/分压/输入模块再进STM32。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. 电源连接指南</h2>
+  <h3>4.1 48V主电源到HBS57H</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>来源</th>
+        <th>接到</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>48V开关电源 <code>V+</code></td>
+        <td>HBS57H <code>+VDC</code></td>
+        <td>驱动器主电源正极，手册范围为24-48VDC。</td>
+      </tr>
+      <tr>
+        <td>48V开关电源 <code>V-</code></td>
+        <td>HBS57H <code>GND</code></td>
+        <td>驱动器主电源负极。</td>
+      </tr>
+      <tr>
+        <td>220V输入 <code>PE</code></td>
+        <td>金属外壳、开关电源PE端</td>
+        <td>如果外壳有金属支架、DIN导轨、开关电源金属壳，建议可靠接地。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>禁止：</b>不要把48V接到STM32；不要把48V接到PUL/DIR控制端；不要带电插拔电机动力线和编码器线。第一次上电前，用万用表确认48V电源正负极。</p>
+  </div>
+
+  <h3>4.2 5V给信号转换模块</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>来源</th>
+        <th>接到</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>5V降压模块 <code>5V+</code></td>
+        <td>3.3V转5V模块 <code>VCC</code></td>
+        <td>给差分输出芯片或高速光耦输出侧供电。</td>
+      </tr>
+      <tr>
+        <td>5V降压模块 <code>GND</code></td>
+        <td>信号模块 <code>GND</code></td>
+        <td>若是非隔离差分模块，需要与STM32共地；若是真隔离模块，按卖家说明分输入地和输出地。</td>
+      </tr>
+      <tr>
+        <td>STM32 <code>GND</code></td>
+        <td>信号模块输入侧 <code>GND_IN</code></td>
+        <td>STM32输出3.3V信号必须有参考地。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>5. STM32到HBS57H控制信号接线</h2>
+  <h3>5.1 推荐接法：5V差分输出</h3>
+  <p>如果你买的是“单端集电极转差分输出”“3.3V输入转5V差分输出”“TTL转差分输出”这类模块，优先按下面接法。</p>
+  <table>
+    <thead>
+      <tr>
+        <th>STM32侧</th>
+        <th>转换模块</th>
+        <th>HBS57H侧</th>
+        <th>作用</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>PA8 / TIM1_CH1</code></td>
+        <td><code>STEP_IN</code> 或 <code>PUL_IN</code></td>
+        <td><code>PUL+</code> / <code>PUL-</code></td>
+        <td>脉冲。一个有效脉冲对应电机转过一个细分单位。</td>
+      </tr>
+      <tr>
+        <td><code>PA9</code></td>
+        <td><code>DIR_IN</code></td>
+        <td><code>DIR+</code> / <code>DIR-</code></td>
+        <td>方向。改变电平后，至少等待5us再发脉冲。</td>
+      </tr>
+      <tr>
+        <td><code>PB0</code> 可选</td>
+        <td><code>ENA_IN</code></td>
+        <td><code>ENA+</code> / <code>ENA-</code></td>
+        <td>使能/释放控制。第一版可以不接，ENA悬空。</td>
+      </tr>
+      <tr>
+        <td><code>PB1</code> 输入</td>
+        <td>报警输入隔离模块</td>
+        <td><code>ALM+</code> / <code>ALM-</code></td>
+        <td>读取驱动器报警。第一版可先不接，调通后再加。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <p><b>为什么推荐差分：</b>滤光片转轮上方有卤钨灯、风扇、电源、SSR等干扰源。差分信号比单端5V更抗干扰，线长一点也更稳。虽然你的脉冲频率不高，但样机内部电磁环境不算干净，差分/隔离是花小钱买省心。</p>
+  </div>
+
+  <h3>5.2 可选接法：5V单端输出</h3>
+  <p>如果模块只有5V单端输出，没有差分输出，也可以用。HBS57H手册说明控制信号支持5V-24V且无需外串电阻。</p>
+  <table>
+    <thead>
+      <tr>
+        <th>接法</th>
+        <th>HBS57H端子</th>
+        <th>连接方式</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>共阴极接法</td>
+        <td><code>PUL-</code>、<code>DIR-</code>接GND</td>
+        <td>5V脉冲输出接<code>PUL+</code>；5V方向输出接<code>DIR+</code></td>
+        <td>适合推挽5V输出模块。</td>
+      </tr>
+      <tr>
+        <td>共阳极接法</td>
+        <td><code>PUL+</code>、<code>DIR+</code>接+5V</td>
+        <td>模块NPN/开集电极输出拉低<code>PUL-</code>、<code>DIR-</code></td>
+        <td>适合NPN开集电极输出模块。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <p><b>不要混着接：</b>差分模块就按差分接；单端模块就按共阴极或共阳极接。买模块前让卖家发一张“接步进驱动器PUL/DIR”的接线图，确认输入支持3.3V，输出是5V或24V。</p>
+  </div>
+
+  <h2>6. HBS57H到电机接线</h2>
+  <h3>6.1 电机动力线</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>HBS57H端子</th>
+        <th>含义</th>
+        <th>手册颜色参考</th>
+        <th>实际操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>A+</code></td>
+        <td>A相绕组+</td>
+        <td>白/红</td>
+        <td rowspan="4">优先按电机标签和配套线缆定义接。不同批次颜色可能不同，不要只凭颜色猜。</td>
+      </tr>
+      <tr>
+        <td><code>A-</code></td>
+        <td>A相绕组-</td>
+        <td>绿</td>
+      </tr>
+      <tr>
+        <td><code>B+</code></td>
+        <td>B相绕组+</td>
+        <td>蓝/黄</td>
+      </tr>
+      <tr>
+        <td><code>B-</code></td>
+        <td>B相绕组-</td>
+        <td>黑/蓝</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>6.2 编码器线</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>HBS57H端子</th>
+        <th>含义</th>
+        <th>手册颜色参考</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>EB+</code></td><td>B相正输入</td><td>黄</td><td>编码器反馈，闭环必须接。</td></tr>
+      <tr><td><code>EB-</code></td><td>B相负输入</td><td>绿</td><td>不要与电机动力线混在一起走线。</td></tr>
+      <tr><td><code>EA+</code></td><td>A相正输入</td><td>黑</td><td>建议使用配套屏蔽编码器线。</td></tr>
+      <tr><td><code>EA-</code></td><td>A相负输入</td><td>蓝</td><td>接错可能报位置超差或无法闭环。</td></tr>
+      <tr><td><code>VCC</code></td><td>编码器+5V</td><td>红</td><td>由驱动器给编码器供电。</td></tr>
+      <tr><td><code>EGND</code></td><td>编码器地</td><td>白</td><td>与驱动器编码器地对应。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. HOME原点传感器接线</h2>
+  <p>滤光片转轮不要只依靠“累计旋转”长期运行。每次开机先HOME，之后再按孔位累计旋转。这样即使断电、手动碰到转轮、丢脉冲、装配偏差，都能回到明确参考点。</p>
+  <table>
+    <thead>
+      <tr>
+        <th>传感器类型</th>
+        <th>供电</th>
+        <th>输出接STM32</th>
+        <th>建议</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>5V槽型光电开关</td>
+        <td>5V + GND</td>
+        <td>输出接STM32输入脚，例如<code>PC13</code>，上拉到3.3V</td>
+        <td>最简单，适合桌面样机。</td>
+      </tr>
+      <tr>
+        <td>24V NPN槽型光电开关</td>
+        <td>24V + 0V</td>
+        <td>通过光耦输入模块或分压保护后接STM32</td>
+        <td>工业抗干扰更好，但不要把24V直接进STM32。</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p><b>机械布置：</b>在转轮边缘做一个挡片或缺口；挡片进入槽型光电开关时产生HOME信号。HOME点不一定就是滤光片1完全对准相机的位置，通常还需要一个<code>home_offset_pulses</code>偏移量。</p>
+  </div>
+
+  <h2>8. HBS57H参数设置建议</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>参数</th>
+        <th>手册含义</th>
+        <th>建议值</th>
+        <th>原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>P-00</code></td>
+        <td>细分脉冲数，范围200-60000，出厂1600</td>
+        <td>第一版用<code>1600</code></td>
+        <td>16孔转轮时，每孔正好100脉冲，计算简单、定位足够。</td>
+      </tr>
+      <tr>
+        <td><code>P-01</code></td>
+        <td>闭环保持电流，范围1.0-6.0A，出厂2.0A</td>
+        <td><code>1.5-2.0A</code>起步</td>
+        <td>转轮负载不大，先降低发热；若定位不稳再增加。</td>
+      </tr>
+      <tr>
+        <td><code>P-08</code></td>
+        <td>脉冲模式：0为脉冲+方向，1为AB正交</td>
+        <td><code>0</code></td>
+        <td>STM32最容易实现，代码简单。</td>
+      </tr>
+      <tr>
+        <td><code>P-09</code></td>
+        <td>运行模式：0脉冲模式，1内部位置模式，2速度模式</td>
+        <td><code>0</code></td>
+        <td>让上位机/STM32完全控制每次转动角度。</td>
+      </tr>
+      <tr>
+        <td><code>P-13</code></td>
+        <td>ENA使能控制极性</td>
+        <td>第一版先不接ENA</td>
+        <td>手册建议一般情况下ENA悬空即可，减少使能逻辑误判。</td>
+      </tr>
+      <tr>
+        <td><code>P-18</code></td>
+        <td>开闭环选择：0开环，1闭环</td>
+        <td><code>1</code></td>
+        <td>使用闭环电机，防止丢步后无感知。</td>
+      </tr>
+      <tr>
+        <td><code>P-25</code></td>
+        <td>平滑滤波使能</td>
+        <td><code>1</code>或保持默认后测试</td>
+        <td>如果STM32暂时没有加减速，开启平滑更稳；若代码已有平滑加减速，可保持默认。</td>
+      </tr>
+      <tr>
+        <td><code>P-99</code></td>
+        <td>位置环加减速时间</td>
+        <td>先保持默认</td>
+        <td>转轮速度低，先用STM32控制脉冲频率和停顿时间即可。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>9. 16孔转轮脉冲计算</h2>
+  <div class="grid-2">
+    <div class="note">
+      <p><b>已确定结构：</b>16个滤光片孔位，整圈360度，每孔间隔为：</p>
+      <pre>360 / 16 = 22.5度</pre>
+    </div>
+    <div class="note">
+      <p><b>推荐细分：</b>HBS57H的<code>P-00 = 1600</code>脉冲/圈，则每孔脉冲数为：</p>
+      <pre>1600 / 16 = 100 pulses</pre>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>P-00脉冲/圈</th>
+        <th>16孔每孔脉冲</th>
+        <th>每脉冲角度</th>
+        <th>适用建议</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1600</td>
+        <td>100</td>
+        <td>0.225度</td>
+        <td>首选，简单且足够稳定。</td>
+      </tr>
+      <tr>
+        <td>3200</td>
+        <td>200</td>
+        <td>0.1125度</td>
+        <td>更细腻，但脉冲数量翻倍，调试略复杂。</td>
+      </tr>
+      <tr>
+        <td>6400</td>
+        <td>400</td>
+        <td>0.05625度</td>
+        <td>一般没必要，除非机械结构非常稳且需要更平滑。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>10. STM32操控逻辑</h2>
+  <h3>10.1 基本动作</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>动作</th>
+        <th>STM32做什么</th>
+        <th>HBS57H响应</th>
+        <th>完成条件</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>设置方向</td>
+        <td>设置DIR引脚高/低</td>
+        <td>改变旋转方向</td>
+        <td>等待至少5us后再发STEP。</td>
+      </tr>
+      <tr>
+        <td>走一个孔</td>
+        <td>发送100个STEP脉冲</td>
+        <td>电机转动22.5度</td>
+        <td>脉冲结束后等待500-1000ms稳定。</td>
+      </tr>
+      <tr>
+        <td>走到指定孔</td>
+        <td>计算当前位置到目标孔的孔位差</td>
+        <td>按最短方向或固定方向转动</td>
+        <td>更新<code>current_hole</code>。</td>
+      </tr>
+      <tr>
+        <td>HOME复位</td>
+        <td>低速搜索HOME传感器边沿</td>
+        <td>转轮回到机械零点</td>
+        <td>再走偏移脉冲，对准滤光片1。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>10.2 建议脉冲速度</h3>
+  <p>你不在乎切换时间，每个孔停顿1-2秒完全可以。所以一开始把速度设慢一些，先追求稳定。</p>
+  <table>
+    <thead>
+      <tr>
+        <th>阶段</th>
+        <th>STEP频率</th>
+        <th>100脉冲耗时</th>
+        <th>建议</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>首次调试</td>
+        <td>50-100 Hz</td>
+        <td>1-2秒</td>
+        <td>最稳，肉眼可观察每次转动。</td>
+      </tr>
+      <tr>
+        <td>正常采集</td>
+        <td>200-500 Hz</td>
+        <td>0.2-0.5秒</td>
+        <td>足够快，停稳后再拍照。</td>
+      </tr>
+      <tr>
+        <td>快速切换</td>
+        <td>800-1500 Hz</td>
+        <td>0.07-0.13秒</td>
+        <td>后期再试，需要加减速。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>10.3 伪代码</h3>
+  <pre><code>// 以 P-00 = 1600、16孔转轮为例
+#define HOLE_COUNT        16
+#define PULSES_PER_REV    1600
+#define PULSES_PER_HOLE   (PULSES_PER_REV / HOLE_COUNT)  // 100
+
+int current_hole = 1;
+int home_offset_pulses = 0;  // 实装后标定，例如 8、12、-5
+
+void step_once(uint32_t high_us, uint32_t low_us) {
+    STEP_HIGH();
+    delay_us(high_us);       // HBS57H要求脉冲宽度不小于2.5us
+    STEP_LOW();
+    delay_us(low_us);        // 低电平宽度不小于2.5us
+}
+
+void move_pulses(int32_t pulses, bool dir, uint32_t freq_hz) {
+    uint32_t period_us = 1000000UL / freq_hz;
+    uint32_t high_us = 20;   // 调试可用20-50us，远大于2.5us
+    uint32_t low_us = period_us - high_us;
+
+    SET_DIR(dir);
+    delay_us(10);            // DIR提前PUL至少5us
+
+    for (int32_t i = 0; i < pulses; i++) {
+        step_once(high_us, low_us);
+    }
+}
+
+void move_one_hole(bool dir) {
+    move_pulses(PULSES_PER_HOLE, dir, 100);  // 100Hz调试很稳
+    delay_ms(800);                           // 等转轮机械稳定再拍照
+}
+
+void goto_hole(int target) {
+    if (target < 1 || target > HOLE_COUNT) return;
+
+    int delta = target - current_hole;
+    if (delta < 0) delta += HOLE_COUNT;
+
+    // 第一版建议固定单方向转，避免机械回差影响
+    for (int i = 0; i < delta; i++) {
+        move_one_hole(true);
+    }
+    current_hole = target;
+}
+
+bool home_sensor_active(void) {
+    return READ_HOME_SENSOR() == 1;
+}
+
+void wheel_home(void) {
+    // 1. 先离开HOME区域，防止开机正好压在传感器上
+    for (int i = 0; i < 300 && home_sensor_active(); i++) {
+        move_pulses(1, true, 80);
+    }
+
+    // 2. 慢速寻找HOME
+    int timeout = 4000;
+    while (!home_sensor_active() && timeout-- > 0) {
+        move_pulses(1, false, 80);
+    }
+    if (timeout <= 0) {
+        report_error(HOME_TIMEOUT);
+        return;
+    }
+
+    // 3. 反向退出，再更慢速二次靠近，取边沿更准
+    move_pulses(30, true, 80);
+    while (!home_sensor_active()) {
+        move_pulses(1, false, 40);
+    }
+
+    // 4. 走机械偏移，让滤光片1正对黑白相机光轴
+    if (home_offset_pulses >= 0) {
+        move_pulses(home_offset_pulses, true, 80);
+    } else {
+        move_pulses(-home_offset_pulses, false, 80);
+    }
+
+    current_hole = 1;
+}</code></pre>
+
+  <h2>11. 与电脑的控制命令</h2>
+  <p>电脑通过USB串口给STM32发命令；电脑自己控制两个相机，STM32只负责转轮、电机、灯、风扇、门和状态返回。为了简单，电机部分可以沿用6字节固定帧：</p>
+  <pre><code>帧格式：AA 55 CMD P1 P2 SUM
+SUM = (AA + 55 + CMD + P1 + P2) & 0xFF</code></pre>
+  <table>
+    <thead>
+      <tr>
+        <th>命令</th>
+        <th>CMD</th>
+        <th>P1</th>
+        <th>P2</th>
+        <th>STM32动作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>转轮HOME</td>
+        <td><code>0x02</code></td>
+        <td>0</td>
+        <td>0</td>
+        <td>执行<code>wheel_home()</code>，成功后返回当前孔位=1。</td>
+      </tr>
+      <tr>
+        <td>转到指定孔</td>
+        <td><code>0x03</code></td>
+        <td>1-16</td>
+        <td>速度档：0慢/1中/2快</td>
+        <td>转到目标孔位，停稳后返回OK。</td>
+      </tr>
+      <tr>
+        <td>下一个孔</td>
+        <td><code>0x04</code></td>
+        <td>0</td>
+        <td>速度档</td>
+        <td>当前孔位+1，超过16回到1。</td>
+      </tr>
+      <tr>
+        <td>读取状态</td>
+        <td><code>0x0C</code></td>
+        <td>0</td>
+        <td>0</td>
+        <td>返回当前孔位、HOME状态、驱动器报警、电源/温度状态。</td>
+      </tr>
+      <tr>
+        <td>急停</td>
+        <td><code>0xFF</code></td>
+        <td>0</td>
+        <td>0</td>
+        <td>停止发脉冲，关闭灯，保持风扇；必要时切断电机供电。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>12. 启动顺序</h2>
+  <div class="flow">
+    <div><span class="tag">1</span><b>上电检查</b><br><span class="small">确认48V、5V、STM32供电正常，HBS57H显示run或无报警。</span></div>
+    <div><span class="tag">2</span><b>关灯启动</b><br><span class="small">卤钨灯和LED默认关闭，防止热量和误曝光。</span></div>
+    <div><span class="tag">3</span><b>风扇先开</b><br><span class="small">驱动器区域和灯区风扇先运行。</span></div>
+    <div><span class="tag">4</span><b>转轮HOME</b><br><span class="small">低速找原点，二次靠近，走offset对准孔1。</span></div>
+    <div><span class="tag">5</span><b>等待采集</b><br><span class="small">电脑控制相机，STM32按命令切换孔位。</span></div>
+  </div>
+
+  <h2>13. 单次多光谱采集流程</h2>
+  <ol>
+    <li>电脑发送<code>0x02</code>，STM32执行HOME。</li>
+    <li>电脑让黑白相机准备采集，关闭RGB灯。</li>
+    <li>电脑发送<code>0x03, P1=1</code>，转到第1个滤光片孔位。</li>
+    <li>STM32转动完成后等待<code>500-1000ms</code>，返回OK。</li>
+    <li>STM32打开卤钨灯，预热/稳定<code>1-3s</code>，电脑触发黑白相机曝光。</li>
+    <li>拍完后关闭或保持卤钨灯，转到下一个滤光片孔位。</li>
+    <li>重复16个孔位，得到一组多光谱图像。</li>
+    <li>关闭卤钨灯，打开RGB LED，电脑采集RGB图像。</li>
+    <li>全部采集完成后关灯，风扇延时运行。</li>
+  </ol>
+  <div class="note">
+    <p><b>建议：</b>第一版可以每个孔位“转到位 - 停1秒 - 拍照”，这样容易排查错位、抖动和光照稳定问题。后期再把停顿缩短。</p>
+  </div>
+
+  <h2>14. 调试步骤</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>步骤</th>
+        <th>只接哪些东西</th>
+        <th>测试内容</th>
+        <th>通过标准</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1. 驱动器空载上电</td>
+        <td>48V电源 + HBS57H，不接电机</td>
+        <td>测量48V，查看数码管和报警。</td>
+        <td>无过压/欠压报警。</td>
+      </tr>
+      <tr>
+        <td>2. 接电机和编码器</td>
+        <td>HBS57H + 电机动力线 + 编码器线</td>
+        <td>上电后轻拧电机轴，确认锁定。</td>
+        <td>电机锁定，无Er02/Er05等报警。</td>
+      </tr>
+      <tr>
+        <td>3. 驱动器JOG</td>
+        <td>不接STM32</td>
+        <td>用HBS57H面板<code>P-06</code>点动。</td>
+        <td>正反转正常，方向可控。</td>
+      </tr>
+      <tr>
+        <td>4. STM32发慢脉冲</td>
+        <td>STM32 + 转换模块 + HBS57H</td>
+        <td>50-100Hz发100脉冲。</td>
+        <td>转轮稳定转一个孔位。</td>
+      </tr>
+      <tr>
+        <td>5. HOME测试</td>
+        <td>加槽型光电开关</td>
+        <td>手动遮挡传感器，观察STM32输入。</td>
+        <td>输入状态稳定切换，无抖动误判。</td>
+      </tr>
+      <tr>
+        <td>6. 联机采集</td>
+        <td>电脑 + STM32 + 相机</td>
+        <td>电脑发孔位命令，拍摄并记录孔位。</td>
+        <td>16个孔位依次正确，无错位。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>15. 常见问题</h2>
+  <h3>15.1 可以不用信号升压模块，STM32直接接吗？</h3>
+  <p>不建议作为正式方案。HBS57H的控制端支持5V-24V，手册逻辑输入电流典型约10mA；STM32 GPIO是3.3V，单脚驱动能力有限。直接接有时能动，但抗干扰和长期稳定性差。建议用3.3V输入、5V输出的高速隔离/差分模块。</p>
+
+  <h3>15.2 HBS57H内部有原点功能，要不要用？</h3>
+  <p>第一版不建议用驱动器内部原点/多段位功能。它虽然能做原点和内部位置模式，但会让“电脑-STM32-相机”的状态同步变复杂。更简单可靠的方式是：HOME传感器接STM32，由STM32发脉冲并维护当前孔位。</p>
+
+  <h3>15.3 用固定方向转还是最短路径转？</h3>
+  <p>第一版建议固定一个方向转。固定方向可以避开齿隙、轴承间隙和转轮装配回差带来的重复定位问题。等机械结构稳定后，再考虑最短路径。</p>
+
+  <h3>15.4 48V会不会更热？</h3>
+  <p>在同样低速和同样电流设置下，48V不是必然明显更热；发热主要取决于电流、保持时间、散热和负载。48V的好处是动态余量更大。你的转轮低速运行，建议通过<code>P-01</code>把保持电流先设低一些，并给驱动器附近留风扇。</p>
+
+  <h2>16. 购买时给商家的确认文字</h2>
+  <pre><code>我用于STM32控制HBS57H闭环步进驱动器，STM32输出3.3V STEP/DIR脉冲。
+请确认这个模块是否满足：
+1. 输入端支持3.3V GPIO触发；
+2. 输出端可提供5V差分信号，能直接接步进驱动器PUL+/PUL-、DIR+/DIR-；
+3. 输出频率至少支持20kHz以上，最好是高速光耦或差分驱动，不是继电器输出；
+4. 模块供电为5V，是否需要输入侧和输出侧共地请说明；
+5. 请提供接HBS57H或类似步进驱动器的接线图。</code></pre>
+
+  <h2>17. v1.0推荐接线汇总</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>线路</th>
+        <th>推荐接法</th>
+        <th>线材建议</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>48V电源到HBS57H</td>
+        <td>48V+到+VDC，48V-到GND</td>
+        <td>0.75-1.0mm²多股铜线</td>
+      </tr>
+      <tr>
+        <td>HBS57H到电机A/B相</td>
+        <td>A+、A-、B+、B-按配套线缆接</td>
+        <td>使用电机配套动力线</td>
+      </tr>
+      <tr>
+        <td>HBS57H到编码器</td>
+        <td>EA±、EB±、VCC、EGND按配套线缆接</td>
+        <td>使用屏蔽编码器线</td>
+      </tr>
+      <tr>
+        <td>STM32到转换模块</td>
+        <td>STEP、DIR、GND，ENA可选</td>
+        <td>0.2-0.3mm²信号线，短线即可</td>
+      </tr>
+      <tr>
+        <td>转换模块到HBS57H</td>
+        <td>PUL±、DIR±，ENA±可选</td>
+        <td>屏蔽双绞线更好</td>
+      </tr>
+      <tr>
+        <td>HOME传感器到STM32</td>
+        <td>5V传感器可直接转3.3V输入；24V传感器需隔离</td>
+        <td>0.2-0.3mm²信号线</td>
+      </tr>
+      <tr>
+        <td>ALM报警到STM32</td>
+        <td>通过光耦输入模块读取</td>
+        <td>0.2-0.3mm²信号线</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <p><b>最后检查清单：</b>48V正负极确认；PUL/DIR信号电压确认；电机线和编码器线确认；HOME传感器不会输出24V直进STM32；首次运行不要装滤光片，先空转转轮；确认每次100脉冲准确转过一个孔位后，再安装滤光片。</p>
+  </div>
+
+</main>
+</body>
+</html>

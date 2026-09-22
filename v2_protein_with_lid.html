@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>v2 蛋白质模型 — v2_protein_with_lid</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      background: linear-gradient(145deg, #0f172a 0%, #1e293b 45%, #334155 100%);
+      color: #e2e8f0;
+      padding: 2rem 1.5rem 3rem;
+      line-height: 1.65;
+    }
+    .card {
+      max-width: 720px;
+      margin: 0 auto;
+      background: linear-gradient(160deg, rgba(30,41,59,.95), rgba(15,23,42,.98));
+      border: 1px solid rgba(148,163,184,.25);
+      border-radius: 20px;
+      padding: 2.2rem 2rem 2rem;
+      box-shadow: 0 24px 48px rgba(0,0,0,.35);
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.95rem;
+      color: #e879f9;
+      background: rgba(255,255,255,.08);
+      padding: .35rem .85rem;
+      border-radius: 999px;
+      margin-bottom: 1rem;
+    }
+    h1 { font-size: 2rem; font-weight: 700; color: #f8fafc; margin-bottom: .35rem; }
+    .subtitle { font-size: 1.15rem; color: #94a3b8; margin-bottom: 1.8rem; }
+    .hero {
+      text-align: center;
+      padding: 1.6rem 1rem;
+      margin-bottom: 1.6rem;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #c026d322, #e879f918);
+      border: 1px solid #c026d355;
+    }
+    .hero-label { font-size: 1.2rem; color: #cbd5e1; margin-bottom: .5rem; }
+    .hero-value {
+      font-size: 4.2rem;
+      font-weight: 800;
+      line-height: 1.1;
+      background: linear-gradient(90deg, #e879f9, #fdf4ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-unit { font-size: 2rem; font-weight: 600; }
+    .sub-metric { font-size: 1.1rem; color: #94a3b8; margin-top: .75rem; }
+    .sub-metric strong { color: #e2e8f0; }
+    .extra { font-size: 1rem; color: #e879f9; text-align: center; margin-bottom: 1.4rem; }
+    .body { font-size: 1.22rem; color: #cbd5e1; text-align: justify; }
+    .anomaly {
+      margin-top: 1.6rem;
+      padding: 1.2rem 1.1rem;
+      border-radius: 12px;
+      background: rgba(239,68,68,.12);
+      border: 1px solid rgba(248,113,113,.35);
+    }
+    .anomaly h3 { font-size: 1.15rem; color: #fca5a5; margin-bottom: .75rem; }
+    .anomaly p { font-size: 1.1rem; color: #fecaca; margin-bottom: .55rem; }
+    .lab { color: #86efac; font-weight: 700; }
+    .pred { color: #fde047; font-weight: 700; }
+    footer { margin-top: 1.8rem; font-size: 0.9rem; color: #64748b; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">v2_protein_with_lid</span>
+    <h1>v2 蛋白质模型</h1>
+    <p class="subtitle">有盖采集 · P1_excl24_47_with_lid</p>
+    <div class="hero">
+      <p class="hero-label">Holdout 平均相对精度</p>
+      <p class="hero-value">93.8<span class="hero-unit">%</span></p>
+      <p class="sub-metric">Holdout MAPE = <strong>6.19%</strong></p>
+    </div>
+    <p class="extra">全 48 条 MAPE 9.45%（优于无盖 10.6%）· 全量训练 holdout 10.30%</p>
+    <p class="body">有盖光谱从 protein_no_lid 热启动；排除 24/47 后 holdout MAPE 6.19%，平均相对精度约 93.8%。全 48 条评估 MAPE 9.45%，多数样品优于无盖。推荐按有盖/无盖分别加载权重预测，化验标签与开盖一致。</p>
+    <div class="anomaly">
+      <h3>异常化验点（index 24 / 47）</h3>
+      <p><strong>index 24 · SP259</strong>：化验 <span class="lab">19.28%</span>，有盖预测约 <span class="pred">24.77%</span>，相对误差约 <strong>28.5%</strong>（较无盖 52% 明显改善，仍偏高）。</p>
+      <p><strong>index 47 · 赵 SP10</strong>：化验 <span class="lab">17.03%</span>，有盖预测约 <span class="pred">24.63%</span>，相对误差约 <strong>44.6%</strong>，仍为最差档样品。</p>
+    </div>
+    <footer>device2 v2 · 2026-05</footer>
+  </div>
+</body>
+</html>

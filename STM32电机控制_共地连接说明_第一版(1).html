@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>STM32电机控制——共地连接说明（第一版）</title>
+  <style>
+    :root{--ink:#172033;--muted:#5d6675;--line:#dce2ea;--blue:#1769d2;--red:#c9362b;--green:#16815f;--amber:#9a6500;--bg:#f4f7fb}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "Microsoft YaHei",Arial,sans-serif}
+    main{max-width:1180px;margin:24px auto;padding:34px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 28px #1d35570d}
+    h1{margin:0 0 8px;font-size:30px} h2{margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid #e8edf4;font-size:22px}
+    .lead{color:var(--muted);margin:0 0 24px}.ok,.warn,.note{padding:14px 18px;margin:14px 0;border-radius:9px}
+    .ok{background:#eaf8f2;border-left:5px solid var(--green)}.warn{background:#fff1ef;border-left:5px solid var(--red)}.note{background:#fff8e6;border-left:5px solid #e3a008}
+    code{background:#eef3f8;padding:2px 6px;border-radius:4px;font-family:Consolas,monospace} pre{white-space:pre-wrap;background:#101827;color:#edf5ff;padding:20px;border-radius:10px;overflow:auto;line-height:1.7}
+    table{width:100%;border-collapse:collapse;margin:12px 0 20px}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#eef3f8}
+    .diagram{overflow-x:auto;border:1px solid var(--line);border-radius:10px;padding:14px;background:#fbfcfe}.diagram svg{display:block;min-width:1020px;width:100%;height:auto}
+    .yes{color:var(--green);font-weight:700}.no{color:var(--red);font-weight:700}.small{font-size:14px;color:var(--muted)}
+    @media(max-width:760px){main{margin:0;padding:22px 14px;border:0;border-radius:0}table{font-size:13px}}
+  </style>
+</head>
+<body><main>
+  <h1>STM32电机控制——共地连接说明</h1>
+  <p class="lead">第一版配置：STM32F407（电脑USB供电）＋ DST-1R4P-D（LM2596提供5V）＋ HBS57H ＋ 57闭环步进电机。</p>
+
+  <div class="ok"><b>一句话结论：</b>只在各自功能区域内部共地。STM32输入侧、24V/DST供电侧、48V电机侧和12V灯具侧之间不额外并接直流负极；三台开关电源的PE保护地和金属机箱则统一接保护地。</div>
+
+  <h2>1. 哪些引脚必须连接在一起</h2>
+  <table>
+    <thead><tr><th>地电位区域</th><th>必须连接</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>STM32信号输入侧</td><td><code>STM32 GND → DST 1−</code><br><code>STM32 GND → DST 2−</code></td><td>1−和2−都以STM32 GND为3.3V信号参考；PA8接1+，PA9接2+。</td></tr>
+      <tr><td>24V/5V模块供电侧</td><td><code>LRS-250-24 V− → LM2596 IN−</code><br><code>LM2596 OUT− → DST GND</code></td><td>LM2596为非隔离降压模块，通常IN−与OUT−内部相通，因此这些端子属于同一地电位区域。</td></tr>
+      <tr><td>48V电机动力侧</td><td><code>LRS-200-48 V− → HBS57H GND</code></td><td>只作为HBS57H主电源负极，不接STM32 GND。</td></tr>
+      <tr><td>编码器回路</td><td><code>电机编码器GND → HBS57H EGND</code></td><td>使用配套编码器线；EGND是编码器专用地，不要擅自接到48V GND。</td></tr>
+      <tr><td>12V灯具回路</td><td><code>LRS-400-12 V− → 两路灯具控制回路负极</code></td><td>保持在灯具区域内，不接STM32 GND或48V GND。</td></tr>
+      <tr><td>保护地PE</td><td>三台开关电源PE、金属机箱、金属安装板</td><td>PE是安全保护地，不是STM32信号GND。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2. 共地/隔离示意图</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1120 590" role="img" aria-label="STM32、DST、HBS57H和三台开关电源共地说明图">
+      <defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0 0L0 6L8 3z" fill="#1769d2"/></marker><style>.b{fill:#fff;stroke:#8b98aa;stroke-width:2}.t{font:700 17px Microsoft YaHei;fill:#172033}.s{font:14px Microsoft YaHei;fill:#465266}.g{stroke:#151b24;stroke-width:3;fill:none}.sig{stroke:#1769d2;stroke-width:3;fill:none;marker-end:url(#a)}.dash{stroke:#c9362b;stroke-width:3;stroke-dasharray:9 7}.zone{fill:none;stroke-width:3;stroke-dasharray:8 6}</style></defs>
+      <rect x="20" y="30" width="500" height="230" rx="14" class="zone" stroke="#1769d2"/><text x="38" y="58" class="t">区域A：STM32信号输入侧</text>
+      <rect x="52" y="90" width="185" height="125" rx="8" class="b"/><text x="78" y="124" class="t">STM32F407</text><text x="78" y="154" class="s">PA8 STEP / PA9 DIR</text><text x="78" y="184" class="s">GND</text>
+      <rect x="314" y="78" width="175" height="150" rx="8" class="b"/><text x="334" y="112" class="t">DST输入侧</text><text x="334" y="144" class="s">1+ / 1−</text><text x="334" y="174" class="s">2+ / 2−</text><text x="334" y="204" class="s">1−、2−接STM32 GND</text>
+      <path d="M237 142H314M237 178H314" class="sig"/>
+
+      <rect x="550" y="30" width="550" height="230" rx="14" class="zone" stroke="#16815f"/><text x="568" y="58" class="t">区域B：24V / LM2596 / DST供电侧</text>
+      <rect x="580" y="90" width="145" height="125" rx="8" class="b"/><text x="596" y="122" class="t">LRS-250-24</text><text x="596" y="153" class="s">V+ / V−</text>
+      <rect x="770" y="90" width="135" height="125" rx="8" class="b"/><text x="790" y="122" class="t">LM2596</text><text x="790" y="153" class="s">IN± / OUT±</text>
+      <rect x="948" y="90" width="125" height="125" rx="8" class="b"/><text x="962" y="122" class="t">DST供电</text><text x="962" y="153" class="s">VCC / GND</text>
+      <path d="M725 175H770M905 175H948" class="g"/><text x="642" y="238" class="s">V− = IN− = OUT− = DST GND</text>
+
+      <line x1="520" y1="50" x2="550" y2="240" class="dash"/><text x="435" y="287" class="t" fill="#c9362b">禁止连接：STM32 GND ↔ DST供电侧GND</text>
+
+      <rect x="20" y="325" width="720" height="200" rx="14" class="zone" stroke="#9a6500"/><text x="38" y="354" class="t">区域C：48V电机动力侧</text>
+      <rect x="52" y="385" width="175" height="110" rx="8" class="b"/><text x="70" y="418" class="t">LRS-200-48</text><text x="70" y="451" class="s">V−</text>
+      <rect x="310" y="374" width="200" height="135" rx="8" class="b"/><text x="344" y="408" class="t">HBS57H</text><text x="344" y="440" class="s">GND（48V负极）</text><text x="344" y="472" class="s">EGND（编码器专用）</text>
+      <rect x="590" y="385" width="120" height="110" rx="8" class="b"/><text x="608" y="418" class="t">电机</text><text x="608" y="451" class="s">编码器GND</text>
+      <path d="M227 447H310M510 464H590" class="g"/>
+
+      <rect x="770" y="325" width="330" height="200" rx="14" class="zone" stroke="#8b5cf6"/><text x="788" y="354" class="t">区域D：12V灯具侧</text>
+      <rect x="802" y="392" width="130" height="95" rx="8" class="b"/><text x="815" y="424" class="t">LRS-400-12</text><text x="815" y="456" class="s">V−</text>
+      <rect x="968" y="392" width="100" height="95" rx="8" class="b"/><text x="987" y="424" class="t">灯具</text><text x="987" y="456" class="s">负极回路</text><path d="M932 450H968" class="g"/>
+
+      <text x="34" y="568" class="t">PE保护地：三台电源PE + 金属机箱统一连接；PE不等于任何一路DC GND。</text>
+    </svg>
+  </div>
+
+  <h2>3. 第一版明确禁止的连接</h2>
+  <div class="warn">
+    <ul>
+      <li><span class="no">不要连接</span> STM32 GND 与 DST-1R4P-D供电端GND。输入通过1−、2−引用STM32 GND，输出侧由光耦隔离。</li>
+      <li><span class="no">不要连接</span> HBS57H主电源GND与STM32 GND或DST供电GND。</li>
+      <li><span class="no">不要连接</span> LRS-400-12 V−、LRS-250-24 V−、LRS-200-48 V−三路直流负极。</li>
+      <li><span class="no">不要连接</span> HBS57H EGND与48V主电源GND；EGND只按配套编码器线连接。</li>
+      <li><span class="no">不要把</span> PE保护地当成5V/12V/24V/48V直流负极使用。</li>
+    </ul>
+  </div>
+
+  <h2>4. 实际接线清单</h2>
+  <pre>LRS-250-24 V−  → LM2596 IN−
+LM2596 OUT−     → DST-1R4P-D GND
+LM2596 OUT+     → DST-1R4P-D VCC（先调至5.00V）
+
+STM32 GND       → DST-1R4P-D 1−
+STM32 GND       → DST-1R4P-D 2−
+STM32 PA8       → DST-1R4P-D 1+
+STM32 PA9       → DST-1R4P-D 2+
+
+DST A+ / A−     → HBS57H PUL+ / PUL−
+DST B+ / B−     → HBS57H DIR+ / DIR−
+控制信号只接差分对，不额外接GND
+
+LRS-200-48 V−   → HBS57H GND
+编码器GND       → HBS57H EGND（仅用配套编码器线）</pre>
+
+  <div class="note"><b>万用表检查：</b>断电状态下，LM2596 IN−与OUT−通常导通；STM32 GND与DST供电GND应保持隔离；48V GND、24V V−和12V V−之间不应由你额外接线短接。</div>
+</main></body></html>

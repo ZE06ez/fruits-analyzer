@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>24V升降门接线与测试指南</title>
+<style>body{font-family:"Microsoft YaHei",sans-serif;max-width:1000px;margin:32px auto;padding:0 22px;color:#18212b;line-height:1.7;background:#f5f7fa}main{background:#fff;padding:28px 34px;border-radius:14px;box-shadow:0 3px 18px #ccd3dc}h1{color:#6741d9}h2{border-left:5px solid #7950f2;padding-left:10px;margin-top:30px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #b9c4cf;padding:9px;text-align:left}th{background:#f0edff}.diagram,pre{background:#19142b;color:#f4f0ff;padding:18px;border-radius:9px;overflow:auto}.warn{background:#fff3cd;border-left:5px solid #e0a800;padding:13px}.danger{background:#fde8e8;border-left:5px solid #d93025;padding:13px}.ok{background:#e8f5e9;border-left:5px solid #2e7d32;padding:13px}@media print{body{background:#fff;margin:0}main{box-shadow:none}}</style></head><body><main>
+<h1>24V升降门（电动推杆）接线与测试指南</h1>
+<p>已知推杆：24V直流，额定0.2A、最大0.4A；红正黑负伸长，黑正红负缩短。使用XY-160D双路H桥的第1路控制。</p>
+<div class="danger"><strong>机械安全：</strong>测试时先拆开推杆与门体的机械连接，或保证门体无夹手、撞机风险。必须准备断电开关。最终设备建议安装“门开到位”和“门关到位”两个限位开关。</div>
+
+<h2>1. 功率侧接线</h2>
+<div class="diagram"><pre>24V开关电源 L/+ ──>（交流输入，按电源说明接线并接保护地PE）
+24V开关电源 +V ──> 1A保险丝 ──> XY-160D 绿色端子 V+
+24V开关电源 -V ─────────────────> XY-160D 绿色端子 GND/PGND
+
+XY-160D 第1路电机输出 OUT1 ──────> 推杆红线
+XY-160D 第1路电机输出 OUT2 ──────> 推杆黑线
+
+未使用的第2路电机输出：悬空，禁止短路</pre></div>
+<p>推杆最大仅0.4A，建议电机支路使用约1A保险丝，不采用模块图片中针对大电机给出的10A保险丝。</p>
+
+<h2>2. STM32控制侧接线</h2>
+<div class="diagram"><pre>STM32 3.3V ─────────> XY-160D 信号参考电源“+5V”脚
+                     （该模块说明明确：3.3V单片机接3.3V）
+STM32 GND ──────────> XY-160D 信号端 GND
+STM32 GND ──────────> 24V电源 -V / XY-160D PGND（非隔离模块必须共地）
+
+STM32 GPIO_DOOR_EN ─> ENA1
+STM32 GPIO_DOOR_IN1 -> IN1
+STM32 GPIO_DOOR_IN2 -> IN2</pre></div>
+<div class="warn">板上标注“+5V”的引脚在该型号说明中是控制信号参考电源：3.3V STM32应接3.3V。首次上电前仍应对照你收到的实物丝印和卖家说明，禁止把24V接到此脚。</div>
+
+<h2>3. 建议控制逻辑</h2>
+<table><tr><th>IN1</th><th>IN2</th><th>ENA1</th><th>OUT1/OUT2状态</th></tr>
+<tr><td>0</td><td>0</td><td>任意</td><td>刹车（本项目停止状态）</td></tr>
+<tr><td>1</td><td>1</td><td>任意</td><td>悬空/滑行</td></tr>
+<tr><td>1</td><td>0</td><td>PWM</td><td>正转调速</td></tr>
+<tr><td>0</td><td>1</td><td>PWM</td><td>反转调速</td></tr>
+<tr><td>1</td><td>0</td><td>1</td><td>全速正转</td></tr>
+<tr><td>0</td><td>1</td><td>1</td><td>全速反转</td></tr></table>
+<p class="warn">方向A究竟对应“升起”还是“关闭”，由M1-A/M1-B接线决定。首次测试必须点动确认；若方向相反，可交换推杆红黑线，或在软件中交换IN1/IN2定义。</p>
+<pre>// 换向必须先刹车，等待至少100 ms
+ENA1 = 0;
+IN1 = 0; IN2 = 0;  // 真值表定义为刹车
+delay_ms(100);
+// 然后设置新方向，再使能ENA1</pre>
+
+<h2>4. 限位开关推荐接线</h2>
+<div class="diagram"><pre>STM32 GPIO_LIMIT_OPEN  ──┬──> 常闭限位开关 ──> GND
+                         └──> GPIO内部上拉（或外接10k上拉到3.3V）
+
+STM32 GPIO_LIMIT_CLOSE ──┬──> 常闭限位开关 ──> GND
+                         └──> GPIO内部上拉（或外接10k上拉到3.3V）</pre></div>
+<p>采用常闭触点可检测断线：正常未触发为低，触发或断线为高。软件必须同时设置最大运动时间，限位和超时任一条件满足都立即停止H桥。</p>
+
+<h2>5. 测试步骤</h2>
+<ol><li>H桥暂不接推杆，万用表确认24V输入极性和3.3V逻辑参考正确。</li><li>关闭电源，接入推杆并串联1A保险丝；推杆先不连接门体。</li><li>ENA1采用低电平上电，确保启动时不动作。</li><li>短时间点动方向A，记录推杆伸长或缩短；再停止至少100ms。</li><li>点动方向B，确认反向正常。</li><li>接入并逐个测试开、关限位；手动触发限位时电机必须立即停止。</li><li>连接门体，低速/短行程测试，测量完整开关门时间并设置超时。</li><li>测试串口：<code>11 01</code>关闭门，<code>11 00</code>升起门，<code>11 02</code>立即停止。</li></ol>
+<div class="ok"><strong>通过标准：</strong>方向正确；换向有100ms死区；两个限位可靠；卡住或超时会停机；STM32复位时ENA为低；H桥和推杆无异常发热。</div>
+
+<h2>6. 接地说明</h2>
+<p>STM32可以有独立电源，但由于XY-160D控制输入为非隔离接口，必须将以下三点连接在一起：</p>
+<pre>STM32 GND = XY-160D信号GND = 24V电源负极/PGND</pre>
+<p>只连接地，不要把STM32开发板的5V电源与24V直接相连。电机线与相机USB线分开走线。</p>
+<h2>7. 野火HAL示例代码</h2>
+<pre>Door_Extend();   // 推杆伸长，首次脱离门体点动确认
+Door_Stop();     // 先停止
+HAL_Delay(100);  // 换向死区
+Door_Retract();  // 推杆缩短
+
+Door_Command(0x00); // 升起门，方向需按机械结构校准
+Door_Command(0x01); // 关闭门，方向需按机械结构校准
+Door_Command(0x02); // 立即停止</pre>
+<p>完整代码：<a href="sample_code/bsp_actuators.c">bsp_actuators.c</a>、<a href="sample_code/bsp_actuators.h">bsp_actuators.h</a>；串口示例见<a href="sample_code/main_usage_example.c">main_usage_example.c</a>。</p>
+<div class="warn">当前示例用于台架点动测试。正式装门后必须增加两个限位开关和动作超时状态机，不能只用固定1500ms控制行程。</div>
+<h2>8. 原厂资料</h2>
+<p><a href="双H桥电机驱动模块7A160W/产品参数.png">产品参数</a>　<a href="双H桥电机驱动模块7A160W/接线说明.png">接线说明</a>　<a href="双H桥电机驱动模块7A160W/真值表.png">控制真值表</a>　<a href="双H桥电机驱动模块7A160W/使用说明.txt">使用说明</a></p>
+</main></body></html>

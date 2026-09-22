@@ -1,0 +1,2 @@
+Android开发之《USB Camera》：https://www.likecs.com/show-264830.html
+Android怎么实现外接USB摄像头：  https://www.yisu.com/zixun/366051.html
