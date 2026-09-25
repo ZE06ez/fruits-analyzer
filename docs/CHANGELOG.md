@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-25 Hardware Action Button Gating UX
+
+- 主程序设备控制和 True Hardware Capture 增加统一的 `ready / blocked / running` 按钮状态：Blocked 保持低权重视觉但可点击，展示未满足、已满足、完整要求和低权重技术代码，且前端 guard 会在任何 API 调用前返回；Running 继续使用原生 disabled 防止重复提交。
+- 覆盖钨灯、LED3、风扇、推杆、滤光轮、硬件通信自检、SampleStage 运动和 True Capture；扫描/设备检查/刷新等诊断入口保持可点击，关闭和 STOP 等安全方向动作不因普通 readiness 被错误阻断。
+- 不改后端 STM32、相机、CaptureCoordinator 或校正逻辑；原有后端 interlock 仍为最终安全边界。
 ## 2026-09-19 P1E-6 Engineering & Productization Closure
 
 - 修改内容：新增 `runtime_support.py`，统一 `APP_VERSION`、冻结 EXE app data root、runtime directory bootstrap、atomic JSON write、SQLite backup/migration、rotation logging 与 config error 类型；Model Studio/Inspection 改为 schema version `2`，migration 使用 transaction、`schema_migrations` 和 migration 前 backup，旧结构仍增量补列而非 DROP/recreate。

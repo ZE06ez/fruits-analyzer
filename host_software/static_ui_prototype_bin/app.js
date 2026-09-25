@@ -288,6 +288,48 @@ function setText(id, value) {
   }
 }
 
+// Blocked is deliberately distinct from disabled: it exposes a real precondition
+// failure without ever allowing the associated command to reach the backend.
+function setActionAvailability(button, availability) {
+  if (!button) return;
+  const next = { state: "ready", title: button.textContent.trim(), reasons: [], requirements: [], satisfied: [], codes: [], ...availability };
+  button._actionAvailability = next;
+  button.dataset.actionState = next.state;
+  button.setAttribute("aria-disabled", next.state === "blocked" ? "true" : "false");
+  button.disabled = next.state === "running";
+  button.classList.toggle("is-blocked", next.state === "blocked");
+  button.classList.toggle("is-running", next.state === "running");
+  button.title = next.state === "blocked" ? `${next.title}：查看前置条件` : "";
+}
+
+function showActionBlockedDetails(action) {
+  const modal = $("#actionBlockedModal");
+  if (!modal || !action) return;
+  setText("actionBlockedTitle", `当前无法${action.title}`);
+  setText("actionBlockedCount", `还需完成 ${action.reasons.length} 项`);
+  const list = (id, items, marker) => {
+    const node = $(id);
+    if (node) node.innerHTML = items.length ? items.map((item) => `<li><span>${marker}</span>${item}</li>`).join("") : "<li><span>✓</span>当前没有待处理项</li>";
+  };
+  list("#actionBlockedReasons", action.reasons, "✕");
+  list("#actionBlockedSatisfied", action.satisfied, "✓");
+  list("#actionBlockedRequirements", action.requirements, "•");
+  setText("actionBlockedCodes", action.codes.length ? `Code: ${action.codes.join(" · ")}` : "暂无额外技术代码。");
+  modal.hidden = false;
+}
+
+function guardBlockedAction(button) {
+  const action = button?._actionAvailability;
+  if (action?.state !== "blocked") return false;
+  showActionBlockedDetails(action);
+  return true;
+}
+
+function unavailableAction(button, availability) {
+  setActionAvailability(button, availability);
+  return availability.state === "blocked";
+}
+
 function setInputValueUnlessFocused(id, value) {
   const node = document.getElementById(id);
   if (!node || document.activeElement === node) return;
@@ -1842,23 +1884,37 @@ function renderHardwareStatus() {
   $("#faultClearDevice") && ($("#faultClearDevice").disabled = true);
   $("#faultClearDevice") && ($("#faultClearDevice").title = "当前 STM32 firmware 不支持远程 Fault Clear");
   $("#refreshDeviceStatus") && ($("#refreshDeviceStatus").disabled = !connected);
-  $("#hardwareSelfTest") && ($("#hardwareSelfTest").disabled = !connected);
-  [
-    "#fanOnButton",
-    "#fanOffButton",
-    "#led3OnButton",
-    "#led3OffButton",
-    "#actuatorExtend",
-    "#actuatorRetract",
-    "#wheelCounterclockwise",
-    "#wheelClockwise",
-    "#wheelSetOrigin",
-  ].forEach((selector) => {
-    const el = $(selector);
-    if (el) el.disabled = !controlReady || Boolean(hardware.actuatorBusy && selector !== "#wheelSetOrigin");
+  const controlRequirements = ["STM32 已连接", "当前 firmware/control profile 可用"];
+  const controlSatisfied = [connected && "STM32 已连接", controlReady && "当前 firmware/control profile 可用"].filter(Boolean);
+  const controlReasons = [!connected && "STM32 控制器尚未连接", connected && !controlReady && "当前 firmware/control profile 尚未就绪"].filter(Boolean);
+  const standardControl = (selector, title) => setActionAvailability($(selector), {
+    state: hardware.actuatorBusy ? "running" : controlReasons.length ? "blocked" : "ready",
+    title, reasons: controlReasons, requirements: controlRequirements, satisfied: controlSatisfied,
+    codes: !connected ? ["STM32_NOT_READY"] : !controlReady ? ["CONTROL_PROFILE_NOT_READY"] : [],
   });
-  $("#actuatorStop") && ($("#actuatorStop").disabled = !connected);
-  $("#wheelStop") && ($("#wheelStop").disabled = !connected);
+  setActionAvailability($("#hardwareSelfTest"), {
+    state: connected ? "ready" : "blocked", title: "运行硬件通信自检",
+    reasons: connected ? [] : ["STM32 尚未连接"], requirements: ["可用串口", "STM32 已连接并通过 PING"],
+    satisfied: connected ? ["可用串口", "STM32 已连接"] : [], codes: connected ? [] : ["STM32_NOT_READY"],
+  });
+  [
+    ["#fanOnButton", "开启风扇"], ["#fanOffButton", "关闭风扇"], ["#led3OffButton", "关闭 LED3 / RGB 光源"],
+    ["#actuatorExtend", "推杆伸出"], ["#actuatorRetract", "推杆缩回"],
+    ["#wheelCounterclockwise", "滤光轮逆时针移动"], ["#wheelClockwise", "滤光轮顺时针移动"], ["#wheelSetOrigin", "设置滤光轮逻辑零点"],
+  ].forEach(([selector, title]) => standardControl(selector, title));
+  const ledReasons = [...controlReasons, (hardware.tungsten1On || hardware.tungsten2On) && "钨灯当前处于开启状态"].filter(Boolean);
+  setActionAvailability($("#led3OnButton"), {
+    state: hardware.actuatorBusy ? "running" : ledReasons.length ? "blocked" : "ready", title: "开启 LED3 / RGB 光源", reasons: ledReasons,
+    requirements: [...controlRequirements, "所有钨灯已关闭"],
+    satisfied: [...controlSatisfied, !hardware.tungsten1On && !hardware.tungsten2On && "所有钨灯已关闭"].filter(Boolean),
+    codes: [...(!connected ? ["STM32_NOT_READY"] : []), ...((hardware.tungsten1On || hardware.tungsten2On) ? ["TUNGSTEN_ACTIVE"] : [])],
+  });
+  const safetyStop = (selector, title) => setActionAvailability($(selector), {
+    state: connected ? "ready" : "blocked", title, reasons: connected ? [] : ["STM32 控制器尚未连接，无法发送安全停止命令"],
+    requirements: ["STM32 已连接"], satisfied: connected ? ["STM32 已连接"] : [], codes: connected ? [] : ["STM32_NOT_READY"],
+  });
+  safetyStop("#actuatorStop", "停止推杆");
+  safetyStop("#wheelStop", "停止滤光轮");
   updateTungstenPanel(hardware, controlReady);
   updateSampleStageButtons(sampleStage);
 }
@@ -1878,14 +1934,24 @@ function updateTungstenPanel(hardware = {}, controlReady = false) {
   setText("tungsten1Countdown", `自动关闭: ${formatCountdown(autoOff["1"]?.remainingMs)}`);
   setText("tungsten2Countdown", `自动关闭: ${formatCountdown(autoOff["2"]?.remainingMs)}`);
   setText("tungstenSafetyWarning", warning);
-  ["#tungsten1OnButton", "#tungsten2OnButton"].forEach((selector) => {
-    const button = $(selector);
-    if (button) button.disabled = !controlReady || Boolean(hardware.tungsten1On || hardware.tungsten2On);
+  [1, 2].forEach((channel) => {
+    const otherOn = channel === 1 ? hardware.tungsten2On : hardware.tungsten1On;
+    const reasons = [
+      !connected && "STM32 控制器尚未连接", !controlReady && connected && "当前 firmware/control profile 尚未就绪",
+      hardware.errorCode != null && Number(hardware.errorCode) !== 0 && `STM32 当前故障码为 ${hardware.errorCode}`,
+      !hardware.fanOn && "风扇未开启", hardware.rgbLed3On && "LED3 / RGB 光源仍处于开启状态", otherOn && `钨灯${channel === 1 ? 2 : 1} 当前处于开启状态`,
+    ].filter(Boolean);
+    const satisfied = [connected && "STM32 已连接", controlReady && "当前 firmware/control profile 可用", !hardware.errorCode && "当前无硬件故障", hardware.fanOn && "风扇已开启", !hardware.rgbLed3On && "LED3 / RGB 光源已关闭", !otherOn && `钨灯${channel === 1 ? 2 : 1} 已关闭`].filter(Boolean);
+    setActionAvailability($(`#tungsten${channel}OnButton`), {
+      state: reasons.length ? "blocked" : "ready", title: `开启钨灯 ${channel}`, reasons,
+      requirements: ["STM32 已连接", "当前无硬件故障", "风扇已开启", "LED3 / RGB 光源已关闭", `钨灯${channel === 1 ? 2 : 1}已关闭`, "人工确认防护与 12V 电源安全"],
+      satisfied, codes: [!connected && "STM32_NOT_READY", !hardware.fanOn && "FAN_NOT_RUNNING", hardware.rgbLed3On && "LED3_LIGHT_ACTIVE", otherOn && "DUAL_TUNGSTEN_NOT_ACCEPTED", hardware.errorCode && "STM32_FAULT"].filter(Boolean),
+    });
   });
-  ["#tungsten1OffButton", "#tungsten2OffButton", "#tungstenAllOffButton"].forEach((selector) => {
-    const button = $(selector);
-    if (button) button.disabled = !connected;
-  });
+  ["#tungsten1OffButton", "#tungsten2OffButton", "#tungstenAllOffButton"].forEach((selector) => setActionAvailability($(selector), {
+    state: connected ? "ready" : "blocked", title: selector === "#tungstenAllOffButton" ? "关闭全部钨灯" : "关闭钨灯",
+    reasons: connected ? [] : ["STM32 控制器尚未连接，无法发送关闭命令"], requirements: ["STM32 已连接"], satisfied: connected ? ["STM32 已连接"] : [], codes: connected ? [] : ["STM32_NOT_READY"],
+  }));
 }
 
 function formatCountdown(ms) {
@@ -1928,8 +1994,14 @@ function updateSampleStageButtons(stage = state.hardwareStatus.sampleStage || {}
     "[data-sample-stage-angle]",
   ].forEach((selector) => {
     $$(selector).forEach((button) => {
-      button.disabled = !stageReady || Boolean(stage.moving && selector !== "#sampleStageStop");
-      button.title = stageReady ? "" : "样品旋转台协议未知或 adapter 不可用";
+      setActionAvailability(button, {
+        state: stage.moving && selector !== "#sampleStageStop" ? "running" : stageReady ? "ready" : "blocked",
+        title: button.textContent.trim(),
+        reasons: [!stage.protocolKnown && "SampleStage 真实通信协议尚未接入", !stage.available && "SampleStage adapter 当前不可用", stage.fault && stage.fault !== "SAMPLE_STAGE_PROTOCOL_UNKNOWN" && `设备故障：${stage.fault}`].filter(Boolean),
+        requirements: ["样品台协议已确认", "adapter 已实现", "设备已连接", "无 fault", "动作所需 HOME / position 能力已满足"],
+        satisfied: [stage.protocolKnown && "样品台协议已确认", stage.available && "SampleStage adapter 可用", stage.connected && "设备已连接", !stage.fault && "当前无 fault"].filter(Boolean),
+        codes: [!stage.protocolKnown && "SAMPLE_STAGE_PROTOCOL_UNKNOWN", !stage.available && "SAMPLE_STAGE_NOT_READY", stage.fault].filter(Boolean),
+      });
     });
   });
   const refresh = $("#refreshSampleStageStatus");
@@ -2303,6 +2375,8 @@ async function disconnectDevice() {
 }
 
 async function runHardwareSelfTest(includeMotion = false) {
+  if (guardBlockedAction($("#hardwareSelfTest"))) return;
+  setActionAvailability($("#hardwareSelfTest"), { state: "running", title: "运行硬件通信自检" });
   try {
     const payload = await api("/api/device/self-test", {
       method: "POST",
@@ -2324,6 +2398,8 @@ async function runHardwareSelfTest(includeMotion = false) {
     await syncDevicePreparation();
   } catch (error) {
     addLog(error.message || "硬件自检失败。", "ERROR");
+  } finally {
+    renderHardwareStatus();
   }
 }
 
@@ -2597,12 +2673,14 @@ async function postHardwareAction(path, body, successMessage) {
 }
 
 async function setFan(enabled) {
+  if (guardBlockedAction($(enabled ? "#fanOnButton" : "#fanOffButton"))) return;
   await postHardwareAction("/api/device/fan", { enabled }, (result) => (
     `风扇${enabled ? "开启" : "关闭"}命令已执行，fresh STATUS duty=${result.fanDuty ?? "--"}。`
   ));
 }
 
 async function setLed3(enabled) {
+  if (guardBlockedAction($(enabled ? "#led3OnButton" : "#led3OffButton"))) return;
   await postHardwareAction("/api/device/led", { channel: 3, enabled }, (result) => (
     `LED3 ${enabled ? "开启" : "关闭"}命令已执行，fresh STATUS mask=${result.ledMask ?? "--"}。`
   ));
@@ -2615,6 +2693,7 @@ function confirmTungstenSafety(channel) {
 }
 
 async function setTungsten(channel, enabled) {
+  if (guardBlockedAction($(`#tungsten${channel}${enabled ? "On" : "Off"}Button`))) return;
   const body = {
     channel,
     enabled,
@@ -2631,6 +2710,7 @@ async function setTungsten(channel, enabled) {
 }
 
 async function tungstenAllOff() {
+  if (guardBlockedAction($("#tungstenAllOffButton"))) return;
   await postHardwareAction("/api/device/tungsten/all-off", {}, (result) => (
     result.safetyWarning || `全部钨灯关闭已执行，LED3 保留状态，mask=${result.confirmedMask ?? "--"}。`
   ));
@@ -2643,6 +2723,7 @@ function actuatorDurationMs() {
 }
 
 async function runActuator(action) {
+  if (guardBlockedAction($(`#actuator${action === "extend" ? "Extend" : action === "retract" ? "Retract" : "Stop"}`))) return;
   const durationMs = action === "stop" ? undefined : actuatorDurationMs();
   await postHardwareAction("/api/device/actuator", { action, durationMs }, (result) => {
     if (action === "stop") return "推杆停止命令已发送。";
@@ -2657,6 +2738,7 @@ function wheelSlots() {
 }
 
 async function moveWheel(direction) {
+  if (guardBlockedAction($(direction === "clockwise" ? "#wheelClockwise" : "#wheelCounterclockwise"))) return;
   await postHardwareAction("/api/device/wheel/move-relative", { direction, slots: wheelSlots() }, (result) => {
     const cmd = result.command || {};
     const finalStatus = cmd.statusAfter || {};
@@ -2668,10 +2750,12 @@ async function moveWheel(direction) {
 }
 
 async function stopWheel() {
+  if (guardBlockedAction($("#wheelStop"))) return;
   await postHardwareAction("/api/device/wheel/stop", {}, () => "滤光轮 STOP 已发送。");
 }
 
 async function setWheelOrigin() {
+  if (guardBlockedAction($("#wheelSetOrigin"))) return;
   const ok = window.confirm("请先人工将 1 号滤光片准确对准光路。确认对准后才可设置逻辑零点。");
   if (!ok) return;
   await postHardwareAction("/api/device/wheel/set-origin", { operatorConfirmedAligned: true }, () => "逻辑零点已建立；这不是自动寻零。");
@@ -2706,10 +2790,12 @@ async function postSampleStageAction(path, body, successMessage) {
 }
 
 async function sampleStageHome() {
+  if (guardBlockedAction($("#sampleStageHome"))) return;
   await postSampleStageAction("/api/device/sample-stage/home", {}, () => "样品台 HOME 命令完成。");
 }
 
 async function sampleStageMoveRelative(deltaDeg) {
+  if (guardBlockedAction($(Number(deltaDeg) >= 0 ? "#sampleStageMovePos30" : "#sampleStageMoveNeg30"))) return;
   const direction = Number(deltaDeg) >= 0 ? "CCW" : "CW";
   await postSampleStageAction("/api/device/sample-stage/move-relative", { deltaDeg, direction }, () => (
     `样品台相对移动 ${deltaDeg > 0 ? "+" : ""}${deltaDeg}° 命令完成。`
@@ -2717,12 +2803,15 @@ async function sampleStageMoveRelative(deltaDeg) {
 }
 
 async function sampleStageMoveAbsolute(angleDeg) {
+  const button = [...$$('[data-sample-stage-angle]'), $("#sampleStageReturnHome")].find((item) => item && (item.id === "sampleStageReturnHome" || Number(item.dataset.sampleStageAngle) === Number(angleDeg)));
+  if (guardBlockedAction(button)) return;
   await postSampleStageAction("/api/device/sample-stage/move-absolute", { angleDeg }, () => (
     `样品台移动到 ${angleDeg}° 命令完成。`
   ));
 }
 
 async function sampleStageStop() {
+  if (guardBlockedAction($("#sampleStageStop"))) return;
   await postSampleStageAction("/api/device/sample-stage/stop", {}, () => "样品台 STOP 已发送。");
 }
 
@@ -3535,14 +3624,21 @@ function renderTrueCaptureReadiness(readiness = state.trueCaptureReadiness) {
   state.trueCaptureReadiness = readiness || state.trueCaptureReadiness;
   const ready = Boolean(state.trueCaptureReadiness?.ready);
   const reasons = state.trueCaptureReadiness?.blockingReasons || [];
-  const reasonText = reasons.map((item) => item.code || item.message).filter(Boolean).join(" / ");
-  setText("trueCaptureReadiness", ready ? "就绪" : reasonText ? `未就绪: ${reasonText}` : "未就绪");
+  const reasonText = reasons.map((item) => item.message || item.code).filter(Boolean).join(" / ");
+  setText("trueCaptureReadiness", ready ? "● 就绪" : reasonText ? `● 未就绪 · ${reasons.length} 项待处理` : "● 未就绪");
   const hint = ready
     ? "当前 capture plan 满足软件 readiness；硬件验收仍需按 checklist 记录。"
     : (reasons.map((item) => item.message || item.code).filter(Boolean).join("；") || "等待样品、目录和硬件状态。");
   setText("trueCaptureHint", hint);
   const start = $("#startTrueCapture");
-  if (start) start.disabled = !ready || state.trueCaptureRunning || !hasActiveSample();
+  const captureReasons = [...reasons.map((item) => item.message || captureBlockerText(item.code)).filter(Boolean), !hasActiveSample() && "当前样品尚未创建"].filter(Boolean);
+  setActionAvailability(start, {
+    state: state.trueCaptureRunning ? "running" : ready && hasActiveSample() ? "ready" : "blocked", title: "开始正式采集",
+    reasons: captureReasons,
+    requirements: ["当前样品已创建", "输出目录已创建", "STM32 / 相机 / 滤光轮已就绪", "采集模式所需 SampleStage 已就绪", "当前 CalibrationSet 满足要求"],
+    satisfied: [hasActiveSample() && "当前样品已创建", state.currentCaptureDir && "保存目录已创建", ready && "当前 capture plan 已通过软件 readiness"].filter(Boolean),
+    codes: reasons.map((item) => item.code).filter(Boolean),
+  });
   const cancel = $("#cancelTrueCapture");
   if (cancel) cancel.disabled = !state.trueCaptureRunning;
   const mode = $("#trueCaptureMode");
@@ -3554,6 +3650,16 @@ function renderTrueCaptureReadiness(readiness = state.trueCaptureReadiness) {
       option.textContent = multi.ready ? "多视角" : "多视角（样品台协议未接入）";
     }
   }
+}
+
+function captureBlockerText(code) {
+  const messages = {
+    SAMPLE_REQUIRED: "当前样品尚未创建", OUTPUT_DIR_REQUIRED: "输出目录尚未创建", STM32_NOT_READY: "STM32 控制器尚未连接或未就绪",
+    CAMERA_NOT_READY: "RGB / DVP2 相机当前不可用", DVP2_NOT_AVAILABLE: "DVP2 多光谱相机当前不可用",
+    FILTER_WHEEL_NOT_READY: "滤光轮尚未建立逻辑零点", CALIBRATION_REQUIRED: "当前采集需要完成 Dark / White Calibration",
+    SAMPLE_STAGE_NOT_READY: "多视角采集需要真实样品旋转台",
+  };
+  return messages[code] || code || "采集前置条件尚未满足";
 }
 
 async function refreshTrueCaptureReadiness() {
@@ -3576,12 +3682,15 @@ async function refreshTrueCaptureReadiness() {
 }
 
 async function startTrueCapture() {
+  if (guardBlockedAction($("#startTrueCapture"))) return;
   if (!requireActiveSample()) return;
   const payload = collectTrueCapturePayload();
   if (!payload) return;
   const readiness = await refreshTrueCaptureReadiness();
   if (!readiness?.ready) {
     addLog("True Capture readiness 未通过，请先处理阻塞原因。", "WARN");
+    renderTrueCaptureReadiness(readiness);
+    showActionBlockedDetails($("#startTrueCapture")._actionAvailability);
     return;
   }
   state.trueCaptureRunning = true;
@@ -5174,6 +5283,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#openCaptureFolder")?.addEventListener("click", openCaptureFolder);
   $("#closeSampleModal")?.addEventListener("click", closeSampleModal);
   $("#cancelNewSample")?.addEventListener("click", closeSampleModal);
+  ["#closeActionBlockedModal", "#acknowledgeActionBlocked"].forEach((selector) => {
+    $(selector)?.addEventListener("click", () => { $("#actionBlockedModal").hidden = true; });
+  });
   $("#createNewSample")?.addEventListener("click", () => createNewSample().catch((error) => setText("newSampleHint", error.message)));
   $("#openCaptureSettings")?.addEventListener("click", openCaptureSettings);
   $("#closeCaptureSettings")?.addEventListener("click", closeCaptureSettings);
@@ -5195,6 +5307,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (event.key !== "Escape") return;
     if (!$("#imageFolderSelectModal")?.hidden) closeImageFolderSelectModal(null);
     else if (!$("#imageDirSettingsModal")?.hidden) closeImageDirSettingsModal(null);
+    else if (!$("#actionBlockedModal")?.hidden) $("#actionBlockedModal").hidden = true;
     else if (!$("#backgroundPreviewModal")?.hidden) $("#backgroundPreviewModal").hidden = true;
     else if (!$("#captureSettingsModal")?.hidden) closeCaptureSettings();
     else if (!$("#sampleModal")?.hidden) closeSampleModal();
