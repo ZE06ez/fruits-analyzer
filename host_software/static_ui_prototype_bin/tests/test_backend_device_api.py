@@ -1030,6 +1030,23 @@ class BackendDeviceApiTests(unittest.TestCase):
         self.assertNotIn("hardwareMotionSelfTest", app_js)
         self.assertNotIn("manual_stm32_test.py", app_js)
 
+    def test_hardware_action_buttons_use_clickable_blocked_state_and_busy_disabled_state(self):
+        app_js = (Path(__file__).parents[1] / "app.js").read_text(encoding="utf-8")
+        html = (Path(__file__).parents[1] / "index.html").read_text(encoding="utf-8")
+        css = (Path(__file__).parents[1] / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function setActionAvailability", app_js)
+        self.assertIn("function guardBlockedAction", app_js)
+        self.assertIn("showActionBlockedDetails", app_js)
+        self.assertIn("button.disabled = next.state === \"running\"", app_js)
+        self.assertIn("if (guardBlockedAction($(\"#hardwareSelfTest\"))) return;", app_js)
+        self.assertIn("if (guardBlockedAction($(\"#startTrueCapture\"))) return;", app_js)
+        self.assertIn("LED3 / RGB 光源仍处于开启状态", app_js)
+        self.assertIn("SampleStage 真实通信协议尚未接入", app_js)
+        self.assertIn("id=\"actionBlockedModal\"", html)
+        self.assertIn("id=\"actionBlockedReasons\"", html)
+        self.assertIn("data-action-state=\"blocked\"", css)
+
 
 if __name__ == "__main__":
     unittest.main()

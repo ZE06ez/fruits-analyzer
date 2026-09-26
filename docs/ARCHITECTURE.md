@@ -2,6 +2,8 @@
 
 更新时间：2026-09-18
 
+补充（2026-09-25）：前端在 `app.js` 以轻量 Action Availability 层统一管理 `ready`、`blocked`、`running`。它只由当前真实状态/API readiness 渲染 UX：Blocked 在 click guard 后展示详情并停止，Running 使用原生 disabled；实际设备命令和科学采集仍由后端重新校验。
+
 ## 总体结构
 
 ```text

@@ -1168,6 +1168,27 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" id="actionBlockedModal" hidden role="dialog" aria-modal="true" aria-labelledby="actionBlockedTitle">
+      <section class="modal action-blocked-modal">
+        <header>
+          <div>
+            <p class="eyebrow">Action Blocked</p>
+            <h3 id="actionBlockedTitle">当前无法执行操作</h3>
+          </div>
+          <button id="closeActionBlockedModal" type="button">关闭</button>
+        </header>
+        <div class="action-blocked-body">
+          <p class="action-blocked-count" id="actionBlockedCount">还需完成 0 项</p>
+          <section><h4>未满足</h4><ul id="actionBlockedReasons" class="action-condition-list unmet"></ul></section>
+          <section><h4>已满足</h4><ul id="actionBlockedSatisfied" class="action-condition-list met"></ul></section>
+          <details><summary>完整要求</summary><ul id="actionBlockedRequirements" class="action-condition-list"></ul></details>
+          <details class="action-technical"><summary>技术详情</summary><p id="actionBlockedCodes"></p></details>
+          <p class="modal-note">请先在“设备与维护”中处理未满足项，然后刷新状态后重试。</p>
+        </div>
+        <footer><button id="acknowledgeActionBlocked" type="button">关闭</button></footer>
+      </section>
+    </div>
+
     <div class="modal-backdrop" id="captureSettingsModal" hidden>
       <section class="modal modal-wide capture-settings-modal">
         <header>
