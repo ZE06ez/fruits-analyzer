@@ -4,6 +4,8 @@
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
+补充（2026-09-30）：主 UI 的设备入口已收拢为唯一“设备与维护”工作区。首屏按系统摘要、核心设备（STM32、RGB、DVP2）、光学系统与运动系统展示；手动硬件控制和 raw diagnostics 收进对应设备 Inspector 的 Advanced 层。该信息架构不改变 STM32/相机/capture 后端、真实硬件边界或 `ready / blocked / running` Hardware Action Gating：诊断检查可点击，blocked 动作仍只展示原因且不发 API，running 才真正 disabled。
+
 补充（2026-09-25）：主 UI 的硬件动作使用统一 `ready / blocked / running` 状态。Blocked 不使用原生 `disabled`，点击只显示真实状态推导的前置条件说明，前端不会发出命令；Running 才使用 `disabled` 防重复。后端 interlock 和采集 readiness 仍是最终安全边界。
 
 ## 1. 项目目标
