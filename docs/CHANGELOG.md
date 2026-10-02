@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-03 项目状态文档核对
+
+- 基于 `main@9e23790fd2260b237df1560727cd342b2d6376bc` 更新 `PROJECT_STATUS.md`，同步修正 `docs/PROJECT_CONTEXT.md` 的旧工作流、状态表和下一阶段路线。
+- 纠正 RGB 科学采集准入：YUY2/YUYV/UYVY 当前为允许的未压缩 4:2:2，metadata 仍记录 `scientificStrictLossless=false`；有损/未知传输拒绝。示例 scientific profile 为 1920×1080@5fps YUY2，实际设备参数需运行时回读。
+- 补齐已实现的配准/保守 ROI、共享 production 分析管线、模型 contract/signature、Inspection SQLite、质量门禁、产品化与新设备维护/左侧流程；保留真实样品台、硬件验收与科学验证未完成状态。
+- 记录 PLSR 成分数尚用训练误差选择、MAPE 与 VIP/CARS/SPA 研究入口未实现、开发滤光片配置仅启用 450/560/670 nm；本次不实现算法或修改硬件配置。
+- 将仓库未提交真实数据/模型/运行时数据库与用户本机状态区分。仅文档变更；未连接硬件、未读取本机数据库、未重新执行完整测试，也不新增 PASS 证据。历史条目保持原日期。
+
 ## 2026-09-30 Device Maintenance Information Architecture
 
 - 主程序将“设备总览”和“工程调试”两个平级导航入口收拢为唯一“设备与维护”。首屏改为系统设备摘要、核心设备、光学系统、运动系统和扫描/连接/诊断入口。
