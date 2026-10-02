@@ -185,6 +185,20 @@ const titles = {
   "reserved-4": "通信设置",
 };
 
+const moduleDescriptions = {
+  motor: "扫描、连接与检查设备；单设备工程控制按需展开。",
+  capture: "创建样品、确认采集条件并推进当前检测步骤。",
+  shape: "查看图像、特征与分析处理进度。",
+  taste: "汇总当前样品的检测结果与报告信息。",
+  "camera-settings": "维护相机预览和参数；预览不代表正式采集。",
+  "light-settings": "管理软件级光源配置。",
+};
+
+const moduleIcons = {
+  motor: "icon-maintenance", capture: "icon-fruit", shape: "icon-analysis", sugar: "icon-analysis", acid: "icon-analysis", taste: "icon-result",
+  "camera-settings": "icon-camera", "light-settings": "icon-settings", light: "icon-light", camera: "icon-camera",
+};
+
 const moduleLayoutModes = {
   motor: "analysis",
   light: "analysis",
@@ -1675,6 +1689,19 @@ function setOverviewStatus(id, status, text = null) {
   if (text !== null) node.textContent = text;
 }
 
+function setWorkflowStep(id, status) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.dataset.status = status;
+  node.setAttribute("aria-current", status === "current" ? "step" : "false");
+  node.title = ({
+    completed: "已完成",
+    current: "当前步骤",
+    pending: "未开始",
+    blocked: "等待前置条件",
+  })[status] || status;
+}
+
 function cameraReadiness(camera) {
   if (!camera) return "waiting";
   if (camera.available || camera.opened || camera.streaming) return "ready";
@@ -1702,17 +1729,21 @@ function renderOperatorOverview(status = deriveSystemStatus()) {
   setOverviewStatus("operatorSpectralReady", cameraReadiness(state.cameraStatus.multispectral));
   setOverviewStatus("operatorCalibrationReady", state.calibrationStatus === "passed" ? "ready" : "warning");
 
-  setOverviewStatus("workflowSample", hasActiveSample() ? "ready" : "running");
-  setOverviewStatus("workflowDevice", isDevicePreparationReady() ? "ready" : state.devicePrep.connect ? "warning" : "waiting");
-  setOverviewStatus(
-    "workflowCapture",
-    state.trueCaptureRunning || state.captureCompleting ? "running" : state.currentCaptureValid || state.analysisDataDir ? "ready" : hasActiveSample() ? "running" : "waiting"
-  );
-  setOverviewStatus(
-    "workflowAnalysis",
-    state.systemTask === "shape" || state.systemTask === "ssc" || state.systemTask === "acid" ? "running" : state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph) ? "ready" : "waiting"
-  );
-  setOverviewStatus("workflowResult", state.grade ? "ready" : "waiting");
+  const hasSample = hasActiveSample();
+  const deviceReady = isDevicePreparationReady();
+  const calibrationReady = state.calibrationStatus === "passed";
+  const captureComplete = Boolean(state.currentCaptureValid || state.analysisDataDir);
+  const captureRunning = Boolean(state.trueCaptureRunning || state.captureCompleting);
+  const analysisComplete = Boolean(state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph));
+  const analysisRunning = ["shape", "ssc", "acid"].includes(state.systemTask);
+
+  setWorkflowStep("workflowSample", hasSample ? "completed" : "current");
+  setWorkflowStep("workflowDevice", deviceReady ? "completed" : hasSample ? "current" : "pending");
+  setWorkflowStep("workflowCalibration", calibrationReady ? "completed" : deviceReady ? "current" : "pending");
+  setWorkflowStep("workflowCapture", captureComplete ? "completed" : captureRunning || calibrationReady ? "current" : "pending");
+  setWorkflowStep("workflowSpectral", captureComplete ? "completed" : captureRunning ? "current" : "pending");
+  setWorkflowStep("workflowAnalysis", analysisComplete ? "completed" : analysisRunning || captureComplete ? "current" : "pending");
+  setWorkflowStep("workflowResult", state.grade ? "completed" : analysisComplete ? "current" : "pending");
 
   const action = $("#operatorPrimaryAction");
   if (!action) return;
@@ -2114,8 +2145,57 @@ function renderDeviceChecks(checks = state.deviceChecks, detail = state.deviceCh
         ? `设备未完全就绪；${manual} 项需要确认，${blocked} 项不可用。`
         : "未连接 STM32；请先选择串口并连接。";
   setText("deviceCheckSummary", summary);
+  setText("maintenanceSummary", state.deviceCheckRunning ? "正在执行诊断检查…" : summary);
+  setText("maintenanceState", state.deviceCheckRunning ? "◌ 检查中" : blocked ? `△ ${blocked} 项待处理` : controllerOk ? "● 已检查" : "○ 待检查");
   const text = detail ? JSON.stringify(detail, null, 2) : "暂无设备详情";
   setText("deviceDetailText", text);
+  renderMaintenanceCards(normalized);
+}
+
+function setMaintenanceCardState(id, status, text, hint) {
+  const node = $(id);
+  if (node) {
+    node.dataset.status = status;
+    node.textContent = text;
+  }
+  const hintId = id.replace("State", "Hint");
+  if ($(hintId) && hint) setText(hintId.slice(1), hint);
+}
+
+function maintenanceReady(check) {
+  return ["passed", "manual_required"].includes(check?.status);
+}
+
+function renderMaintenanceCards(checks = {}) {
+  const controller = checks.controller || {};
+  const rgb = checks.rgbCamera || {};
+  const multispectral = checks.multispectralCamera || {};
+  const wheel = checks.filterWheel || {};
+  const light = checks.light || {};
+  const door = checks.door || {};
+  const stage = state.hardwareStatus.sampleStage || {};
+  const statusText = (check) => maintenanceReady(check) ? "● 已就绪" : check.status === "failed" ? "✕ 故障" : check.status === "manual_required" ? "△ 需确认" : "○ 未连接";
+  const statusKind = (check) => maintenanceReady(check) ? (check.status === "manual_required" ? "warning" : "ready") : check.status === "failed" ? "error" : "waiting";
+  setMaintenanceCardState("#controllerCardState", statusKind(controller), statusText(controller), controller.message);
+  setMaintenanceCardState("#rgbCardState", statusKind(rgb), statusText(rgb), rgb.message);
+  setMaintenanceCardState("#multispectralCardState", statusKind(multispectral), statusText(multispectral), multispectral.message);
+  setMaintenanceCardState("#lightCardState", statusKind(light), statusText(light));
+  setMaintenanceCardState("#tungstenCardState", statusKind(light), statusText(light));
+  setMaintenanceCardState("#wheelCardState", statusKind(wheel), statusText(wheel));
+  setMaintenanceCardState("#doorCardState", statusKind(door), statusText(door));
+  setMaintenanceCardState("#sampleStageCardState", stage.available ? "ready" : "waiting", stage.available ? "● 可用" : "○ 未接入", stage.lastError || "独立协议边界");
+  const count = (items) => items.filter(maintenanceReady).length;
+  setText("coreDeviceSummary", `${count([controller, rgb, multispectral])} / 3 就绪`);
+  setText("opticalSystemSummary", `${count([light, wheel])} / 3 就绪`);
+  setText("motionSystemSummary", `${count([door]) + (stage.available ? 1 : 0)} / 2 就绪`);
+}
+
+async function runDeviceDiagnostic(kind) {
+  if (kind === "rgb") return probeRgbCamera();
+  if (kind === "multispectral") return probeMultispectralCamera();
+  if (kind === "controller") return refreshHardwareStatus();
+  if (kind === "light") return refreshHardwareStatus();
+  return refreshHardwareStatus();
 }
 
 function applyHardwareStatus(device = {}) {
@@ -3523,6 +3603,10 @@ function switchView(view, stepKey = null) {
     button.classList.toggle("active", button.dataset.analysisView === view && (!stepKey || button.dataset.analysisStep === stepKey));
   });
   setText("viewTitle", titles[view] || "功能模块");
+  setText("viewDescription", moduleDescriptions[view] || "查看当前工作区状态和下一步操作。");
+  const icon = moduleIcons[view] || "icon-settings";
+  const iconUse = $("#viewIcon use");
+  if (iconUse) iconUse.setAttribute("href", `#${icon}`);
   if (stepKey) setCurrentStep(stepKey);
   addLog(`切换到 ${titles[view] || view}`);
 }
@@ -5346,6 +5430,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#refreshDeviceStatus")?.addEventListener("click", () => refreshHardwareStatus());
   $("#startDeviceCheck")?.addEventListener("click", () => runUnifiedDeviceCheck());
   $("#refreshDeviceDiscovery")?.addEventListener("click", () => refreshDeviceDiscovery());
+  document.querySelectorAll("[data-device-diagnostic]").forEach((button) => {
+    button.addEventListener("click", () => runDeviceDiagnostic(button.dataset.deviceDiagnostic).catch((error) => addLog(error.message || "设备检查失败。", "WARN")));
+  });
+  document.querySelectorAll("[data-device-inspector]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const inspector = document.getElementById(button.dataset.deviceInspector);
+      if (!inspector) return;
+      inspector.open = true;
+      inspector.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
   document.querySelectorAll("[data-bind-device-role]").forEach((button) => {
     button.addEventListener("click", () => bindSelectedDevice(button.dataset.bindDeviceRole));
   });

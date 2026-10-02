@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-30 Device Maintenance Information Architecture
+
+- 主程序将“设备总览”和“工程调试”两个平级导航入口收拢为唯一“设备与维护”。首屏改为系统设备摘要、核心设备、光学系统、运动系统和扫描/连接/诊断入口。
+- STM32、RGB、DVP2 使用独立设备卡；光源、滤光轮、推杆、样品台按 STM32 子系统呈现。绑定、raw diagnostics 和手动动作移动到对应的折叠 Inspector / Advanced 层。
+- 新增内联 SVG 图标、七步采集 stepper 和设备维护静态回归测试；未修改后端硬件、科学采集或现有 Hardware Action Gating。
+
 ## 2026-09-25 Hardware Action Button Gating UX
 
 - 主程序设备控制和 True Hardware Capture 增加统一的 `ready / blocked / running` 按钮状态：Blocked 保持低权重视觉但可点击，展示未满足、已满足、完整要求和低权重技术代码，且前端 guard 会在任何 API 调用前返回；Running 继续使用原生 disabled 防止重复提交。

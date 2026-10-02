@@ -4,6 +4,8 @@
 
 补充（2026-09-25）：前端在 `app.js` 以轻量 Action Availability 层统一管理 `ready`、`blocked`、`running`。它只由当前真实状态/API readiness 渲染 UX：Blocked 在 click guard 后展示详情并停止，Running 使用原生 disabled；实际设备命令和科学采集仍由后端重新校验。
 
+补充（2026-09-30）：设备维护 UI 采用 Summary → Device Card → Inspector Advanced 的渐进披露结构。`app.js` 根据既有设备检查和状态数据渲染分组摘要卡；单设备诊断只调用既有刷新/相机 probe 路径，设备动作继续复用原有 endpoint、availability guard 和后端 interlock。没有新增或变更硬件协议、adapter、CaptureCoordinator 或科学采集数据路径。
+
 ## 总体结构
 
 ```text
