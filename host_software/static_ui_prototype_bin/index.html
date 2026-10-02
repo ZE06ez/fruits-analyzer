@@ -66,17 +66,24 @@
             <span id="operatorSpectralReady" data-status="waiting">多光谱</span>
             <span id="operatorCalibrationReady" data-status="waiting">Calibration</span>
           </div>
-          <div class="workflow-strip workflow-stepper" aria-label="检测流程">
-            <span id="workflowSample" data-status="waiting" data-step-icon="sample">样品</span>
-            <span id="workflowDevice" data-status="waiting" data-step-icon="device">设备</span>
-            <span id="workflowCalibration" data-status="waiting" data-step-icon="calibration">标定</span>
-            <span id="workflowCapture" data-status="waiting" data-step-icon="rgb">RGB</span>
-            <span id="workflowSpectral" data-status="waiting" data-step-icon="spectrum">多光谱</span>
-            <span id="workflowAnalysis" data-status="waiting" data-step-icon="analysis">分析</span>
-            <span id="workflowResult" data-status="waiting" data-step-icon="result">结果</span>
-          </div>
           <p class="hint" id="operatorTaskDetail">请先创建样品或检查设备状态。</p>
           <button class="primary-action" id="operatorPrimaryAction" type="button">新建样品</button>
+        </section>
+
+        <section class="side-card workflow-status-card" aria-labelledby="workflowStatusTitle">
+          <div class="workflow-status-head">
+            <h2 id="workflowStatusTitle">流程状态</h2>
+            <span>采集至结果</span>
+          </div>
+          <ol class="capture-workflow-stepper sidebar-workflow-stepper" aria-label="检测流程状态">
+            <li id="workflowSample" data-status="current"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">样品</span></li>
+            <li id="workflowDevice" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">设备</span></li>
+            <li id="workflowCalibration" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">标定</span></li>
+            <li id="workflowCapture" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">RGB</span></li>
+            <li id="workflowSpectral" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">多光谱</span></li>
+            <li id="workflowAnalysis" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">分析</span></li>
+            <li id="workflowResult" data-status="pending"><span class="capture-step-dot" aria-hidden="true"></span><span class="capture-step-label">结果</span></li>
+          </ol>
         </section>
 
         <nav class="task-tree" aria-label="主工作区导航">
@@ -516,11 +523,10 @@
           <article class="view-page" data-page="shape">
             <div class="panel-title">
               <h3>分析详情 / Analysis Details</h3>
-              <span>数据预处理、ROI、模型预测和糖酸比</span>
+              <span>预处理与特征、模型预测和糖酸比</span>
             </div>
             <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
-              <button type="button" class="active" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
-              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" class="active" data-analysis-view="shape" data-analysis-step="preprocess">预处理、ROI 与特征</button>
               <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
               <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
               <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
@@ -635,8 +641,7 @@
               <span id="sscModelStatus">模型预测待接入</span>
             </div>
             <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
-              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
-              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">预处理、ROI 与特征</button>
               <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
               <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
               <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
@@ -679,8 +684,7 @@
               <span id="acidModelStatus">模型预测待接入</span>
             </div>
             <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
-              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
-              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">预处理、ROI 与特征</button>
               <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
               <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
               <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>
@@ -732,8 +736,7 @@
               <span>糖酸比与综合等级</span>
             </div>
             <div class="analysis-step-tabs" role="tablist" aria-label="分析详情步骤">
-              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">数据预处理</button>
-              <button type="button" data-analysis-view="shape" data-analysis-step="filter">ROI 与特征</button>
+              <button type="button" data-analysis-view="shape" data-analysis-step="preprocess">预处理、ROI 与特征</button>
               <button type="button" data-analysis-view="sugar" data-analysis-step="sugar">糖度预测</button>
               <button type="button" data-analysis-view="acid" data-analysis-step="acid">酸度与 pH</button>
               <button type="button" data-analysis-view="taste" data-analysis-step="ratio">糖酸比</button>

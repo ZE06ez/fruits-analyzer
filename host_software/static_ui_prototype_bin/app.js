@@ -1689,6 +1689,19 @@ function setOverviewStatus(id, status, text = null) {
   if (text !== null) node.textContent = text;
 }
 
+function setWorkflowStep(id, status) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.dataset.status = status;
+  node.setAttribute("aria-current", status === "current" ? "step" : "false");
+  node.title = ({
+    completed: "已完成",
+    current: "当前步骤",
+    pending: "未开始",
+    blocked: "等待前置条件",
+  })[status] || status;
+}
+
 function cameraReadiness(camera) {
   if (!camera) return "waiting";
   if (camera.available || camera.opened || camera.streaming) return "ready";
@@ -1716,17 +1729,21 @@ function renderOperatorOverview(status = deriveSystemStatus()) {
   setOverviewStatus("operatorSpectralReady", cameraReadiness(state.cameraStatus.multispectral));
   setOverviewStatus("operatorCalibrationReady", state.calibrationStatus === "passed" ? "ready" : "warning");
 
-  setOverviewStatus("workflowSample", hasActiveSample() ? "ready" : "running");
-  setOverviewStatus("workflowDevice", isDevicePreparationReady() ? "ready" : state.devicePrep.connect ? "warning" : "waiting");
-  setOverviewStatus(
-    "workflowCapture",
-    state.trueCaptureRunning || state.captureCompleting ? "running" : state.currentCaptureValid || state.analysisDataDir ? "ready" : hasActiveSample() ? "running" : "waiting"
-  );
-  setOverviewStatus(
-    "workflowAnalysis",
-    state.systemTask === "shape" || state.systemTask === "ssc" || state.systemTask === "acid" ? "running" : state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph) ? "ready" : "waiting"
-  );
-  setOverviewStatus("workflowResult", state.grade ? "ready" : "waiting");
+  const hasSample = hasActiveSample();
+  const deviceReady = isDevicePreparationReady();
+  const calibrationReady = state.calibrationStatus === "passed";
+  const captureComplete = Boolean(state.currentCaptureValid || state.analysisDataDir);
+  const captureRunning = Boolean(state.trueCaptureRunning || state.captureCompleting);
+  const analysisComplete = Boolean(state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph));
+  const analysisRunning = ["shape", "ssc", "acid"].includes(state.systemTask);
+
+  setWorkflowStep("workflowSample", hasSample ? "completed" : "current");
+  setWorkflowStep("workflowDevice", deviceReady ? "completed" : hasSample ? "current" : "pending");
+  setWorkflowStep("workflowCalibration", calibrationReady ? "completed" : deviceReady ? "current" : "pending");
+  setWorkflowStep("workflowCapture", captureComplete ? "completed" : captureRunning || calibrationReady ? "current" : "pending");
+  setWorkflowStep("workflowSpectral", captureComplete ? "completed" : captureRunning ? "current" : "pending");
+  setWorkflowStep("workflowAnalysis", analysisComplete ? "completed" : analysisRunning || captureComplete ? "current" : "pending");
+  setWorkflowStep("workflowResult", state.grade ? "completed" : analysisComplete ? "current" : "pending");
 
   const action = $("#operatorPrimaryAction");
   if (!action) return;
