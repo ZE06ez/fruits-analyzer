@@ -1,5 +1,6 @@
 import json
 import copy
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -191,6 +192,24 @@ class InspectionHistoryTests(unittest.TestCase):
         response.close()
         self.assertEqual(detail["inspection"]["inspectionId"], inspection["inspectionId"])
         self.assertEqual(detail["inspection"]["results"][0]["target"], "ssc")
+
+    def test_text_report_uses_saved_snapshot_after_source_is_missing(self):
+        inspection = self.service.record_prediction(self.sample, self.result("ssc", 11.0))
+        shutil.rmtree(self.sample.analysis_data_dir)
+        text, filename = self.service.export_text_report(inspection["inspectionId"])
+        self.assertIn(inspection["inspectionId"], text)
+        self.assertIn("SSC: 11.0", text)
+        self.assertTrue(filename.endswith(".txt"))
+
+    def test_result_snapshot_persists_shape_and_derived_values_without_zero_fill(self):
+        inspection = self.service.record_prediction(self.sample, self.result("ssc", 11.0))
+        saved = self.service.save_result_snapshot(inspection["inspectionId"], {
+            "shapeMetrics": {"areaPx2": {"value": 42.5, "unit": "px²", "source": "analysis"}},
+            "sugarAcidRatio": None, "grade": "未记录", "gradeRuleVersion": "taste-v1",
+        })
+        reopened = InspectionService(self.root / "app").get_inspection(inspection["inspectionId"])
+        self.assertEqual(saved["resultSnapshot"]["shapeMetrics"]["areaPx2"]["value"], 42.5)
+        self.assertIsNone(reopened["resultSnapshot"]["sugarAcidRatio"])
 
 
 if __name__ == "__main__":

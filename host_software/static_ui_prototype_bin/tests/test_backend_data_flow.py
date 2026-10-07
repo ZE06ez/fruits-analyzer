@@ -273,7 +273,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertEqual(first["rgbDirName"], "rgb")
         self.assertEqual(first["multispectralDirName"], "multispectral")
         self.prepare_device()
-        self.post_json("/api/complete-capture", {})
+        self.post_json("/api/complete-capture", {"developmentSimulation": True, "captureMode": "development"})
         status_after_capture = self.get_json("/api/status")
         self.assertTrue(status_after_capture["currentCaptureDir"])
         self.assertEqual(Path(status_after_capture["currentCaptureDir"]), first_dir)
@@ -370,7 +370,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assertFalse((capture_root / "rgb").exists())
         self.assertFalse((capture_root / "multispectral").exists())
 
-        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"]})
+        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"], "developmentSimulation": True, "captureMode": "development"})
         capture_dir = Path(capture["currentCaptureDir"])
         self.assertEqual(capture["rgbDirName"], "color_images")
         self.assertEqual(capture["multispectralDirName"], "spectral_images")
@@ -484,7 +484,7 @@ class BackendDataFlowTests(unittest.TestCase):
         sample = self.create_sample()
         self.assertTrue(sample["hasSample"])
         self.assertEqual(sample["sampleName"], "Duke成熟组03")
-        capture = self.post_json("/api/complete-capture", {"sampleId": "S001"})
+        capture = self.post_json("/api/complete-capture", {"sampleId": "S001", "developmentSimulation": True, "captureMode": "development"})
         capture_dir = Path(capture["currentCaptureDir"])
         self.assertEqual(Path(capture["analysisDataDir"]), capture_dir)
         self.assertTrue((capture_dir / "rgb" / "rgb_001.png").is_file())
@@ -494,7 +494,7 @@ class BackendDataFlowTests(unittest.TestCase):
         self.assert_no_jpeg_paths_under(capture_dir)
 
         status = self.get_json("/api/status")
-        self.assertEqual(Path(status["currentCaptureDir"]), capture_dir)
+        self.assertNotEqual(Path(status["currentCaptureDir"]), capture_dir)
         self.assertEqual(Path(status["analysisDataDir"]), capture_dir)
 
         report = self.get_json(
@@ -531,6 +531,7 @@ class BackendDataFlowTests(unittest.TestCase):
         metadata = {
             "sampleId": "S-OFFLINE-MV",
             "sample_id": "S-OFFLINE-MV",
+            "simulation": {"is_simulated": True},
             "image_directories": {"rgb": "rgb", "multispectral": "multispectral"},
             "sample_rotation": {
                 "enabled": True,
@@ -857,6 +858,8 @@ class BackendDataFlowTests(unittest.TestCase):
 
         capture = self.post_json("/api/complete-capture", {
             "sampleId": sample["sampleId"],
+            "developmentSimulation": True,
+            "captureMode": "development",
             "sampleRotation": {
                 "enabled": True,
                 "expectedIntervalDeg": 50,
@@ -907,7 +910,7 @@ class BackendDataFlowTests(unittest.TestCase):
                 "includeClosureView": True,
             },
         })["sample"]
-        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"]})
+        capture = self.post_json("/api/complete-capture", {"sampleId": sample["sampleId"], "developmentSimulation": True, "captureMode": "development"})
         capture_dir = Path(capture["currentCaptureDir"])
         views = json.loads((capture_dir / "views.json").read_text(encoding="utf-8"))
         self.assertEqual(len(views), 5)

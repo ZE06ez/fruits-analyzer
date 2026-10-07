@@ -1,6 +1,8 @@
 # Project Context
 
-更新时间：2026-09-18
+更新时间：2026-10-03（北京时间）
+
+本次状态核对基线：`main@9e23790fd2260b237df1560727cd342b2d6376bc`。当前简要状态见 [PROJECT_STATUS.md](../PROJECT_STATUS.md)。此次只核对仓库代码/配置/测试与文档，未实机测试、未读取用户本机运行时数据库，未重新执行完整回归。历史实机记录与正式验收结果须分开。
 
 本文档记录当前项目的真实上下文。判断优先级固定为：当前真实代码 > 当前配置/数据库结构 > 当前测试 > 最新项目文档 > 历史项目文档 > 历史聊天上下文。若历史描述与代码冲突，以代码为准。
 
@@ -88,10 +90,10 @@ UI
 - `host_software/static_ui_prototype_bin/stm32_controller.py`：P1B-7.5A.2 STM32 current-firmware adapter；在单一 `SerialService` owner 上处理 ACK correlation、STATUS/INFO cache revision、handshake、PPR consistency diagnostic、command serialization、fresh STATUS mechanical verification、fan/LED/door/filter-wheel action 和 best-effort safe stop。
 - `host_software/static_ui_prototype_bin/hardware_controller.py`：风扇、升降门、PB9/LED3、PB7/PB8 两路钨灯、滤光片轮、状态查询、急停和故障清除控制层；光源物理映射集中为 `TUNGSTEN_1_BIT=0x01`、`TUNGSTEN_2_BIT=0x02`、`LED3_BIT=0x04`、`TUNGSTEN_MASK=0x03`、`ALL_LIGHT_MASK=0x07`。PB7/PB8 不再作为 RGB LED，钨灯复用 current firmware `LED_SET=0x12`。
 - `host_software/static_ui_prototype_bin/device_discovery.py`：统一设备发现和绑定层；定义 `DeviceCandidate`/`DeviceBinding`/`DeviceRegistry`/`DeviceDiscovery`，区分 stable identity 与 current location。串口只用 open/PING/close 验证协议，不执行机械动作；缺 pyserial 时只在串口域报告 `dependency_missing`。RGB UVC 候选尝试读取 Windows FriendlyName/PnP InstanceId/VID/PID/USB serial 等信息，只有 exact/verified 映射才生成 stableId，DirectShow index 或顺序推断只作为 last known location；DVP2 优先用 serial/user id 作为稳定身份，并可在可靠匹配时显示主机 IPv4 网卡。运行时绑定保存到 `runtime/hardware_profile.json`，不把当前电脑私有 COM/index 写入源码默认配置。
-- `host_software/static_ui_prototype_bin/device_manager.py`：后端设备管理层，连接串口、执行 PING、自检、急停、采集状态，暴露独立 SampleStage status/home/move/stop 边界，并在完整真实采集协调器未接入时拒绝真实采集。
+- `host_software/static_ui_prototype_bin/device_manager.py`：后端设备管理层，连接串口、验证 current firmware、自检、急停与采集状态，暴露独立 SampleStage status/home/move/stop；当前 True Capture 通过动态 readiness 执行，硬件验收与生产放行仍未完成。
 - `host_software/static_ui_prototype_bin/capture_coordinator.py`：P1B 采集协调器骨架，定义真实采集状态机、步骤模型、取消/超时/安全停止和 metadata 骨架；P1B-2 已接入 STM32 硬件安全准备链，可执行预检查、关门、风扇、RGB/多光谱光源准备、interlock 确认和关灯收尾；P1B-3 新增受保护的 RGB 单帧正式采集与 PNG 保存步骤；P1B-4 新增受保护的 DVP2 raw mono 单帧 PNG 保存步骤；P1B-5 新增受保护的滤光轮 + DVP2 多波段 sequence，可按 filter config/显式 band plan 保存每个 enabled band 的 raw PNG；P1B-6 新增受保护 Dark/White reference sequence、`CaptureReferenceType`、`CalibrationSet` 和 `validate_calibration_compatibility()`；P1B-7 新增 `SampleViewPlan`、`SampleMultiViewPlan` 和 `run_sample_multiview_capture()`，按样品多视角编排每个 View 的 RGB + multispectral sequence，但不放行完整 `/api/capture/start`。
 - `host_software/static_ui_prototype_bin/sample_stage.py`：P1B-7/P1B-7.5B 样品台高层边界；定义 `SampleStageStatus` / `SampleStagePosition`、connect/home/move_to/move_relative/stop/get_status/get_position/safe_stop 接口语义；`UnimplementedSampleStage` 默认报告 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 且不伪造 HOME/position feedback，`SimulatedSampleStage` 只供 unittest/离线编排验证使用。
-- `host_software/static_ui_prototype_bin/camera_service/`：P1A 相机服务基础层；包含统一相机异常/状态接口、RGB UVC/OpenCV DirectShow adapter、DVP2 `ctypes` binding、DVP2 黑白相机 adapter、`CameraSettingsStore`、`rgb_scientific.py` 和 `CameraManager`。P1B-8.1 后 `settings_store.py` 以 UTF-8 JSON + atomic replace 管理被 Git 忽略的运行时 `config/camera_settings.json`，缺文件时自动生成软件默认配置；`config/camera_settings.example.json` 只作为可提交参考，不绑定真实设备 serial/stableId。store 提供 load/save/get/update/reset/migrate legacy，字段白名单限制为 RGB 安全相机参数与 DVP2 exposure/gain；`CameraManager` 负责 Apply/Persist/Restore/Readback、restore state、RGB strict-lossless transport gate 和 capture metadata。P1B-5.4 后 `CameraManager` 负责 DVP2 preview latest-frame worker/cache 的生命周期；本轮 RGB 和 DVP2 preview 均由 latest-frame + latest encoded JPEG cache 驱动，HTTP 预览只读最新 JPEG cache；scientific capture 仍直接获取 raw `CameraFrame` 并由 Coordinator 保存 PNG。
+- `host_software/static_ui_prototype_bin/camera_service/`：P1A 相机服务基础层；包含统一相机异常/状态接口、RGB UVC/OpenCV DirectShow adapter、DVP2 `ctypes` binding、DVP2 黑白相机 adapter、`CameraSettingsStore`、`rgb_scientific.py` 和 `CameraManager`。P1B-8.1 后 `settings_store.py` 以 UTF-8 JSON + atomic replace 管理被 Git 忽略的运行时 `config/camera_settings.json`，缺文件时自动生成软件默认配置；`config/camera_settings.example.json` 只作为可提交参考，不绑定真实设备 serial/stableId。store 提供 load/save/get/update/reset/migrate legacy，字段白名单限制为 RGB 安全相机参数与 DVP2 exposure/gain；`CameraManager` 负责 Apply/Persist/Restore/Readback、restore state、RGB scientific transport gate（含允许的 uncompressed_422）和 capture metadata。P1B-5.4 后 `CameraManager` 负责 DVP2 preview latest-frame worker/cache 的生命周期；本轮 RGB 和 DVP2 preview 均由 latest-frame + latest encoded JPEG cache 驱动，HTTP 预览只读最新 JPEG cache；scientific capture 仍直接获取 raw `CameraFrame` 并由 Coordinator 保存 PNG。
 - `host_software/static_ui_prototype_bin/rotation_plan.py`：样品台多角度旋转采集计划；与滤光片转轮角度独立。
 - `host_software/static_ui_prototype_bin/pointcloud_service.py`：样品目录检查、RGB/多光谱二维形态与表面分析、兼容 RGB-D/PLY。
 - `host_software/static_ui_prototype_bin/pipeline_v2.py`：旧 RGB-D/SFM 点云重建工具函数。
@@ -103,30 +105,20 @@ UI
 
 ## 4. 用户完整工作流（当前代码）
 
-当前主工作流以离线/本地文件夹为主：
+1. 运行 `python launcher.py` 或 EXE。Windows launcher 在初始化后端/硬件前获取 Named Mutex；首实例启动本地服务并打开浏览器，后续实例提示并退出。
+2. UI 加载 `/api/status`，获取依赖、当前样品、保存位置、模型和 readiness。设备与维护按 STM32、RGB、DVP2 独立检查；相机 probe 释放句柄后仍保留真实 detected/available。
+3. 创建样品：选择正常检测 `inspection` 或训练数据采集 `training_capture`，填写名称、果种/品种、保存父目录和图像子目录。新建样品不要求设备先就绪；训练采集允许新果种/品种且不依赖模型。身份和实际目录名写入 metadata。
+4. 正常检测展示 Default/Published/generic 模型摘要，可手动更换；训练采集不绑定 SSC/TA/pH 模型。样品台旋转计划属于 `sample_rotation`，与滤光轮切换独立。
+5. True Capture：`POST /api/capture/start` 先做当前计划 readiness，再由 `CaptureCoordinator.run_true_capture()` 执行可选 Dark/White、RGB、DVP2 多波段、metadata 与安全收尾。单视角不要求 SampleStage，多视角因真实样品台协议未知而阻塞。
+6. RGB 正式采集使用独立 scientific profile，并回读 actual transport。当前示例请求 1920×1080@5fps YUY2；未压缩 4:2:2 可准入但不是完整 RGB strict lossless。有损/未知传输拒绝。RGB/DVP2 网页 JPEG/cache 只用于预览。
+7. Offline/Demo：`/api/complete-capture` 仅从设备维护的明确开发工具调用，必须显式确认模拟模式，并在 `runtime/simulations/` 的新目录生成模拟 PNG/metadata/views；拒绝覆盖当前正式样品目录，模拟不能作为真实样品台或正式采集完成。
+8. 本次拍摄目录自动进入分析；其他样品先选择父目录，再扫描确认 RGB/多光谱子目录。已有目录可直接分析，不要求创建当前样品。进入 shape/sugar/acid/taste 后隐藏双相机预览。
+9. 形态分析创建后台任务并轮询结果，主要为 RGB 二维像素面积/宽高/颜色/果粉；旧 RGB-D/PLY 仅兼容，真实尺寸标定与三维硬件尚未完成。
+10. SSC/TA/pH 通过共享 `run_feature_pipeline()` 提取特征，校验生产分析依赖与模型输入 contract/signature，再预测；缺模型、缺依赖或输入不匹配明确失败，不生成假值。
+11. 检测结果与样品、源文件、标定、背景参考、配准、管线和模型 provenance 写入独立 Inspection SQLite，可查看/归档。有效 SSC/TA 用于糖酸比和口感分析。
+12. 导出当前为前端 TXT；正式 PDF/科研报告未完成。TXT 的现有说明仍含“未接入 CaptureCoordinator”旧文案，这是待修正的产品文本，不能当作当前软件链路结论。
 
-1. 启动软件：运行 `python launcher.py` 或打包后的 EXE。
-2. `launcher.py` 启动本地后端并打开浏览器页面。
-3. UI 加载 `/api/status`，获取依赖状态、默认保存根目录、当前样品会话、Model Studio 发布模型目录。
-4. 用户进行设备准备：顶栏显示由 `deriveSystemStatus()` 派生的全局状态；设备准备页提供“开始设备检查”普通入口，调用 `/api/device/check` 按 STM32、RGB、DVP2 独立硬件域检查，STM32 未连接或缺 pyserial 不阻断相机检查。P1A 后 RGB 相机状态来自 `CameraManager`/`RgbUvcCamera` 的 OpenCV DirectShow probe；相机设置页的“重新检测”会调用 `/api/camera/rgb/probe`，按当前绑定/配置只打开对应 device index 并取一帧，不会自动 fallback 到内置摄像头。probe 成功后即使释放句柄，UI 也应显示“已检测 / 预览已停止”，而不是“未连接”。RGB 预览使用后台 latest-frame + latest encoded JPEG cache，P1B-3 后 Coordinator 内部受保护方法可在 RGB 安全准备链后采集并保存一张正式 RGB PNG，且不读取预览 JPEG/cache。多光谱相机状态来自 DVP2 SDK：相机设置页可重新检测、打开低延迟网页预览、调整曝光/增益并回读 actual；P1B-5.4 后 DVP2 预览也使用后台 latest-frame/latest encoded JPEG cache。RGB 与 DVP2 预览信息栏会显示 frameId、sourceTimestamp/age、capture/resize/JPEG/server/browser fetch 耗时、measured FPS、drop 和 encoder，用于现场定位慢半拍；P1B-4 后 Coordinator 内部受保护方法可保存一张未分配波段的 DVP2 raw mono PNG；P1B-5 后 Coordinator 内部受保护方法可在滤光轮 HOME/移动/位置确认后按 enabled bands 保存 DVP2 raw PNG；P1B-6 后 Coordinator 内部受保护方法可分别采集 Dark/White 多波段 raw reference；P1B-7 后 Coordinator 内部受保护方法可按 Sample -> View -> RGB + multispectral sequence 编排多视角软件流程。若已枚举但无法打开，会提示关闭 BasedCam3 或其他相机程序。标定显示“需要人工确认”，不会标为真实通过。串口连接、STM32 PING、滤光轮寻零和急停已有真实 API；完整真实采集、暗白物理校正验收和真实样品台控制仍未接入。
-5. 用户在“样品采集”中填写样品名称、样品种类、品种；保存位置通过系统“选择文件夹”按钮写入只读路径框，取消选择不会清空旧路径。
-6. 可在“样品采集”页设置样品台多角度旋转拍摄：启用/关闭、期望角度间隔、起始角度、CW/CCW、是否补拍闭合角度。该设置属于 `sample_rotation`，不等同于滤光片转轮角度。
-7. 完成设备准备并选择保存父目录后，前端弹出“图像目录名称设置”；用户确认 RGB 图像目录名和多光谱图像目录名后，点击“新建样品”：`POST /api/new-sample` 创建唯一样品目录，生成 `captureRotationPlan`，写入 `metadata.json.image_directories`，并创建实际 RGB 子目录、实际多光谱子目录、`calibration/dark/`、`calibration/white/`。默认仍为 `rgb/` 和 `multispectral/`。
-8. 样品采集页显示普通用户优先的“检测模型”摘要：按当前果种/品种展示 SSC、TA、pH 是否有 Default/Published 模型；若实际使用 `generic` 模型则明确显示“正在使用通用模型”；若无模型显示“暂无正式模型”。点击“更换模型”后才展开原有手动模型选择。
-9. 用户点击采集步骤：当前只更新 UI 进度与日志；采集开始后旋转计划锁定。
-10. True Hardware Capture：`POST /api/capture/start` 通过 `DeviceManager.capture_readiness()` 校验当前 `TrueCapturePlan`，再调用 `CaptureCoordinator.run_true_capture()`。单视角可复用已有 Dark/White、RGB PNG、DVP2 raw mono PNG 和多波段 sequence；多视角在真实 SampleStage 协议未知时被 readiness gate 阻断。
-11. Offline/Demo Capture：`POST /api/complete-capture` 只调用 `create_offline_capture_dataset()`，按当前 session/metadata 中的实际目录名写入离线验证图片。未启用多角度时保持旧离线单层文件命名；启用多角度时写 `<rgbDirName>/rgb_view_000.png`、`<multispectralDirName>/view000_450.png` 等兼容命名文件，并写 `views.json` 和 metadata 中的 `capture_views`。
-11. 采集完成后样品旋转计划标记 `returned_home=true`、`home_status=HOME_OK`；当前只是模拟回 Home，不代表真实电机已接入。
-12. 进入 `shape/sugar/acid/taste` 分析模块时，主程序中央区切换为分析布局：隐藏 RGB/多光谱相机预览面板，并让分析内容占用中央空间；设备准备、采集和设置模块仍保留双相机预览。
-13. 形态分析页可选择“本次拍摄”或“其他文件夹”。本次拍摄会自动使用当前 session/metadata 中的实际图像目录名，不再弹出选择框；其他文件夹通过系统目录选择器先选择父目录，再由 `/api/inspect-image-folders` 扫描一级子目录并弹出子目录选择框，确认 RGB/多光谱/其他目录后才调用 `GET /api/sample-folder` 检查。本地已有样品目录可以直接分析，不强制先创建当前样品。
-14. `GET /api/dataset-images` 返回图片预览 URL；前端显示彩色图和多光谱图。
-15. 点击“开始形态分析”：`POST /api/analyze-shape` 创建后台任务，`pointcloud_service.analyze_rgbd_dataset()` 优先执行 RGB + multispectral 二维形态/表面分析。
-16. 后端生成输出图到 `outputs/<job_id>/`，前端轮询 `/api/jobs/<job_id>` 并显示面积、宽度、高度、果粉覆盖率、颜色均匀度等。
-17. 点击“开始糖度分析”：`POST /api/predict-ssc` 构建 `SampleSession`，调用 `predict_ssc()`。
-18. 点击“开始酸度分析”：`POST /api/predict-acid` 调用 `predict_ta()` 和 `predict_ph()`。
-19. 若存在兼容 Production/Default 模型文件和元数据，预测返回 `success`；否则返回 `model_missing`，不会伪造数值。
-20. 点击“生成口感分析”：前端用 SSC / TA 计算糖酸比并给出等级；若缺少有效 SSC 或 TA，会提示等待数据。
-21. 导出报告：前端生成本地 TXT 文本，说明 RGB、DVP2 与 STM32 基础控制层已接入，但完整真实自动采集闭环尚未接入 CaptureCoordinator。
+`trueCapturePrepared` 表示当前计划 readiness；`HARDWARE_ACCEPTANCE_NOT_PASSED` 与 `productionAccepted=false` 仍保留。当前软件入口存在，正式硬件验收表尚未全部 PASS。
 
 ## 5. Model Studio 工作流
 
@@ -186,8 +178,8 @@ UI
 当前真实状态：
 
 - `trained_models/ssc`、`trained_models/ta`、`trained_models/ph` 当前没有提交可用模型文件。
-- `model_studio/database/model_studio.sqlite` 当前为空/未初始化数据。
-- 预测链路有真实代码和测试，但需要真实训练数据与人工发布模型后才会输出数值。
+- 当前仓库未提交运行时 Model Studio SQLite；用户本机数据库是否已初始化或含真实记录，本次未核对。
+- 预测链路有真实代码和测试；运行时需可用兼容模型、生产分析依赖与有效数据才会输出数值。仓库未提交模型不能直接说明本机预测不可用。
 
 ## 7. 已完成 / 部分完成 / 未完成 / 模拟
 
@@ -196,8 +188,8 @@ UI
 | 主工作站静态 UI | DONE | `index.html`/`styles.css`/`app.js` 完整界面与交互 |
 | 本地 Python HTTP 后端 | DONE | `backend_server.py` 提供静态资源、API、任务轮询 |
 | PyInstaller 打包配置 | DONE | `FruitTasteAnalyzer.spec`、`launcher.py`、`run_analyzer.bat` |
-| 样品创建与目录结构 | DONE | 设备准备完成后，`/api/new-sample` 创建目录和 `metadata.json` |
-| 本次拍摄目录进入分析流程 | PARTIAL/MOCK | 会自动设为 `analysisDataDir`，但图片由离线函数生成 |
+| 样品创建与目录结构 | SOFTWARE IMPLEMENTED | `/api/new-sample` 校验样品身份与保存目录，不依赖硬件先就绪；训练采集模式不依赖模型 |
+| 本次拍摄目录进入分析流程 | SOFTWARE IMPLEMENTED / HARDWARE ACCEPTANCE PENDING | 本次拍摄自动进入 analysisDataDir；True Capture 与 Offline/Demo 有独立入口，只有后者生成模拟数据 |
 | 样品多角度旋转拍摄计划 | DONE/MOCK | `rotation_plan.py` 计算视角、实际间隔、闭合 View 和 Home 状态；当前无真实样品台电机 |
 | 手动选择其他数据目录 | DONE | 主 UI 通过 `/api/select-folder` 选择父目录，再用 `/api/inspect-image-folders` 扫描一级子目录；用户确认 RGB/多光谱目录后由 `/api/sample-folder` 检查 |
 | 主程序采集/分析中央布局 | DONE | `app.js` 按模块 key 设置 `layout-capture`/`layout-analysis`；分析模块隐藏相机面板并重排中央内容 |
@@ -208,21 +200,21 @@ UI
 | 路径选择 UI | DONE | 主程序保存位置/其他样品文件夹、Model Studio 导入来源/样品文件夹/labels.csv 均为只读路径显示 + 系统选择按钮 |
 | RGB + 多光谱目录检查 | DONE | `inspect_sample_folder()` 按启用波段检查 |
 | Camera Service 基础层 | DONE/PARTIAL | `camera_service` 定义统一接口、异常和 `CameraManager`；adapter 与样品保存目录解耦；`CameraManager` 用单实例和锁统一 self-test、preview、apply settings |
-| CaptureCoordinator 骨架 | DONE/PARTIAL | `capture_coordinator.py` 定义状态机、步骤模型、错误模型、取消、超时、best-effort safe stop 和 metadata 骨架；P1B-2 已通过 `HardwareController` 接入安全准备链；P1B-3 新增受保护 RGB 单帧正式采集；P1B-4 新增 DVP2 raw mono 单帧；P1B-5 新增滤光轮+DVP2 多波段 sequence；P1B-6 新增 Dark/White reference、`CalibrationSet` 和 compatibility；P1B-7 新增 `run_sample_multiview_capture()`，用 `SampleViewPlan`/`SampleMultiViewPlan` 编排一个 sample 的多个 View，每个 View 先确认样品台姿态，再采 RGB 和复用 P1B-5 multispectral sequence，记录 view/sample completeness、partial/cancel/return home；`DeviceManager.capture_status()` 可暴露 snapshot，但 `/api/capture/start` 仍受保护 |
+| CaptureCoordinator 骨架 | DONE/PARTIAL | `capture_coordinator.py` 定义状态机、步骤模型、错误模型、取消、超时、best-effort safe stop 和 metadata 骨架；P1B-2 已通过 `HardwareController` 接入安全准备链；P1B-3 新增受保护 RGB 单帧正式采集；P1B-4 新增 DVP2 raw mono 单帧；P1B-5 新增滤光轮+DVP2 多波段 sequence；P1B-6 新增 Dark/White reference、`CalibrationSet` 和 compatibility；P1B-7 新增 `run_sample_multiview_capture()`，用 `SampleViewPlan`/`SampleMultiViewPlan` 编排一个 sample 的多个 View，每个 View 先确认样品台姿态，再采 RGB 和复用 P1B-5 multispectral sequence，记录 view/sample completeness、partial/cancel/return home；`DeviceManager.capture_status()` 暴露 snapshot；P1B-8 的 `/api/capture/start` 按动态 readiness 执行，硬件验收与生产放行仍待完成 |
 | RGB UVC/DirectShow adapter | DONE/PARTIAL | `RgbUvcCamera` 使用 OpenCV `cv2.CAP_DSHOW`，返回 RGB `uint8` H×W×3；当前电脑已验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`；状态明确区分 `detected`、`available`、`opened`、`streaming`；能力探测区分 exposure/gain/white balance 是否实际可设；已接入相机设置页重新检测、参数应用和 960x540 latest-frame/latest encoded JPEG 预览，并通过 `CameraManager.capture_rgb_frame()` 供 Coordinator 受保护单帧正式 PNG 保存使用 |
 | DVP2 多光谱相机 adapter | PARTIAL/REAL VERIFIED BY USER | `dvp2_binding.py` 已按真实 `DVPCamera.h`/官方示例绑定 `dvpRefresh`、`dvpEnum`、`dvpOpenByName`、`dvpOpenByUserId`、`dvpStart`、`dvpGetFrame`、曝光/增益/ROI/触发等接口；`Dvp2MonoCamera` 已能发现 SDK、按 serial/user_id 选择目标、打开、开始取流、保留 mono `uint8/uint16` 帧，并接入状态/probe/预览 API；相机设置页已支持网页低延迟预览和曝光/增益真实下发/回读；DVP2 预览由后台 latest-frame/latest encoded JPEG cache 服务浏览器，不进入 scientific capture；P1B-4 已通过 `CameraManager.capture_multispectral_frame()` 接入 Coordinator 受保护 raw mono 单帧正式保存；P1B-5 复用同一 raw frame 边界做滤光轮同步多波段 sequence 保存；P1B-6 复用同一边界做 Dark/White reference raw sequence 保存；PixelFormat 仅显示当前实际值，当前只验证 `Mono8`，不开放格式切换；暗白物理校正仍未现场验收 |
 | RGB 二维形态/表面分析 | DONE/PARTIAL | 可测面积、宽高、颜色、果粉；不是完整真实尺寸标定 |
 | RGB-D/PLY 点云兼容 | PARTIAL | 旧流程可用，主 UI 标为三维建模预留 |
 | 多光谱特征提取 | DONE | 暗/白校正、ROI 均值、波长校验 |
 | RAW/SNV/MSC | DONE | `preprocessing.py` |
-| PLSR/SVR/RF 训练 | DONE | `training/train.py` 与测试 |
-| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、Sample 引用保护 Permanent Delete、Dataset Archive、带生产模型依赖保护的 Dataset Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、状态化 Archive/Delete、Retrain lineage；实际项目数据库暂无真实训练数据 |
+| PLSR/SVR/RF 训练 | SOFTWARE IMPLEMENTED / SCIENTIFIC VALIDATION PENDING | 有按 sample_id 分组的外层验证与 fold 内预处理；PLSR 成分数仍按训练误差选择，内层 CV 待补 |
+| Model Studio 数据集/版本/训练/发布 | DONE/PARTIAL | 后端和 UI 已整理为 Dashboard / Datasets / Training / Models / Settings；Dataset 已本地托管并支持后续 Add Samples、Include/Exclude、Sample 引用保护 Permanent Delete、Dataset Archive、带生产模型依赖保护的 Dataset Permanent Delete、不可变 Dataset Version、Version Diff、Experiment/Run/Variant、Model Card Registry、状态化 Archive/Delete、Retrain lineage；仓库未提交真实数据/运行时数据库，本机数据状态未核对 |
 | Production 模型人工发布 | DONE | `publish_model()`/`set_default_model()`；复制到 `trained_models/<target>` |
 | 主程序按果种/品种选模型 | DONE | `/api/quality-models`、`resolve_model_id()`、`_select_registry_model()` |
 | SSC/TA/pH 预测入口 | DONE/PARTIAL | 真实加载模型预测；P1E-1 后模型输入前的 FeatureRecord 通过 shared analysis pipeline 生成；P1E-2 后先校验 `model_input_contract` / `pipeline_signature` 再进入模型预测，缺少 production 分析依赖时返回 feature_error，缺少或不匹配 contract 时返回 model_input_mismatch，不伪造 SSC/TA/pH；当前无生产模型时返回缺失 |
 | 糖酸比/口感分析 | PARTIAL | 前端根据预测值计算，等级规则较简单 |
 | 真实相机 SDK | PARTIAL | RGB OpenCV/DirectShow adapter 已有并可预览；DVP2 已完成真实 SDK adapter、manual test 用户实机通过、网页预览/曝光/增益 API 已接入；RGB 单帧、DVP2 单帧、滤光轮+DVP2 多波段 sample sequence、Dark/White calibration sequence、Sample MultiView orchestration 和 P1B-8 单视角 `/api/capture/start` 软件入口已有；真实样品台、多视角硬件采集、hardware acceptance 和真实硬件检测验收仍未完成 |
-| 真实电机/滤光轮串口 | PARTIAL | 已有两字节串口层、滤光轮 HOME/相对旋转、状态查询和测试；P1B-5 已在 Coordinator sequence 中通过高层 API 调用 HOME/相对移动/位置查询；真实滤光轮现场验收和绝对定位 contract 仍待确认 |
+| 真实电机/滤光轮串口 | PARTIAL / HARDWARE ACCEPTANCE PENDING | 默认 AA55 adapter 已有 ACK/fresh STATUS、slot→degrees+rpm 映射、人工 SET_ORIGIN 与安全收尾；旧两字节层仅兼容。逻辑位置不等于物理编码器反馈，真实滤光轮现场验收仍待完成 |
 | 真实光源控制 | PARTIAL/REAL VERIFIED | PB7/PB8 两路钨灯 SSR 已通过 `manual_stm32_test.py --led-mask` 实机确认；主 UI 已提供安全手动测试入口，后端限时自动关闭并用 fresh STATUS 确认。PB9/LED3 仍可独立 on/off 且不会清除钨灯位。亮度闭环、双钨灯同时开启、RGB 正式照明映射、硬件级门联锁和最终光源验收仍未完成 |
 | 门控/急停/温度/报警 | PARTIAL/TODO | 升降门、急停、故障码已有控制/查询；温度和报警扩展未接入 |
 | Production Analysis Pipeline | DONE/SOFTWARE IMPLEMENTED | P1E-1 新增 `quality_algorithm.analysis_pipeline.FeaturePipelineConfig` / `run_feature_pipeline()` 作为训练端和检测端共享入口。P1E-2 新增 `ModelInputContract` 和 `pipeline_signature`，训练生成并写入模型 metadata，发布/Default 和预测前校验；Published/Default 还要求 `model_input_contract.mode=production`。P1E-3 在临时 SQLite 与 deterministic synthetic data 上完成训练 -> 发布 -> 检测 software E2E PASS。Production 默认要求 Dark/White calibration、Background Reference segmentation、calibrated RGB->DVP2 registration、registered multispectral ROI 和完整波段；缺失依赖明确失败。Legacy/development 旧数据路径保留，但必须显式配置。真实硬件和科学验收仍未完成 |
@@ -244,7 +236,7 @@ UI
 - P1B 已进入 hardware acceptance 阶段；真实采集放行必须以 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md` 中关键域全部 PASS 为前提。没有现场证据时，STM32、风扇、LED、推杆、滤光轮、RGB 浏览器端延迟、DVP2 网页预览、Dark、White、样品旋转台和完整真实采集都不能标记 PASS。
 - DVP2 多光谱相机是 DO3THINK/度申 GigE/RJ45 工业黑白相机；当前绑定只能使用已从真实 `DVPCamera.h` 和官方示例确认的 C API，禁止凭经验新增未核对函数名，禁止用 OpenCV VideoCapture 替代，禁止返回模拟帧。
 - 当前设备准备分为两层：`devicePrepared` 表示离线验证流程可用，`trueCapturePrepared` 表示当前 `TrueCapturePlan` 是否通过真实入口 readiness gate。P1B-8 后它不再硬编码 false，但只代表当前软件编排可尝试执行；`HARDWARE_ACCEPTANCE_NOT_PASSED` warning 和 `productionAccepted=false` 继续说明这不是硬件验收 PASS。
-- 设备发现和设备绑定不等于设备就绪：`discovered/selected/bound/connected/verified/ready` 必须区分。`COM5`、`COM7`、`device_index=1`、`device_index=2` 只能作为 current location 或 last known location cache；不能作为跨电脑永久身份。STM32 当前只能通过 PING 证明兼容两字节协议，不能证明具体角色；下一版固件建议增加 `GET_DEVICE_TYPE` / `GET_DEVICE_INFO`，但当前代码不得伪造这些回复。
+- 设备发现和设备绑定不等于设备就绪：`discovered/selected/bound/connected/verified/ready` 必须区分。`COM5`、`COM7`、`device_index=1`、`device_index=2` 只能作为 current location 或 last known location cache；不能作为跨电脑永久身份。默认 STM32 adapter 已用 AA55 handshake/STATUS/INFO 验证当前 firmware profile；旧两字节 PING 保留兼容边界，不能当作永久身份或跨硬件角色证明。
 - 样品旋转角度和滤光片转轮角度必须完全独立：`sample_rotation` 控制样品台多视角，`filter_wheel_rotation` 控制多光谱波段切换，不能用同一字段或同一电机状态表示。
 - 多角度采集默认不拍 360°，因为 0° 与 360° 是同一位置；只有用户启用闭合补拍时才生成 `closure_view=true` 的额外 View。
 - 多 View 仍属于同一个水果 Sample，同一个 `sample_id`；后续如果展开为多行特征，训练/验证必须继续按 `sample_id` 分组，避免同一水果进入 train/test 两边。
@@ -273,38 +265,32 @@ UI
 - 主 UI 的串口刷新/连接、一键设备检查、非破坏硬件通信自检、风扇 on/off、LED3 on/off、两路钨灯限时手动测试/立即关闭/全部钨灯关闭、推杆伸出/缩回/停止、滤光轮顺/逆时针相对移动、滤光轮 STOP、人工 SET_ORIGIN 和紧急停止已接后端设备 API；P1B-7.5B 新增样品旋转台状态和调试按钮，但默认因 `SAMPLE_STAGE_PROTOCOL_UNKNOWN` 禁用真实动作。P1B-8 在样品采集页新增 True Hardware Capture 面板；RGB 与 DVP2 相机设置页预览已接入；真实样品台旋转、RGB 正式照明映射、双钨灯验收和完整多视角硬件同步仍未完成。
 - P1C-2B 已把 P1C-2A 的 RGB-DVP2 profile 和 P1C-2A.5 的 RGB Fruit Mask 接入多光谱特征提取：calibrated mode 必须显式提供 RegistrationProfile 和 runtime RGB/DVP2 endpoint metadata，缺失或 mismatch 会失败；禁止 resize、identity fallback、ellipse fallback。Planar homography 不是 3D fruit surface 的 pixel-perfect registration，所以 post-warp erosion 在 DVP2 coordinate space 执行，用于降低边缘背景/托盘/阴影污染风险；REAL HARDWARE ROI ACCEPTANCE PENDING。
 - P1E-1 已把 Model Studio feature generation、training feature CSV、主程序 SSC/TA/pH 预测入口统一到 `run_feature_pipeline()`。P1E-2 已加入稳定模型输入 contract/signature，训练 metadata、发布/Default 和预测前校验均覆盖；P1E-3 software E2E 已在 fake/deterministic environment 下 PASS。Production 默认不再静默 fallback 到 uncalibrated、legacy color segmentation、identity registration 或无 contract 旧模型；历史/离线数据仍可通过显式 `FeaturePipelineConfig.legacy()` / `development()` 或 legacy compatibility policy 处理。真实 Background Reference 兼容性 metadata、registration profile 现场采集、ROI overlay 人工验收仍为硬件/算法验收待办，不能声称覆盖所有水果或达到固定 Mean IoU 指标。
-- 当前没有真实 Production 模型文件；SSC/TA/pH 默认会 `model_missing`。
+- 当前仓库未提交真实 Production 模型文件；运行时无可用模型时 SSC/TA/pH 返回 `model_missing`，用户本机模型状态未核对。
 - P1E-5 的 Model Quality Gate 只建立可配置的软件检查机制。当前默认 policy 不写死最终科研 R²/RMSE/MAE/RPD 标准；真实水果实验、科学阈值、OOD 现场验证和 Production approval 仍待完成。
 - 当前没有提交真实样品图像数据；`sample_data/README.md` 说明不再内置 demo 图像目录。
 - Model Studio 已能删除 Sample 记录或同时删除本地托管副本，并保留 `source_path` 原始目录；Dataset 级 Archive / Permanent Delete、Model 单删和批量 Permanent Delete 已实现，Default/Production/reference 保护仍由后端 service 层执行，仍需真实用户数据场景下做人工 UI 验收。
-- `model_studio/database/model_studio.sqlite` 当前为空/待初始化，没有真实数据集和模型记录。
+- 仓库未提交运行时 Model Studio SQLite；不能据此推断用户本机没有数据集或模型记录。
 - P1E-4 后主程序检测结果写入独立 `inspection/inspection.sqlite`；记录 Sample、原始文件引用、Calibration、Background Reference、Registration、实际 pipeline contract/signature、模型 provenance 和 SSC/TA/pH 结果。历史记录是软件运行事实快照，不跟随当前 Default Model 或 Background Reference 变化；正式 PDF/科研报告仍未完成。
-- 报告导出是前端 TXT，不是正式 PDF/数据库记录。
+- 报告导出是前端 TXT；检测历史已经独立写入 SQLite，正式 PDF/科研报告仍未完成。TXT 中关于 CaptureCoordinator 尚未接入的旧说明待修正。
 - 形态分析当前以像素尺度为主，未完成真实尺寸标定和三维硬件方案。
 - 旧 `pipeline_v2.py` 和 `pointcloud_service.py` 中仍有兼容 RGB-D/点云的遗留路径，需避免误认为当前主硬件已经有深度相机。
 
 ## 10. 下一阶段开发路线
 
-Phase 1：把离线软件闭环变成可用于真实采集前的数据闭环
+### 软件与研究可先推进
 
-- 确定正式样品目录规范和 metadata 字段。
-- 替换开发滤光片配置为真实孔位/中心波长/带宽/曝光/增益配置。
-- 用真实样品验证 Model Studio 本地托管导入、标签保存、Dataset Version、训练和人工发布流程。
-- 用真实小批量数据发布第一版 SSC/TA/pH 其中至少一个 Production 模型。
-- 增加检测结果持久化与更可靠报告导出。
+- 已有共享 production 特征管线、输入 contract、质量门禁、检测历史和产品化基础，不再将这些列为“从零新增”。
+- 改进 `training/train.py` PLSR 成分数选择：保留 sample_id 外层分组验证，在训练折内做内层分组 CV 调参；预处理也需按相应训练折拟合。
+- 核查真实 SSC/TA/pH 标签、样品编号和异常样品证据，保留 Include/Exclude 与版本 lineage，不因删除后指标提高就判定异常。
+- 若实现 VIP/CARS/SPA 研究模块，使用连续光谱与真实标签、在训练 fold 内筛选，记录每折波长/稳定性/误差；目前已核对入口没有这些实现。
+- 现有指标为 R²/RMSE/MAE/RPD，MAPE 与 100%−MAPE 可作为后续辅助指标，不能代替真实外部验证。
+- 核对 RGB YUY2 后端准入与前端 strict-lossless PASS/FAIL 文案，修正 TXT 中 CaptureCoordinator 旧说明；正式 PDF/报告模板后续开发。
 
-Phase 2：接入硬件最小闭环
+### 硬件与数据具备条件后
 
-- 在已验证 RGB UVC、DVP2 raw mono 单帧、滤光轮 + DVP2 多波段软件路径、Dark/White calibration sequence、Sample MultiView orchestration 和 P1B-8 单视角 `/api/capture/start` 软件入口基础上，继续完成真实滤光轮现场验收、暗白物理校正验收、样品台真实控制器资料补齐和多视角硬件联调；在现场验收前仍不标记 production PASS。
-- 对 RGB 和 DO3THINK GigE 黑白相机继续做现场网页预览复核：RGB 本轮 CLI benchmark 已覆盖 encoder 和 old-sync/latest-frame 对比，仍需在浏览器中观察 sourceAge、server/fetch、FPS 和 drop；DVP2 用户 manual test 已确认退出 BasedCam3 后 Python 3.12 ctypes 可打开、取帧和保存，本轮 Codex 复测时当前环境枚举返回 0。下一步应在设备在线时用主程序相机设置页复核重新检测、打开预览、曝光/增益应用、停止/重启预览，并随后进入 CaptureCoordinator。
-- 扩展 STM32 串口协议接入，补齐真实采集编排、滤光轮绝对定位/GOTO、样品台电机、光源亮度、温度/报警状态。
-- 保持 `create_offline_capture_dataset()` 只服务 Offline/Demo；真实采集继续走 `/api/capture/start` 并由 readiness/acceptance gate 控制。
-- 增加暗场/白板采集 UI 与 metadata 写入。
-
-Phase 3：提升算法、质量控制和产品化
-
-- 将 P1C-2A 的 RGB 与多光谱图像配准 profile 接入生产 ROI/光谱特征路径，并增加保守 inward erosion 与真实样品深度误差边界。
-- 引入真实尺寸标定或三维方案，明确普通形态测算与三维建模边界。
-- 增加模型置信度/误差估计、异常样品检测和数据质量门槛。
-- 完善历史记录、批次管理、报告模板、权限和操作日志。
-- 对 EXE 打包、依赖、启动日志和现场部署做稳定性测试。
+- 按 `docs/HARDWARE_ACCEPTANCE_CHECKLIST.md` 填写现场证据：当前软件 readiness 与正式生产放行分开，未测项目保持 NOT TESTED/BLOCKED。
+- 确认 RGB scientific profile 的 actual FOURCC、DVP2 raw mono、暗白质量、滤光轮同步、照明互锁、安全收尾和 metadata；几何 profile 与保守 ROI 做真实 overlay 验收。
+- 补齐独立 SampleStage 控制器身份、协议、HOME、position/fault contract，再实现真实多视角 adapter，禁止复用滤光轮电机。
+- 正式波段需依据连续光谱研究、滤光片中心波长/带宽、相机响应和光源确定，并用真实多光谱重采数据验证；开发配置 450/560/670 nm 不能当作最终设计。
+- 用真实数据验证托管导入、实测标签、冻结版本、训练、人工发布/设默认、检测及历史记录。当前仓库未提交真实模型不等于用户本机没有模型。
+- 继续完善尺寸标定/三维边界、报告、批次、日志和 EXE 现场部署；软件 E2E/fake adapter 测试不替代硬件或科学验收。

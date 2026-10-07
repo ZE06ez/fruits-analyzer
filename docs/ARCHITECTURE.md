@@ -417,7 +417,7 @@ GET  /api/capture/status
 
 `/api/capture/start` 是 True Hardware Capture 的正式启动入口。payload 支持 `captureMode=single_view|multi_view`、`calibrationMode=existing|capture_new|none`、`calibrationId`、`bandPlan`、`rotationPlan/sampleRotation`、`rgbDirName`、`multispectralDirName`、`returnHome` 和 operator confirmation。后端先通过 `DeviceManager.capture_readiness()` 计算 `ready/blockingReasons/warnings/capabilities`，再调用 `CaptureCoordinator.run_true_capture()`。`trueCapturePrepared` 表示当前 capture plan 是否满足软件执行条件；`HARDWARE_ACCEPTANCE_NOT_PASSED` warning 明确说明这不等于 production release PASS。
 
-`/api/complete-capture` 只保留 Offline/Demo 边界，默认继续调用 `create_offline_capture_dataset()` 生成开发验证 PNG；显式 true hardware 模式会返回 `TRUE_CAPTURE_USES_CAPTURE_START`，禁止把 offline dataset 当成真实采集成功。
+`/api/complete-capture` 只保留 Offline/Demo 开发边界，必须带显式模拟确认，且只允许在 `runtime/simulations/` 下新建空目录调用 `create_offline_capture_dataset()`；拒绝覆盖正式 sample root。True Capture 写 metadata 时以 sample_id 校验并保留样品静态身份/背景/分析引用，frames、steps、error 和最终状态只采用本次运行，使用临时文件 replace 原子落盘。前端以 `/api/capture/status` 为真实进度来源。
 
 ### 样品创建
 

@@ -11,7 +11,7 @@ from typing import Any
 from runtime_support import DatabaseMigrationError, backup_sqlite_database, migrate_sqlite
 
 
-INSPECTION_SCHEMA_VERSION = 2
+INSPECTION_SCHEMA_VERSION = 3
 
 
 def utc_timestamp() -> str:
@@ -75,6 +75,7 @@ class InspectionRepository:
                     calibration_json TEXT NOT NULL,
                     background_reference_json TEXT NOT NULL,
                     registration_json TEXT NOT NULL,
+                    result_snapshot_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     archived_at TEXT
@@ -110,7 +111,7 @@ class InspectionRepository:
                 self.schema_version = migrate_sqlite(
                     conn,
                     database_name="inspection",
-                    migrations=[(1, self._migration_v1), (2, self._migration_v2)],
+                migrations=[(1, self._migration_v1), (2, self._migration_v2), (3, self._migration_v3)],
                 )
         except (sqlite3.Error, DatabaseMigrationError) as exc:
             raise RuntimeError("DATABASE_MIGRATION_FAILED: inspection") from exc
@@ -144,6 +145,12 @@ class InspectionRepository:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_scope ON inspections(fruit_type, variety)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_inspections_status ON inspections(status)")
 
+    @staticmethod
+    def _migration_v3(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(inspections)")}
+        if "result_snapshot_json" not in existing:
+            conn.execute("ALTER TABLE inspections ADD COLUMN result_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+
     def reconcile_interrupted_inspections(self) -> int:
         with self._lock, self.connect() as conn:
             result = conn.execute(
@@ -165,8 +172,8 @@ class InspectionRepository:
                     inspection_id,sample_id,sample_name,fruit_type,variety,sample_mode,sample_path,
                     source_files_json,started_at,completed_at,status,software_version,
                     pipeline_signature,pipeline_contract_json,feature_pipeline_json,calibration_json,
-                    background_reference_json,registration_json,created_at,updated_at,archived_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+                    background_reference_json,registration_json,result_snapshot_json,created_at,updated_at,archived_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
                 """,
                 (
                     inspection_id, str(provenance.get("sample_id") or ""), str(provenance.get("sample_name") or ""),
@@ -177,7 +184,7 @@ class InspectionRepository:
                     str(provenance.get("software_version") or ""), str(provenance.get("pipeline_signature") or ""),
                     _json(provenance.get("pipeline_contract") or {}), _json(provenance.get("feature_pipeline") or {}),
                     _json(provenance.get("calibration") or {}), _json(provenance.get("background_reference") or {}),
-                    _json(provenance.get("registration") or {}), now, now,
+                    _json(provenance.get("registration") or {}), _json(provenance.get("result_snapshot") or {}), now, now,
                 ),
             )
         return inspection_id
@@ -191,7 +198,7 @@ class InspectionRepository:
                 """
                 UPDATE inspections SET status=?,completed_at=?,pipeline_signature=?,
                     pipeline_contract_json=?,feature_pipeline_json=?,calibration_json=?,
-                    background_reference_json=?,registration_json=?,updated_at=?
+                    background_reference_json=?,registration_json=?,result_snapshot_json=?,updated_at=?
                 WHERE inspection_id=?
                 """,
                 (
@@ -201,7 +208,7 @@ class InspectionRepository:
                     _json(inspection_updates.get("feature_pipeline") or {}),
                     _json(inspection_updates.get("calibration") or {}),
                     _json(inspection_updates.get("background_reference") or {}),
-                    _json(inspection_updates.get("registration") or {}), now, inspection_id,
+                    _json(inspection_updates.get("registration") or {}), _json(inspection_updates.get("result_snapshot") or {}), now, inspection_id,
                 ),
             )
             for result in results:
@@ -279,6 +286,12 @@ class InspectionRepository:
             result = conn.execute("UPDATE inspections SET archived_at=?,updated_at=? WHERE inspection_id=? AND archived_at IS NULL", (now, now, inspection_id))
             return result.rowcount == 1
 
+    def save_result_snapshot(self, inspection_id: str, snapshot: dict[str, Any]) -> None:
+        with self._lock, self.connect() as conn:
+            result = conn.execute("UPDATE inspections SET result_snapshot_json=?,updated_at=? WHERE inspection_id=?", (_json(snapshot), utc_timestamp(), inspection_id))
+            if result.rowcount != 1:
+                raise KeyError(f"inspection not found: {inspection_id}")
+
     @staticmethod
     def _inspection(row: dict[str, Any], results: list[dict[str, Any]], summary: bool = False) -> dict[str, Any]:
         payload = {
@@ -296,6 +309,7 @@ class InspectionRepository:
             "calibration": _decode(row["calibration_json"], {}),
             "backgroundReference": _decode(row["background_reference_json"], {}),
             "registration": _decode(row["registration_json"], {}),
+            "resultSnapshot": _decode(row.get("result_snapshot_json"), {}),
             "createdAt": row["created_at"], "updatedAt": row["updated_at"], "results": [],
         }
         for result in results:

@@ -1842,6 +1842,12 @@ class CaptureCoordinatorTests(unittest.TestCase):
                 operator_confirmed_white=True,
                 band_plan=plan,
                 settling_ms=0,
+                sample_metadata={
+                    "sample_id": "S-TRUE-1", "sample_name": "Blueberry-01",
+                    "sample_mode": "training_capture", "fruit_type": "blueberry", "variety": "Duke",
+                    "background_reference": {"backgroundReferenceId": "bg-1"},
+                    "analysis_pipeline": {"mode": "production"},
+                },
             ))
             root = Path(tmp)
             self.assertEqual(result["state"], "completed")
@@ -1855,6 +1861,11 @@ class CaptureCoordinatorTests(unittest.TestCase):
         self.assertEqual(metadata["trueCapture"]["offlineDatasetUsed"], False)
         self.assertEqual(metadata["capture_status"], "completed")
         self.assertFalse(metadata["captureIncomplete"])
+        self.assertEqual(metadata["sample_name"], "Blueberry-01")
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["fruit_type"], "blueberry")
+        self.assertEqual(metadata["background_reference"]["backgroundReferenceId"], "bg-1")
+        self.assertEqual(metadata["analysis_pipeline"]["mode"], "production")
         self.assert_no_jpeg_metadata_references(metadata)
 
     def test_true_capture_existing_calibration_does_not_recapture_dark_white(self):
@@ -1958,9 +1969,11 @@ class CaptureCoordinatorTests(unittest.TestCase):
                 require_calibration=False,
                 band_plan=[MultispectralBandPlan("A520", 1, 520), MultispectralBandPlan("B610", 2, 610)],
                 settling_ms=0,
+                sample_metadata={"sample_id": "S-CANCEL", "sample_name": "Cancelled", "sample_mode": "inspection", "fruit_type": "blueberry", "variety": "Duke"},
             ))
         self.assertEqual(result["state"], "cancelled")
         self.assertTrue(result["metadata"]["captureIncomplete"])
+        self.assertEqual(result["metadata"]["sample_name"], "Cancelled")
 
     def test_true_capture_calibration_confirmation_failure_stops_before_sample_capture(self):
         camera = FakeCameraManager()
@@ -1981,10 +1994,15 @@ class CaptureCoordinatorTests(unittest.TestCase):
                 operator_confirmed_white=True,
                 band_plan=[MultispectralBandPlan("A520", 1, 520)],
                 settling_ms=0,
+                sample_metadata={"sample_id": "S-CAL-FAIL", "sample_name": "CalibrationFailure", "sample_mode": "training_capture", "fruit_type": "blueberry", "variety": "Duke"},
             ))
+            metadata = json.loads((Path(tmp) / "metadata.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["error"]["code"], "operator_confirmation_required")
+        self.assertEqual(metadata["sample_name"], "CalibrationFailure")
+        self.assertEqual(metadata["sample_mode"], "training_capture")
+        self.assertEqual(metadata["capture_status"], "failed")
         self.assertEqual(camera.capture_count, 0)
         self.assertEqual(camera.multispectral_capture_count, 0)
         self.assertEqual(hardware.safe_stop_count, 1)
