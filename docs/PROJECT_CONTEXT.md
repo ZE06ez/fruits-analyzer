@@ -111,7 +111,7 @@ UI
 4. 正常检测展示 Default/Published/generic 模型摘要，可手动更换；训练采集不绑定 SSC/TA/pH 模型。样品台旋转计划属于 `sample_rotation`，与滤光轮切换独立。
 5. True Capture：`POST /api/capture/start` 先做当前计划 readiness，再由 `CaptureCoordinator.run_true_capture()` 执行可选 Dark/White、RGB、DVP2 多波段、metadata 与安全收尾。单视角不要求 SampleStage，多视角因真实样品台协议未知而阻塞。
 6. RGB 正式采集使用独立 scientific profile，并回读 actual transport。当前示例请求 1920×1080@5fps YUY2；未压缩 4:2:2 可准入但不是完整 RGB strict lossless。有损/未知传输拒绝。RGB/DVP2 网页 JPEG/cache 只用于预览。
-7. Offline/Demo：`/api/complete-capture` 调用 `create_offline_capture_dataset()` 生成模拟 PNG/metadata/views；模拟回 Home 不能当作真实样品台完成。
+7. Offline/Demo：`/api/complete-capture` 仅从设备维护的明确开发工具调用，必须显式确认模拟模式，并在 `runtime/simulations/` 的新目录生成模拟 PNG/metadata/views；拒绝覆盖当前正式样品目录，模拟不能作为真实样品台或正式采集完成。
 8. 本次拍摄目录自动进入分析；其他样品先选择父目录，再扫描确认 RGB/多光谱子目录。已有目录可直接分析，不要求创建当前样品。进入 shape/sugar/acid/taste 后隐藏双相机预览。
 9. 形态分析创建后台任务并轮询结果，主要为 RGB 二维像素面积/宽高/颜色/果粉；旧 RGB-D/PLY 仅兼容，真实尺寸标定与三维硬件尚未完成。
 10. SSC/TA/pH 通过共享 `run_feature_pipeline()` 提取特征，校验生产分析依赖与模型输入 contract/signature，再预测；缺模型、缺依赖或输入不匹配明确失败，不生成假值。

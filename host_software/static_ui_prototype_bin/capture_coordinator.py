@@ -305,6 +305,9 @@ class TrueCapturePlan:
     operator_confirmed_white: bool = False
     rgb_led_mask: int = LED3_BIT
     tungsten_mask: int = 0x01
+    # Immutable sample identity/provenance supplied by the session owner.  This
+    # is deliberately separate from per-run frames, steps and errors.
+    sample_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -439,6 +442,7 @@ class CaptureCoordinator:
         self.sleep_fn = sleep_fn
         self.capture_id_factory = capture_id_factory or (lambda: time.strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:8])
         self._run = CaptureRun(capture_id="")
+        self._sample_metadata: dict[str, Any] = {}
         self._active_view: SampleViewPlan | None = None
         self._active_multiview_plan: SampleMultiViewPlan | None = None
         self._active_multispectral_view_id: str | None = None
@@ -965,6 +969,10 @@ class CaptureCoordinator:
         if not plan.output_dir:
             raise ValueError("true capture requires output_dir")
 
+        # The nested protected capture calls create fresh CaptureRun objects.
+        # Keep identity separately so their runtime state cannot erase it.
+        self._sample_metadata = dict(plan.sample_metadata or {})
+
         calibration_id = self._normalize_calibration_id(plan.calibration_id) if (
             plan.capture_dark or plan.capture_white or plan.calibration_id
         ) else None
@@ -994,6 +1002,9 @@ class CaptureCoordinator:
             })
             if dark.get("state") != CaptureState.COMPLETED.value:
                 self._run.metadata["trueCapture"] = {**orchestration, "captureStatus": dark.get("state")}
+                self._run.metadata["capture_status"] = dark.get("state")
+                self._run.metadata["captureIncomplete"] = True
+                self._write_current_sample_files()
                 return self.snapshot()
 
         if plan.capture_white:
@@ -1015,6 +1026,9 @@ class CaptureCoordinator:
             })
             if white.get("state") != CaptureState.COMPLETED.value:
                 self._run.metadata["trueCapture"] = {**orchestration, "captureStatus": white.get("state")}
+                self._run.metadata["capture_status"] = white.get("state")
+                self._run.metadata["captureIncomplete"] = True
+                self._write_current_sample_files()
                 return self.snapshot()
 
         if plan.multispectral_enabled:
@@ -2416,7 +2430,7 @@ class CaptureCoordinator:
             return
         output_dir = Path(self._run.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        metadata = dict(self._run.metadata)
+        metadata = self._merge_sample_metadata(output_dir, self._run.metadata)
         metadata["state"] = self._run.state.value
         metadata["captureId"] = self._run.capture_id
         metadata["capture_id"] = self._run.capture_id
@@ -2431,6 +2445,52 @@ class CaptureCoordinator:
         temp_metadata.replace(output_dir / "metadata.json")
         temp_views.replace(output_dir / "views.json")
         self._run.metadata = metadata
+
+    def _merge_sample_metadata(self, output_dir: Path, capture_metadata: dict[str, Any]) -> dict[str, Any]:
+        """Keep the current sample's identity while replacing only this run's state.
+
+        A capture directory already contains the metadata written when the sample
+        was created.  Never inherit a previous capture's frames, completion flags
+        or errors, but retain its stable sample identity and valid analysis refs.
+        """
+        existing: dict[str, Any] = {}
+        path = output_dir / "metadata.json"
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                existing = loaded if isinstance(loaded, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+        existing_id = str(existing.get("sample_id") or existing.get("sampleId") or "")
+        if existing_id and self._run.sample_id and existing_id != self._run.sample_id:
+            raise CaptureCoordinatorError("采集目录属于另一份样品", code="sample_id_mismatch")
+        supplied = dict(getattr(self, "_sample_metadata", {}) or {})
+        supplied_id = str(supplied.get("sample_id") or supplied.get("sampleId") or "")
+        if supplied_id and self._run.sample_id and supplied_id != self._run.sample_id:
+            raise CaptureCoordinatorError("样品元数据与当前采集不一致", code="sample_id_mismatch")
+        preserved_keys = (
+            "sample_id", "sample_name", "sample_mode", "fruit_type", "variety",
+            "selected_ssc_model_id", "selected_ta_model_id", "selected_ph_model_id",
+            "save_root_dir", "created_at", "image_directories", "background_reference",
+            "registration", "registration_profile", "analysis_pipeline",
+        )
+        preserved: dict[str, Any] = {}
+        for source in (existing, supplied):
+            for key in preserved_keys:
+                if key in source and source[key] not in (None, "", {}):
+                    preserved[key] = source[key]
+        aliases = {
+            "sampleId": "sample_id", "sampleName": "sample_name", "sampleMode": "sample_mode",
+            "fruitType": "fruit_type", "selectedSscModelId": "selected_ssc_model_id",
+            "selectedTaModelId": "selected_ta_model_id", "selectedPhModelId": "selected_ph_model_id",
+            "saveRootDir": "save_root_dir", "backgroundReference": "background_reference",
+        }
+        for source in (existing, supplied):
+            for source_key, target_key in aliases.items():
+                if source.get(source_key) not in (None, "", {}):
+                    preserved[target_key] = source[source_key]
+        preserved["sample_id"] = self._run.sample_id or preserved.get("sample_id")
+        return {**preserved, **dict(capture_metadata)}
 
     def _upsert_view_metadata(self, *, view_id: str, view_index: int) -> dict[str, Any]:
         views = self._run.metadata.setdefault("views", [])

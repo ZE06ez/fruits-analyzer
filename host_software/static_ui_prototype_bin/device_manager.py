@@ -808,6 +808,7 @@ class DeviceManager:
             operator_confirmed_white=self._bool_payload(payload.get("operatorConfirmedWhite", payload.get("operatorConfirmed")), default=False),
             rgb_led_mask=self._optional_int(payload.get("rgbLedMask"), default=LED3_BIT) or LED3_BIT,
             tungsten_mask=self._optional_int(payload.get("tungstenMask"), default=0x01) or 0x01,
+            sample_metadata=dict(payload.get("sampleMetadata") or {}),
         )
 
     def _update_led_mask_bit(

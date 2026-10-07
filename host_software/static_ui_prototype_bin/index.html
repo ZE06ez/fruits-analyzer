@@ -203,6 +203,11 @@
                 <summary>Advanced · raw diagnostics</summary>
                 <pre id="deviceDetailText">暂无设备详情</pre>
               </details>
+              <details class="device-detail-block" id="developmentSimulationTools">
+                <summary>开发工具 · 生成隔离模拟数据</summary>
+                <p>仅用于界面和算法开发验证。会创建独立模拟目录，不会写入当前正式样品目录，也不能作为训练或正式采集证据。</p>
+                <button id="createDevelopmentSimulation" type="button">生成模拟数据</button>
+              </details>
               </div>
               <div class="device-check-panel">
               <div class="device-check-head">
@@ -471,15 +476,15 @@
               </div>
               <p class="hint" id="sampleModeHint">样品种类和品种会写入 metadata.json；糖度、酸度和 pH 模型在对应分析页面选择。</p>
             </div>
-            <div class="process-steps">
-              <button data-step="1">1. 暗场与白板校正</button>
-              <button data-step="2">2. RGB 外观采集</button>
-              <button data-step="3">3. 多光谱图像采集</button>
-              <button data-step="4">4. 进入分析</button>
+            <div class="process-steps" aria-label="正式采集步骤">
+              <span data-capture-stage="calibration">校正</span>
+              <span data-capture-stage="rgb">RGB</span>
+              <span data-capture-stage="spectral">多光谱</span>
+              <span data-capture-stage="integrity">文件校验</span>
             </div>
             <div class="rotation-capture-card" id="trueCaptureCard">
               <div class="rotation-capture-head">
-                <strong>True Hardware Capture</strong>
+                <strong>正式采集 / True Hardware Capture</strong>
                 <span id="trueCaptureReadiness">等待检查</span>
               </div>
               <div class="rotation-settings-fields">

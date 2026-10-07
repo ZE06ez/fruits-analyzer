@@ -979,6 +979,18 @@ def create_handler(
             if path == "/api/inspections":
                 self.handle_inspection_list(parsed.query)
                 return
+            if path.startswith("/api/inspections/") and path.endswith("/report.txt"):
+                inspection_id = unquote(path.removeprefix("/api/inspections/").removesuffix("/report.txt")).strip("/")
+                self.handle_inspection_report(inspection_id)
+                return
+            if path.startswith("/api/inspections/") and path.endswith("/report.html"):
+                inspection_id = unquote(path.removeprefix("/api/inspections/").removesuffix("/report.html")).strip("/")
+                try:
+                    content, filename = inspection_service.export_html_report(inspection_id)
+                    self.binary_response(content.encode("utf-8"), "text/html; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                except KeyError:
+                    self.json_response({"ok": False, "error": "检测记录不存在"}, status=404)
+                return
             if path.startswith("/api/inspections/"):
                 inspection_id = unquote(path.removeprefix("/api/inspections/")).strip("/")
                 self.handle_inspection_detail(inspection_id)
@@ -1418,6 +1430,12 @@ def create_handler(
                         self.json_response({"ok": False, "error": "请先提供校正采集保存目录。"}, status=400)
                         return
                     output_dir = resolve_user_path(output_dir_raw, app_dir)
+                    existing_sample_metadata = read_sample_metadata(output_dir)
+                    existing_sample_id = str(existing_sample_metadata.get("sample_id") or existing_sample_metadata.get("sampleId") or "")
+                    requested_sample_id = str(payload.get("sampleId") or session_info.get("sampleId") or "")
+                    if existing_sample_id and requested_sample_id and existing_sample_id != requested_sample_id:
+                        self.json_response({"ok": False, "code": "SAMPLE_ID_MISMATCH", "error": "采集目录属于另一份样品。"}, status=409)
+                        return
                     sample_id = str(payload.get("sampleId") or session_info.get("sampleId") or "").strip()
                     filter_config_path = payload.get("filterConfigPath")
                     if filter_config_path:
@@ -1515,6 +1533,20 @@ def create_handler(
                         "multispectralDirName": payload.get("multispectralDirName") or session_info.get("multispectralDirName") or "multispectral",
                         "rotationPlan": payload.get("rotationPlan") if isinstance(payload.get("rotationPlan"), dict) else session_info.get("captureRotationPlan") or {},
                         "filterConfigPath": str(filter_config_path) if filter_config_path else None,
+                        "sampleMetadata": {
+                            **existing_sample_metadata,
+                            "sample_id": requested_sample_id or existing_sample_id,
+                            "sample_name": session_info.get("sampleName") or existing_sample_metadata.get("sample_name") or "",
+                            "sample_mode": session_info.get("sampleMode") or existing_sample_metadata.get("sample_mode") or "inspection",
+                            "fruit_type": session_info.get("fruitType") or existing_sample_metadata.get("fruit_type") or "",
+                            "variety": session_info.get("variety") or existing_sample_metadata.get("variety") or "generic",
+                            "selected_ssc_model_id": session_info.get("selectedSscModelId") or existing_sample_metadata.get("selected_ssc_model_id") or "",
+                            "selected_ta_model_id": session_info.get("selectedTaModelId") or existing_sample_metadata.get("selected_ta_model_id") or "",
+                            "selected_ph_model_id": session_info.get("selectedPhModelId") or existing_sample_metadata.get("selected_ph_model_id") or "",
+                            "save_root_dir": session_info.get("saveRootDir") or existing_sample_metadata.get("save_root_dir") or "",
+                            "created_at": session_info.get("createdAt") or existing_sample_metadata.get("created_at") or "",
+                            "background_reference": session_info.get("backgroundReference") or existing_sample_metadata.get("background_reference") or {},
+                        },
                     }
                     capture = device_manager.start_capture(
                         sample_id=str(start_payload.get("sampleId") or ""),
@@ -1591,6 +1623,18 @@ def create_handler(
             if parsed.path.startswith("/api/inspections/") and parsed.path.endswith("/archive"):
                 inspection_id = unquote(parsed.path.removeprefix("/api/inspections/")).removesuffix("/archive").strip("/")
                 self.handle_inspection_archive(inspection_id)
+                return
+            if parsed.path.startswith("/api/inspections/") and parsed.path.endswith("/snapshot"):
+                inspection_id = unquote(parsed.path.removeprefix("/api/inspections/")).removesuffix("/snapshot").strip("/")
+                payload = self.read_json()
+                try:
+                    inspection = inspection_service.get_inspection(inspection_id)
+                    if inspection is None or str((inspection.get("sample") or {}).get("sampleId") or "") != str(payload.get("snapshot", {}).get("sampleId") or ""):
+                        self.json_response({"ok": False, "error": "检测记录与当前样品不匹配"}, status=409)
+                        return
+                    self.json_response({"ok": True, "inspection": inspection_service.save_result_snapshot(inspection_id, payload.get("snapshot") or {})})
+                except KeyError:
+                    self.json_response({"ok": False, "error": "检测记录不存在"}, status=404)
                 return
             if parsed.path == "/api/open-folder":
                 self.handle_open_folder()
@@ -2382,30 +2426,29 @@ def create_handler(
                 self.json_response({"ok": False, "error": f"上传数据集失败: {exc}"}, status=500)
 
         def handle_complete_capture(self) -> None:
-            if self.require_device_preparation() is None:
-                return
             info = self.require_current_sample()
             if info is None:
                 return
             payload = self.read_json()
-            capture_dir = str(info.get("currentCaptureDir") or "").strip()
-            if not capture_dir:
-                self.json_response({"ok": False, "error": "当前样品保存目录不存在，请重新创建样品。"}, status=400)
-                return
             sample_id = str(info.get("sampleName") or info.get("sampleId") or payload.get("sampleId") or "").strip()
             try:
                 mode = str(payload.get("captureMode") or payload.get("mode") or "offline").strip().lower()
-                if mode not in {"offline", "demo", "development", "dev"}:
+                if mode not in {"offline", "demo", "development", "dev"} or payload.get("developmentSimulation") is not True:
                     self.json_response({
                         "ok": False,
-                        "code": "TRUE_CAPTURE_USES_CAPTURE_START",
-                        "error": "True Hardware Capture 必须通过 /api/capture/start 执行；/api/complete-capture 仅保留 offline/demo 数据生成。",
+                        "code": "DEVELOPMENT_SIMULATION_REQUIRED",
+                        "error": "模拟采集只能从开发工具显式启动；正式采集必须通过 /api/capture/start。",
                     }, status=409)
                     return
+                simulation_root = RuntimePaths.for_app(app_dir).root / "simulations"
+                simulation_root.mkdir(parents=True, exist_ok=True)
+                capture_dir = create_unique_sample_folder(simulation_root, f"SIMULATION_{sample_id}")
                 metadata = dict(info)
                 metadata["captureMode"] = "offline"
                 metadata["offlineCapture"] = True
                 metadata["trueHardwareCapture"] = False
+                metadata["data_source"] = "development_simulation"
+                metadata["simulation"] = {"is_simulated": True, "created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
                 image_dirs = image_directory_names_from_payload(payload, metadata)
                 metadata["rgbDirName"] = image_dirs["rgb"]
                 metadata["multispectralDirName"] = image_dirs["multispectral"]
@@ -2417,12 +2460,10 @@ def create_handler(
                     rgb_dir_name=image_dirs["rgb"],
                     multispectral_dir_name=image_dirs["multispectral"],
                 )
-                session.set_capture_started(True)
                 capture_dir = create_offline_capture_dataset(app_dir, sample_id, capture_dir=resolve_user_path(capture_dir, app_dir), metadata=metadata)
                 metadata = read_sample_metadata(capture_dir)
                 if isinstance(metadata.get("sample_rotation"), dict):
                     session.set_capture_rotation_plan(metadata["sample_rotation"])
-                session.set_current_capture_dir(capture_dir)
                 session.set_analysis_data_dir(capture_dir)
                 self.json_response({
                     "ok": True,
@@ -2436,7 +2477,7 @@ def create_handler(
                     "captureMode": "offline",
                     "offlineCapture": True,
                     "captureRotationPlan": metadata.get("sample_rotation") if isinstance(metadata.get("sample_rotation"), dict) else info.get("captureRotationPlan"),
-                    "message": "Offline/Demo 本次拍摄数据已保存",
+                    "message": "模拟数据已保存到独立开发目录；不属于正式拍摄或模型验证证据。",
                 })
             except Exception as exc:
                 self.json_response({"ok": False, "error": f"保存本次拍摄数据失败: {exc}"}, status=500)
@@ -2656,6 +2697,13 @@ def create_handler(
                 self.json_response({"ok": False, "error": "检测记录不存在或已归档"}, status=404)
                 return
             self.json_response({"ok": True, "inspectionId": inspection_id, "status": "ARCHIVED"})
+
+        def handle_inspection_report(self, inspection_id: str) -> None:
+            try:
+                text, filename = inspection_service.export_text_report(inspection_id)
+                self.binary_response(text.encode("utf-8"), "text/plain; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+            except KeyError:
+                self.json_response({"ok": False, "error": "检测记录不存在"}, status=404)
 
         def read_json(self) -> dict:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -3102,7 +3150,7 @@ def ensure_sample_capture_folder(capture_root: Path, metadata: dict | None = Non
 
 
 def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_dir: str | Path | None = None, metadata: dict | None = None) -> Path:
-    """Create a small current-capture folder for offline UI verification.
+    """Create an isolated development simulation dataset.
 
     Real camera integration should replace this function's image-writing block with
     camera frame saves, while keeping the returned sample root directory contract.
@@ -3110,10 +3158,17 @@ def create_offline_capture_dataset(app_dir: Path, sample_id: str = "", capture_d
 
     if capture_dir:
         capture_root = Path(capture_dir)
+        # A simulation must never be written into a user-created sample folder
+        # or overwrite a previous simulation.  Callers must allocate a new root.
+        if capture_root.exists() and any(capture_root.iterdir()):
+            raise ValueError("模拟采集目录必须是新的空目录，不能覆盖已有样品或数据")
     else:
         default_root = app_dir.parent / "Data"
         default_root.mkdir(parents=True, exist_ok=True)
         capture_root = create_unique_sample_folder(default_root, sample_id)
+    simulation = (metadata or {}).get("simulation") if isinstance(metadata, dict) else None
+    if not isinstance(simulation, dict) or not simulation.get("is_simulated"):
+        raise ValueError("离线图像生成仅允许明确标记为开发模拟数据")
     ensure_sample_capture_folder(capture_root, metadata)
     image_dirs = image_directory_names_from_payload(metadata or {})
     rgb_dir = capture_root / image_dirs["rgb"]

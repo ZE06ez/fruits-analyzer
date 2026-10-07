@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import threading
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,39 @@ class InspectionService:
 
     def archive_inspection(self, inspection_id: str) -> bool:
         return self.repository.archive(inspection_id)
+
+    def save_result_snapshot(self, inspection_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+        # Snapshot values are supplied only by the completed current inspection;
+        # absent fields stay absent rather than being synthesised for old records.
+        self.repository.save_result_snapshot(inspection_id, dict(snapshot or {}))
+        return self.get_inspection(inspection_id) or {}
+
+    def export_text_report(self, inspection_id: str) -> tuple[str, str]:
+        """Render only the immutable persisted inspection snapshot."""
+        inspection = self.get_inspection(inspection_id)
+        if inspection is None:
+            raise KeyError("inspection not found")
+        sample = inspection.get("sample") or {}
+        lines = ["果实口感多光谱无损检测报告", f"检测记录: {inspection_id}",
+                 f"样品: {sample.get('sampleName') or '--'} ({sample.get('sampleId') or '--'})",
+                 f"种类/品种: {sample.get('fruitType') or '--'} / {sample.get('variety') or '--'}",
+                 f"模式: {sample.get('sampleMode') or '--'}", f"状态: {inspection.get('status') or '--'}",
+                 f"时间: {inspection.get('completedAt') or inspection.get('startedAt') or '--'}"]
+        for result in inspection.get("results") or []:
+            value = "缺失" if result.get("value") is None else str(result.get("value"))
+            lines.append(f"{str(result.get('target') or '').upper()}: {value} {result.get('unit') or ''} · {result.get('status') or '--'} · 来源: {result.get('modelId') or '未提供'}")
+            if result.get("errorMessage"):
+                lines.append(f"  错误: {result['errorMessage']}")
+        snapshot = inspection.get("resultSnapshot") or {}
+        lines.append(f"二维形态: {json.dumps(snapshot.get('shapeMetrics'), ensure_ascii=False) if snapshot.get('shapeMetrics') else '未记录'}")
+        lines.append(f"糖酸比: {snapshot.get('sugarAcidRatio', '未记录')} · 等级: {snapshot.get('grade', '未记录')} · 规则: {snapshot.get('gradeRuleVersion', '未记录')}")
+        lines += [f"Pipeline Signature: {inspection.get('pipelineSignature') or '--'}", f"数据目录: {sample.get('samplePath') or '--'}"]
+        token = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(sample.get("sampleId") or inspection_id))[:48]
+        return "\n".join(lines) + "\n", f"inspection_{token}_{inspection_id[:12]}.txt"
+
+    def export_html_report(self, inspection_id: str) -> tuple[str, str]:
+        text, filename = self.export_text_report(inspection_id)
+        return f"<!doctype html><meta charset='utf-8'><title>检测报告</title><pre>{html.escape(text)}</pre>", filename[:-4] + ".html"
 
     def _provenance(self, sample_data: Any, result: Any) -> dict[str, Any]:
         root = Path(str(getattr(sample_data, "analysis_data_dir", "") or "")).expanduser()

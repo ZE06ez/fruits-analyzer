@@ -91,6 +91,10 @@ const state = {
   trueCaptureRunning: false,
   trueCaptureReadiness: null,
   trueCaptureStatus: null,
+  viewingInspectionId: "",
+  currentInspectionId: "",
+  capturePollTimer: null,
+  captureRequestGeneration: 0,
   captureRotationPlan: null,
   hasSample: false,
   sampleMode: "inspection",
@@ -1732,9 +1736,12 @@ function renderOperatorOverview(status = deriveSystemStatus()) {
   const hasSample = hasActiveSample();
   const deviceReady = isDevicePreparationReady();
   const calibrationReady = state.calibrationStatus === "passed";
-  const captureComplete = Boolean(state.currentCaptureValid || state.analysisDataDir);
+  const captureComplete = Boolean(state.currentCaptureValid && state.trueCaptureStatus?.state === "completed");
   const captureRunning = Boolean(state.trueCaptureRunning || state.captureCompleting);
-  const analysisComplete = Boolean(state.shapeDone || Number.isFinite(state.ssc) || Number.isFinite(state.ta) || Number.isFinite(state.ph));
+  const requiredPredictionsDone = isTrainingCaptureMode()
+    ? true
+    : Number.isFinite(state.ssc) && (Number.isFinite(state.ta) || Number.isFinite(state.ph));
+  const analysisComplete = Boolean(state.shapeDone && requiredPredictionsDone);
   const analysisRunning = ["shape", "ssc", "acid"].includes(state.systemTask);
 
   setWorkflowStep("workflowSample", hasSample ? "completed" : "current");
@@ -1755,11 +1762,11 @@ function renderOperatorOverview(status = deriveSystemStatus()) {
     action.textContent = "开始设备检查";
     action.dataset.nextAction = "device";
     action.disabled = Boolean(state.deviceCheckRunning);
-  } else if (!state.currentCaptureValid && !state.analysisDataDir) {
-    action.textContent = "开始采集";
+  } else if (!captureComplete) {
+    action.textContent = "开始正式采集";
     action.dataset.nextAction = "capture";
     action.disabled = false;
-  } else if (!state.shapeDone && state.analysisDataDir) {
+  } else if (!analysisComplete && state.analysisDataDir) {
     action.textContent = "开始分析";
     action.dataset.nextAction = "analysis";
     action.disabled = false;
@@ -3778,27 +3785,25 @@ async function startTrueCapture() {
     return;
   }
   state.trueCaptureRunning = true;
+  const generation = ++state.captureRequestGeneration;
   state.captureStarted = true;
   lockRotationSettings();
   renderTrueCaptureReadiness();
   setText("captureSaveStatus", "正在执行 True Hardware Capture...");
-  const progress = $("#captureProgress");
-  if (progress) progress.style.width = "5%";
+  startCapturePolling(generation);
   try {
     const response = await api("/api/capture/start", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     const capture = response.capture || {};
+    if (generation !== state.captureRequestGeneration) return;
     state.trueCaptureStatus = capture;
     state.currentCaptureDir = response.currentCaptureDir || capture.outputDir || state.currentCaptureDir;
-    state.currentCaptureValid = Boolean(state.currentCaptureDir);
-    state.analysisDataDir = response.analysisDataDir || state.currentCaptureDir;
-    state.captureStep = 4;
-    if (progress) progress.style.width = "100%";
-    setText("captureProgressText", "采集进度: 完成");
-    ["sample", "dark", "white", "rgb", "spectral", "integrity"].forEach((key) => setStepStatus(key, "done"));
-    setText("captureSaveStatus", `True Capture 已保存: ${state.currentCaptureDir}`);
+    state.currentCaptureValid = capture.state === "completed" && Boolean(state.currentCaptureDir);
+    state.analysisDataDir = state.currentCaptureValid ? (response.analysisDataDir || state.currentCaptureDir) : state.analysisDataDir;
+    renderCaptureProgress(capture);
+    setText("captureSaveStatus", state.currentCaptureValid ? `正式采集已保存: ${state.currentCaptureDir}` : "正式采集未完成；已保留准确状态。");
     addLog(`True Capture 完成: ${state.currentCaptureDir}`);
     renderCurrentSample();
     updateCurrentCaptureControls();
@@ -3807,6 +3812,7 @@ async function startTrueCapture() {
     setText("captureSaveStatus", "True Capture 未完成");
     addLog(error.message || "True Capture 失败。", "ERROR");
   } finally {
+    stopCapturePolling(generation);
     state.trueCaptureRunning = false;
     renderTrueCaptureReadiness();
     renderSystemStatus();
@@ -3814,12 +3820,57 @@ async function startTrueCapture() {
   }
 }
 
+function stopCapturePolling(generation = state.captureRequestGeneration) {
+  if (generation !== state.captureRequestGeneration) return;
+  if (state.capturePollTimer) window.clearTimeout(state.capturePollTimer);
+  state.capturePollTimer = null;
+}
+
+function renderCaptureProgress(capture = {}) {
+  const progressValue = Math.max(0, Math.min(100, Number(capture.progress) || 0));
+  const progress = $("#captureProgress");
+  if (progress) progress.style.width = `${progressValue}%`;
+  const step = capture.stepName || capture.currentStep || "准备中";
+  const stateLabel = capture.state || "preparing";
+  setText("captureProgressText", `采集进度: ${progressValue}% · ${step}`);
+  document.querySelectorAll("[data-capture-stage]").forEach((node) => {
+    const key = node.dataset.captureStage;
+    const matched = (capture.steps || []).some((item) => String(item.id || "").includes(key) && item.status === "completed");
+    node.dataset.status = matched ? "completed" : (String(capture.currentStep || "").includes(key) ? "current" : "pending");
+  });
+  if (["failed", "cancelled"].includes(stateLabel)) setText("captureSaveStatus", stateLabel === "cancelled" ? "正式采集已取消；partial 数据状态已保留。" : `正式采集失败：${capture.error?.message || "请查看采集状态"}`);
+}
+
+function startCapturePolling(generation) {
+  stopCapturePolling();
+  const poll = async () => {
+    if (generation !== state.captureRequestGeneration) return;
+    try {
+      const response = await api("/api/capture/status");
+      if (generation !== state.captureRequestGeneration) return;
+      const capture = response.capture || {};
+      state.trueCaptureStatus = capture;
+      renderCaptureProgress(capture);
+      if (["completed", "failed", "cancelled", "idle"].includes(capture.state)) {
+        if (capture.state !== "idle") state.trueCaptureRunning = false;
+        renderTrueCaptureReadiness();
+        renderSystemStatus();
+        return;
+      }
+    } catch (error) {
+      if (generation === state.captureRequestGeneration) addLog(`采集状态读取失败：${error.message}`, "WARN");
+    }
+    if (generation === state.captureRequestGeneration && state.trueCaptureRunning) state.capturePollTimer = window.setTimeout(poll, 500);
+  };
+  poll();
+}
+
 async function cancelTrueCapture() {
   try {
     const response = await api("/api/capture/cancel", { method: "POST", body: JSON.stringify({}) });
     state.trueCaptureStatus = response.capture || {};
-    state.trueCaptureRunning = false;
-    setText("captureSaveStatus", "采集已取消，已保留 partial 数据。");
+    renderCaptureProgress(state.trueCaptureStatus);
+    // Keep polling until the coordinator has reached a terminal state.
     addLog("True Capture 已请求取消。", "WARN");
   } catch (error) {
     addLog(error.message || "取消采集失败。", "ERROR");
@@ -3906,14 +3957,32 @@ async function completeCurrentCapture() {
   }
 }
 
+async function createDevelopmentSimulation() {
+  if (!requireActiveSample()) return;
+  const button = $("#createDevelopmentSimulation");
+  if (button) button.disabled = true;
+  try {
+    const payload = await api("/api/complete-capture", {
+      method: "POST",
+      body: JSON.stringify({ developmentSimulation: true, captureMode: "development" }),
+    });
+    state.analysisDataDir = payload.analysisDataDir || "";
+    state.dataSource = "other";
+    state.currentCaptureValid = false;
+    setText("captureSaveStatus", "模拟数据已生成到独立开发目录，未标记为正式采集。");
+    addLog(payload.message || "模拟数据已生成（非正式采集）。", "WARN");
+    await loadSampleFolder(state.analysisDataDir, { source: "other" });
+  } catch (error) {
+    addLog(error.message || "生成模拟数据失败。", "ERROR");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function enterAnalysisFromCapture() {
-  if (!requireDevicePreparation()) return;
   if (!requireActiveSample()) return;
   if (!state.currentCaptureValid || !state.currentCaptureDir) {
-    await completeCurrentCapture();
-  }
-  if (!state.currentCaptureValid || !state.currentCaptureDir) {
-    addLog("没有可进入分析的本次拍摄数据。", "WARN");
+    addLog("本次正式采集尚未完成或文件校验未通过。可从分析页导入已有数据。", "WARN");
     return;
   }
   switchView("shape", "load-rgbd");
@@ -4559,6 +4628,8 @@ async function runSscAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderSscResult(payload.result || {});
+    state.currentInspectionId = payload.inspection?.inspectionId || state.currentInspectionId;
+    await saveCurrentInspectionSnapshot();
     await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.result?.status);
     setStepStatus("sugar", ok ? "done" : "warning");
@@ -4602,6 +4673,8 @@ async function runAcidAnalysis() {
     if (payload.dataCheck) updateSampleSessionFromReport(payload.dataCheck);
     if (payload.sample) applyBackendSampleSession(payload.sample);
     renderAcidResult(payload.taResult || {}, payload.phResult || {});
+    state.currentInspectionId = payload.inspection?.inspectionId || state.currentInspectionId;
+    await saveCurrentInspectionSnapshot();
     await loadInspectionHistory();
     const ok = ["ok", "success"].includes(payload.taResult?.status) || ["ok", "success"].includes(payload.phResult?.status);
     setStepStatus("acid", ok ? "done" : "warning");
@@ -4635,6 +4708,20 @@ function updateTaste(announce = true) {
   setStepStatus("rating", "done");
   renderSystemStatus();
   if (announce) addLog(`口感分析完成：等级 ${state.grade}。`);
+  saveCurrentInspectionSnapshot().catch((error) => addLog(`检测快照保存失败：${error.message}`, "WARN"));
+}
+
+async function saveCurrentInspectionSnapshot() {
+  const inspectionId = state.currentInspectionId;
+  if (!inspectionId || state.viewingInspectionId) return;
+  const metric = (id, unit) => ({ value: Number.isFinite(Number($(id)?.textContent)) ? Number($(id).textContent) : null, unit, source: "analysis" });
+  const snapshot = {
+    sampleId: state.sampleId,
+    shapeMetrics: { area: metric("#metricDepth", "px²"), width: metric("#metricDiameter", "px"), height: metric("#metricHeight", "px"), bloom: metric("#metricBloomSide", "%") },
+    sugarAcidRatio: Number.isFinite(state.ratio) ? state.ratio : null,
+    grade: state.grade || null, gradeRuleVersion: "taste-v1", sources: { shape: "analysis", ratio: "computed", grade: "computed" },
+  };
+  await api(`/api/inspections/${encodeURIComponent(inspectionId)}/snapshot`, { method: "POST", body: JSON.stringify({ snapshot }) });
 }
 
 async function selectDataset() {
@@ -5003,6 +5090,7 @@ async function pollShapeJob() {
       finishShapeJob();
       if (job.status === "done") {
         renderShapeResult(job.result);
+        await saveCurrentInspectionSnapshot();
       } else {
         const message = job.error?.message || job.message || "分析失败";
         addLog(message, job.status === "cancelled" ? "WARN" : "ERROR");
@@ -5152,6 +5240,17 @@ function finishShapeJob() {
 }
 
 function exportReport() {
+  const inspectionId = state.viewingInspectionId || state.sampleSession.inspectionId || "";
+  if (inspectionId) {
+    const link = document.createElement("a");
+    link.href = `/api/inspections/${encodeURIComponent(inspectionId)}/report.txt`;
+    link.download = "";
+    link.click();
+    addLog(`已导出检测记录 ${inspectionId} 的固定快照报告。`);
+    return;
+  }
+  addLog("尚无已保存的检测记录，不能从当前页面生成历史报告。", "WARN");
+  return;
   const lines = [
     "果实口感多光谱无损检测系统 - 检测报告",
     `样品编号: ${$("#sampleId")?.value || "--"}`,
@@ -5231,6 +5330,7 @@ async function loadInspectionDetail(inspectionId) {
   if (!inspectionId) return;
   try {
     const payload = await api(`/api/inspections/${encodeURIComponent(inspectionId)}`);
+    state.viewingInspectionId = inspectionId;
     renderInspectionDetail(payload.inspection || {});
   } catch (error) {
     addLog(error.message || "检测记录详情读取失败。", "WARN");
@@ -5282,8 +5382,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     button.addEventListener("click", () => addLog(button.dataset.log));
   });
 
-  document.querySelectorAll("[data-step]").forEach((button) => {
-    button.addEventListener("click", () => updateCaptureProgress(Number(button.dataset.step)));
+  window.addEventListener("pagehide", () => {
+    ++state.captureRequestGeneration;
+    stopCapturePolling();
   });
 
   document.querySelectorAll("[data-analysis-view]").forEach((button) => {
@@ -5515,6 +5616,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#trueCalibrationId")?.addEventListener("input", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#operatorConfirmedReferences")?.addEventListener("change", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#startTrueCapture")?.addEventListener("click", () => startTrueCapture().catch((error) => addLog(error.message, "ERROR")));
+  $("#createDevelopmentSimulation")?.addEventListener("click", () => createDevelopmentSimulation().catch((error) => addLog(error.message, "ERROR")));
   $("#cancelTrueCapture")?.addEventListener("click", () => cancelTrueCapture().catch((error) => addLog(error.message, "ERROR")));
   $("#refreshTrueCaptureReadiness")?.addEventListener("click", () => refreshTrueCaptureReadiness().catch((error) => addLog(error.message, "WARN")));
   $("#shapeMode")?.addEventListener("change", (event) => updateShapeMode(event.target.value));

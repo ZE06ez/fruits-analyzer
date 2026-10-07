@@ -14,6 +14,7 @@
 | 需求 | 状态 | 说明 |
 | --- | --- | --- |
 | 软件应是水果/果实口感多光谱无损检测系统 | 部分实现 | 主界面、样品流程、形态、模型入口、STM32 硬件控制层、RGB UVC adapter、DVP2 adapter、P1E-4 检测历史和 P1B-8 True Capture 单视角软件入口已存在；硬件 acceptance、真实样品台、多视角硬件采集和生产模型仍未完成 |
+| 模拟数据不得污染正式样品 | 已实现 | 普通流程不隐式生成模拟图片；开发模拟必须显式确认、使用独立新目录并持久化模拟来源，后端拒绝覆盖正式目录 |
 | 使用 RGB 彩色相机采集外观图像 | 部分实现/实机验证 | UI 和目录支持默认 `rgb/`，并支持用户自定义 RGB 子目录名；`RgbUvcCamera` 已在当前电脑通过 OpenCV DirectShow/UVC 验证 `device_index=1`、`MJPG`、`3840x2160`、`25fps`，可返回 RGB `uint8` 帧；相机设置页已支持 `/api/camera/rgb/probe` 真实重新检测、真实参数应用和低延迟 960x540 JPEG 预览；P1B-3 已接入 `CameraManager.capture_rgb_frame()` 和正式 RGB PNG 保存；P1B-8 后单视角 `/api/capture/start` 可复用该正式保存路径，但仍受 readiness/acceptance gate 约束 |
 | 使用黑白相机 + 滤光片转轮采集多光谱图像 | 部分实现/实机验证 | 目录和算法支持默认 `multispectral/`，并支持用户自定义多光谱子目录名；滤光轮已有 STM32 HOME/相对旋转控制层；目标黑白相机是 DO3THINK/度申 GigE/RJ45 工业相机，`Dvp2MonoCamera` 已基于真实 DVP2 header/examples 完成 Python 3.12 `ctypes` 绑定；用户已确认完全退出 BasedCam3 后 manual test 可打开、参数读取、取流、30 帧取图和 PNG 保存；网页相机设置页已接入 DVP2 重新检测、实时预览、曝光/增益应用和回读；P1B-4/P1B-5/P1B-6/P1B-7 已接入 DVP2 raw mono 单帧、多波段 sequence、Dark/White reference 和 Sample MultiView 软件编排；P1B-8 后单视角 `/api/capture/start` 可复用这些路径；真实样品台、多视角硬件采集和现场 acceptance 仍未完成 |
 | 使用封闭暗箱和稳定光源 | 部分实现/实机验证 | 2026-09-11 实机确认 PB7=钨灯1 SSR/bit0/0x01、PB8=钨灯2 SSR/bit1/0x02、PB9=LED3/bit2/0x04，统一复用 `LED_SET=0x12` 与 STATUS `led_mask/led1_duty/led2_duty/led3_duty`；不使用独立 0x13 钨灯协议。主 UI 已新增两路钨灯限时手动测试和关闭入口，后端执行 fresh STATUS read-modify-write、ACK + fresh STATUS 确认、1-5 秒 auto-off 和安全 interlock。亮度闭环、RGB 正式照明映射、双钨灯同时开启、硬件门联锁和完整真实采图同步仍需验收 |
